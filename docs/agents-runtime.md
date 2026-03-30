@@ -37,7 +37,6 @@ Built-in adapters:
 - `claude_local`: runs your local `claude` CLI
 - `codex_local`: runs your local `codex` CLI
 - `opencode_local`: runs your local `opencode` CLI
-- `gemini_local`: runs your local Gemini CLI
 - `hermes_local`: runs your local `hermes` CLI
 - `cursor`: runs Cursor in background mode
 - `pi_local`: runs an embedded Pi agent locally
@@ -45,7 +44,7 @@ Built-in adapters:
 - `process`: generic shell command adapter
 - `http`: calls an external HTTP endpoint
 
-For local CLI adapters (`claude_local`, `codex_local`, `opencode_local`, `gemini_local`, `hermes_local`), Paperclip assumes the CLI is already installed and authenticated on the host machine.
+For local CLI adapters (`claude_local`, `codex_local`, `opencode_local`, `hermes_local`), Paperclip assumes the CLI is already installed and authenticated on the host machine.
 
 ## 3.2 Runtime behavior
 
