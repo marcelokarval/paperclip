@@ -33,18 +33,21 @@ interface StartedServer {
 }
 
 export async function runCommand(opts: RunOptions): Promise<void> {
-  const instanceId = resolvePaperclipInstanceId(opts.instance);
-  process.env.PAPERCLIP_INSTANCE_ID = instanceId;
+  const configPath = resolveConfigPath(opts.config);
+  process.env.PAPERCLIP_CONFIG = configPath;
+  loadPaperclipEnvFile(configPath);
 
+  const explicitInstanceId = opts.instance?.trim() ? resolvePaperclipInstanceId(opts.instance) : null;
+  if (explicitInstanceId) {
+    process.env.PAPERCLIP_INSTANCE_ID = explicitInstanceId;
+  }
+
+  const instanceId = resolvePaperclipInstanceId(explicitInstanceId ?? undefined);
   const homeDir = resolvePaperclipHomeDir();
   fs.mkdirSync(homeDir, { recursive: true });
 
   const paths = describeLocalInstancePaths(instanceId);
   fs.mkdirSync(paths.instanceRoot, { recursive: true });
-
-  const configPath = resolveConfigPath(opts.config);
-  process.env.PAPERCLIP_CONFIG = configPath;
-  loadPaperclipEnvFile(configPath);
 
   p.intro(pc.bgCyan(pc.black(" paperclipai run ")));
   p.log.message(pc.dim(`Home: ${paths.homeDir}`));

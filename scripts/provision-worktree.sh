@@ -24,10 +24,10 @@ source_config_path="${PAPERCLIP_CONFIG:-}"
 if [[ -z "$source_config_path" && ( -e "$base_cwd/.paperclip/config.json" || -L "$base_cwd/.paperclip/config.json" ) ]]; then
   source_config_path="$base_cwd/.paperclip/config.json"
 fi
-if [[ -z "$source_config_path" ]]; then
-  source_config_path="$paperclip_home/instances/$paperclip_instance_id/config.json"
+source_env_path=""
+if [[ -n "$source_config_path" ]]; then
+  source_env_path="$(dirname "$source_config_path")/.env"
 fi
-source_env_path="$(dirname "$source_config_path")/.env"
 
 mkdir -p "$paperclip_dir"
 
