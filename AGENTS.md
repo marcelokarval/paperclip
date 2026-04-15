@@ -199,6 +199,20 @@ When creating a pull request (via `gh pr create` or any other method), you **mus
 - **Model Used** — the AI model that produced or assisted with the change (provider, exact model ID, context window, capabilities). Write "None — human-authored" if no AI was used.
 - **Checklist** — all items checked
 
+### Sourcery review handling
+
+- Every PR must be checked for Sourcery review feedback before merge.
+- Each Sourcery item must be classified as:
+  - `land now`
+  - `pool for later`
+  - `decline`
+- If a Sourcery item has future ROI but is not being landed in the current PR,
+  record it in `doc/SOURCERY-REVIEW-POOL.md` before merging.
+- The final merge/closure comment for a PR must state that Sourcery feedback was
+  reviewed and, when applicable, that deferred items were saved in
+  `doc/SOURCERY-REVIEW-POOL.md`.
+- Do not merge a PR with unreviewed Sourcery feedback.
+
 ## 12. Definition of Done
 
 A change is done when all are true:
