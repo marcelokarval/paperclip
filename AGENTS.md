@@ -211,6 +211,12 @@ When creating a pull request (via `gh pr create` or any other method), you **mus
 - The final merge/closure comment for a PR must state that Sourcery feedback was
   reviewed and, when applicable, that deferred items were saved in
   `doc/SOURCERY-REVIEW-POOL.md`.
+- For multi-line GitHub issue or PR comments, use a temporary file and
+  `gh ... --body-file <path>` instead of inline `--body "..."`.
+- Reserve inline `--body` for genuinely short plain-text comments only.
+- Treat shell-quoted markdown comments as unreliable for this repository
+  because they have repeatedly broken bullets, code spans, and backticks in
+  issue and PR history.
 - Do not merge a PR with unreviewed Sourcery feedback.
 
 ## 12. Definition of Done

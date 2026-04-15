@@ -21,6 +21,8 @@
    Do instead: write engineering analysis and repo-operational material under `doc/`; treat `docs/` as the public documentation site surface.
 3. **[2026-04-15] Review Sourcery before merging any PR**
    Do instead: read Sourcery feedback, classify each item, save deferred high-ROI items in `doc/SOURCERY-REVIEW-POOL.md`, then mention that record in the closing PR comment before merge.
+4. **[2026-04-15] Use body files for GitHub markdown comments**
+   Do instead: write multi-line issue/PR comments to a temp file and send them with `gh ... --body-file`; reserve inline `--body` only for genuinely short plain-text comments.
 
 ## Shell & Command Reliability
 1. **[2026-04-14] Prefer parallel read-only inspection for repo discovery**
