@@ -19,6 +19,8 @@
    Do instead: start with `doc/GOAL.md`, `doc/PRODUCT.md`, `doc/SPEC-implementation.md`, `doc/DEVELOPING.md`, and `doc/DATABASE.md`.
 2. **[2026-04-14] Keep internal and public docs separate**
    Do instead: write engineering analysis and repo-operational material under `doc/`; treat `docs/` as the public documentation site surface.
+3. **[2026-04-15] Review Sourcery before merging any PR**
+   Do instead: read Sourcery feedback, classify each item, save deferred high-ROI items in `doc/SOURCERY-REVIEW-POOL.md`, then mention that record in the closing PR comment before merge.
 
 ## Shell & Command Reliability
 1. **[2026-04-14] Prefer parallel read-only inspection for repo discovery**
