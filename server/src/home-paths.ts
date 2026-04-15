@@ -12,6 +12,12 @@ function expandHomePrefix(value: string): string {
   return value;
 }
 
+function resolvePaperclipConfigOverridePathFromEnv(): string | null {
+  const raw = process.env.PAPERCLIP_CONFIG?.trim();
+  if (!raw) return null;
+  return path.resolve(raw);
+}
+
 export function resolvePaperclipHomeDir(): string {
   const envHome = process.env.PAPERCLIP_HOME?.trim();
   if (envHome) return path.resolve(expandHomePrefix(envHome));
@@ -27,6 +33,14 @@ export function resolvePaperclipInstanceId(): string {
 }
 
 export function resolvePaperclipInstanceRoot(): string {
+  const envHome = process.env.PAPERCLIP_HOME?.trim();
+  const envInstanceId = process.env.PAPERCLIP_INSTANCE_ID?.trim();
+  if (!envHome && !envInstanceId) {
+    const configOverridePath = resolvePaperclipConfigOverridePathFromEnv();
+    if (configOverridePath) {
+      return path.resolve(path.dirname(configOverridePath));
+    }
+  }
   return path.resolve(resolvePaperclipHomeDir(), "instances", resolvePaperclipInstanceId());
 }
 
