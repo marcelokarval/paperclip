@@ -42,11 +42,32 @@ function registerModuleMocks() {
   }));
 }
 
+registerModuleMocks();
+
+// These route modules are safe to cache per file because the tests reset mocks
+// between examples and only exercise stateless exports.
+let appModulesPromise:
+  | Promise<{
+      agentRoutes: typeof import("../routes/agents.js")["agentRoutes"];
+      errorHandler: typeof import("../middleware/index.js")["errorHandler"];
+    }>
+  | null = null;
+
+async function loadAppModules() {
+  if (!appModulesPromise) {
+    appModulesPromise = Promise.all([
+      vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ]).then(([routes, middleware]) => ({
+      agentRoutes: routes.agentRoutes,
+      errorHandler: middleware.errorHandler,
+    }));
+  }
+  return await appModulesPromise;
+}
+
 async function createApp() {
-  const [{ agentRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-  ]);
+  const { agentRoutes, errorHandler } = await loadAppModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -66,13 +87,6 @@ async function createApp() {
 
 describe("agent live run routes", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../adapters/index.js");
-    vi.doUnmock("../routes/agents.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    registerModuleMocks();
     vi.resetAllMocks();
     mockIssueService.getByIdentifier.mockResolvedValue({
       id: "issue-1",

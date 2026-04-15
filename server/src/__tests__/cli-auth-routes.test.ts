@@ -45,11 +45,32 @@ function registerModuleMocks() {
   }));
 }
 
+registerModuleMocks();
+
+// These route modules are safe to cache per file because the tests reset mocks
+// between examples and only exercise stateless exports.
+let appModulesPromise:
+  | Promise<{
+      accessRoutes: typeof import("../routes/access.js")["accessRoutes"];
+      errorHandler: typeof import("../middleware/index.js")["errorHandler"];
+    }>
+  | null = null;
+
+async function loadAppModules() {
+  if (!appModulesPromise) {
+    appModulesPromise = Promise.all([
+      vi.importActual<typeof import("../routes/access.js")>("../routes/access.js"),
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ]).then(([routes, middleware]) => ({
+      accessRoutes: routes.accessRoutes,
+      errorHandler: middleware.errorHandler,
+    }));
+  }
+  return await appModulesPromise;
+}
+
 async function createApp(actor: any) {
-  const [{ accessRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/access.js")>("../routes/access.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-  ]);
+  const { accessRoutes, errorHandler } = await loadAppModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -71,10 +92,6 @@ async function createApp(actor: any) {
 
 describe("cli auth routes", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../routes/access.js");
-    vi.doUnmock("../middleware/index.js");
-    registerModuleMocks();
     vi.resetAllMocks();
   });
 
