@@ -155,3 +155,27 @@ Within that pooled set:
    - Current status: active
    - Future ROI: reduces test fragility and avoids repeated environment-handling
      drift across server suites.
+
+## PR #30 — test(server): reduce route-test startup overhead
+
+- Scope: shared helper extraction for cached route-module test harnesses
+
+- PR: https://github.com/marcelokarval/paperclip/pull/30
+- Related issue: https://github.com/marcelokarval/paperclip/issues/25
+- Review source: Sourcery
+
+### Pooled Items
+
+1. **Extract the repeated `loadAppModules` helper into shared test support**
+   - Sourcery said: the `loadAppModules` / `appModulesPromise` pattern is now
+     duplicated across the four route tests with only minor variations and
+     should be centralized.
+   - Analysis: valid maintainability feedback. The current PR already landed the
+     correctness fix for `cli-auth-routes.test.ts` and documented why the
+     per-file singleton cache is safe, but extracting a shared helper would
+     broaden the patch into a cross-suite refactor.
+   - Initial classification: pool for later
+   - Current status: active
+   - Future ROI: reduces duplicated caching logic and lowers the chance that one
+     route-test file drifts away from the others during future performance
+     tuning.

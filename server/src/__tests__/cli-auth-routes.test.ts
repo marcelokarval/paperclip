@@ -45,6 +45,10 @@ function registerModuleMocks() {
   }));
 }
 
+registerModuleMocks();
+
+// These route modules are safe to cache per file because the tests reset mocks
+// between examples and only exercise stateless exports.
 let appModulesPromise:
   | Promise<{
       accessRoutes: typeof import("../routes/access.js")["accessRoutes"];
