@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -149,10 +152,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   const childProcesses = new Set<ChildProcess>();
   const cleanupPids = new Set<number>();
+  let paperclipHome = "";
+  const previousPaperclipHome = process.env.PAPERCLIP_HOME;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-recovery-");
     db = createDb(tempDb.connectionString);
+    paperclipHome = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-heartbeat-recovery-home-"));
+    process.env.PAPERCLIP_HOME = paperclipHome;
   }, 20_000);
 
   afterEach(async () => {
@@ -214,6 +221,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     cleanupPids.clear();
     runningProcesses.clear();
     await tempDb?.cleanup();
+    if (paperclipHome) {
+      fs.rmSync(paperclipHome, { recursive: true, force: true });
+    }
+    if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+    else process.env.PAPERCLIP_HOME = previousPaperclipHome;
   });
 
   async function seedRunFixture(input?: {
