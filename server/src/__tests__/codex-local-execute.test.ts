@@ -360,6 +360,9 @@ describe("codex execute", () => {
       expect(capture.prompt).toContain(
         "acknowledge the latest comment and explain how it changes your next action.",
       );
+      expect(capture.prompt).not.toContain(
+        "Before generic repo exploration or boilerplate heartbeat updates, explain how this wake changes your next action.",
+      );
       expect(capture.prompt).toContain("First comment");
       expect(capture.prompt).toContain("Second comment");
     } finally {
