@@ -60,6 +60,29 @@ For every PR that receives Sourcery feedback:
 
 ## Active Pooled Items
 
+## PR #17 — test(server): fix wakeup coalescing coverage
+
+- PR: https://github.com/marcelokarval/paperclip/pull/17
+- Related issue: https://github.com/marcelokarval/paperclip/issues/13
+- Review source: Sourcery
+
+### Pooled Items
+
+1. **Extract small helpers for coalescing test setup**
+   - Sourcery said: the two coalescing tests now duplicate setup and the
+     `coalescedWake` query, so small helpers/factories would make the suite
+     easier to maintain.
+   - Analysis: valid maintainability feedback. The review's primary testing
+     suggestion was checked against `server/src/services/heartbeat.ts` and
+     declined because the issue-lock coalescing path intentionally inserts a
+     new `coalesced` wake row rather than preserving a single wake row per
+     run. Helper extraction remains a worthwhile follow-up, but it broadens
+     the patch into test refactor rather than bounded proof hardening.
+   - Initial classification: pool for later
+   - Current status: active
+   - Future ROI: reduces duplicated fixture drift in a workflow suite that is
+     likely to keep growing as wake/coalescing cases expand.
+
 ## PR #8 — docs: expand technical wake workflow map
 
 - PR: https://github.com/marcelokarval/paperclip/pull/8
