@@ -746,7 +746,6 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     const rawText = clipboard.getData("text/plain");
     if (!shouldPreferPlainMarkdownPaste({
       hasFiles: types.has("Files"),
-      hasHtml: types.has("text/html"),
       plainText: rawText,
       selectionInsideCodeLikeElement: isSelectionInsideCodeLikeElement(containerRef.current),
     })) return;

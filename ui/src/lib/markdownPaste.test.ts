@@ -2,8 +2,20 @@ import { describe, expect, it } from "vitest";
 import {
   looksLikeMarkdownPaste,
   normalizePastedMarkdown,
+  type PlainMarkdownPasteDecisionInput,
   shouldPreferPlainMarkdownPaste,
 } from "./markdownPaste";
+
+function makePlainMarkdownPasteInput(
+  overrides: Partial<PlainMarkdownPasteDecisionInput> = {},
+): PlainMarkdownPasteDecisionInput {
+  return {
+    hasFiles: false,
+    plainText: "",
+    selectionInsideCodeLikeElement: false,
+    ...overrides,
+  };
+}
 
 describe("markdownPaste", () => {
   it("normalizes windows line endings", () => {
@@ -54,34 +66,32 @@ describe("markdownPaste", () => {
 
   it("prefers plain markdown for mixed clipboard payloads", () => {
     expect(
-      shouldPreferPlainMarkdownPaste({
-        hasFiles: false,
-        hasHtml: true,
+      shouldPreferPlainMarkdownPaste(
+        makePlainMarkdownPasteInput({
         plainText: "# Title\n\n- item 1\n- item 2",
-        selectionInsideCodeLikeElement: false,
-      }),
+        }),
+      ),
     ).toBe(true);
   });
 
   it("does not prefer plain markdown for html clipboards without markdown structure", () => {
     expect(
-      shouldPreferPlainMarkdownPaste({
-        hasFiles: false,
-        hasHtml: true,
+      shouldPreferPlainMarkdownPaste(
+        makePlainMarkdownPasteInput({
         plainText: "just a sentence",
-        selectionInsideCodeLikeElement: false,
-      }),
+        }),
+      ),
     ).toBe(false);
   });
 
   it("does not prefer plain markdown when files are present", () => {
     expect(
-      shouldPreferPlainMarkdownPaste({
+      shouldPreferPlainMarkdownPaste(
+        makePlainMarkdownPasteInput({
         hasFiles: true,
-        hasHtml: true,
         plainText: "# Title",
-        selectionInsideCodeLikeElement: false,
-      }),
+        }),
+      ),
     ).toBe(false);
   });
 });
