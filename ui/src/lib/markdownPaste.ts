@@ -21,3 +21,13 @@ export function looksLikeMarkdownPaste(text: string): boolean {
 
   return BLOCK_MARKER_PATTERNS.some((pattern) => pattern.test(normalized));
 }
+
+export function shouldPreferPlainMarkdownPaste(input: {
+  hasFiles: boolean;
+  hasHtml: boolean;
+  plainText: string;
+  selectionInsideCodeLikeElement: boolean;
+}): boolean {
+  if (input.hasFiles || input.selectionInsideCodeLikeElement) return false;
+  return looksLikeMarkdownPaste(input.plainText);
+}

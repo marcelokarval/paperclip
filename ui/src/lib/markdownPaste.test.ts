@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { looksLikeMarkdownPaste, normalizePastedMarkdown } from "./markdownPaste";
+import {
+  looksLikeMarkdownPaste,
+  normalizePastedMarkdown,
+  shouldPreferPlainMarkdownPaste,
+} from "./markdownPaste";
 
 describe("markdownPaste", () => {
   it("normalizes windows line endings", () => {
@@ -46,5 +50,38 @@ describe("markdownPaste", () => {
 
   it("leaves single-line plain text on the native paste path", () => {
     expect(looksLikeMarkdownPaste("just a sentence")).toBe(false);
+  });
+
+  it("prefers plain markdown for mixed clipboard payloads", () => {
+    expect(
+      shouldPreferPlainMarkdownPaste({
+        hasFiles: false,
+        hasHtml: true,
+        plainText: "# Title\n\n- item 1\n- item 2",
+        selectionInsideCodeLikeElement: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not prefer plain markdown for html clipboards without markdown structure", () => {
+    expect(
+      shouldPreferPlainMarkdownPaste({
+        hasFiles: false,
+        hasHtml: true,
+        plainText: "just a sentence",
+        selectionInsideCodeLikeElement: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not prefer plain markdown when files are present", () => {
+    expect(
+      shouldPreferPlainMarkdownPaste({
+        hasFiles: true,
+        hasHtml: true,
+        plainText: "# Title",
+        selectionInsideCodeLikeElement: false,
+      }),
+    ).toBe(false);
   });
 });
