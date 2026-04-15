@@ -42,8 +42,9 @@ user actually executed.
 - Treat the installed/runtime environment under `~/.paperclip/` and related
   packaged code under `.npm/_npx/.../@paperclipai/*` as the primary case-of-use
   surface when investigating incidents, regressions, or surprising behavior.
-- Treat this repository under `~/Backup/Projetos/paperclip` as the remediation
-  and adaptation workspace where fixes are analyzed, backported, or extended.
+- Treat this repository checkout as the remediation and adaptation workspace
+  where fixes are analyzed, backported, or extended. The local path may vary by
+  machine; `/path/to/your-fork/paperclip` is an example only.
 - When reporting a bug, always distinguish three states explicitly:
   - what happened in the installed runtime
   - what exists in this local fork source
