@@ -77,7 +77,7 @@ For every PR that receives Sourcery feedback:
      declined because the issue-lock coalescing path intentionally inserts a
      new `coalesced` wake row rather than preserving a single wake row per
      run. Helper extraction remains a worthwhile follow-up, but it broadens
-     the patch into test refactor rather than bounded proof hardening.
+     the patch into a test refactor rather than bounded proof hardening.
    - Initial classification: pool for later
    - Current status: active
    - Future ROI: reduces duplicated fixture drift in a workflow suite that is
