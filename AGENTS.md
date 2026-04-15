@@ -31,7 +31,42 @@ Before making changes, read in this order:
 - `packages/plugins/`: plugin system packages
 - `doc/`: operational and product docs
 
-## 4. Dev Setup (Auto DB)
+## 4. Fork Operating Model
+
+This local repository is a fork used as a correction, backport, and adaptation
+workspace for our Paperclip reality. Do not confuse it with the runtime the
+user actually executed.
+
+### Installed runtime vs local fork
+
+- Treat the installed/runtime environment under `~/.paperclip/` and related
+  packaged code under `.npm/_npx/.../@paperclipai/*` as the primary case-of-use
+  surface when investigating incidents, regressions, or surprising behavior.
+- Treat this repository checkout as the remediation and adaptation workspace
+  where fixes are analyzed, backported, or extended. The local path may vary by
+  machine; `/path/to/your-fork/paperclip` is an example only.
+- When reporting a bug, always distinguish three states explicitly:
+  - what happened in the installed runtime
+  - what exists in this local fork source
+  - what exists in the official upstream source
+
+### Upstream review rule
+
+- Before concluding that a bug is still open in this fork, inspect the official
+  `paperclipai/paperclip` repository and the merged PR/commit history for the
+  affected files or workflow.
+- Do not assume this fork is the newest truth for Paperclip behavior.
+- When an upstream fix exists, record all three answers explicitly:
+  - whether the official upstream already fixed it
+  - whether this fork already contains that fix
+  - whether the installed runtime the user actually ran already contains that
+    fix
+- If a fix exists upstream but not in the installed runtime, treat that as a
+  release/backport gap first, not as proof that upstream still lacks a fix.
+- If a fix exists upstream but not in this fork, prefer aligning or backporting
+  from upstream rather than re-diagnosing the same bug from zero.
+
+## 5. Dev Setup (Auto DB)
 
 Use embedded PGlite in dev by leaving `DATABASE_URL` unset.
 
@@ -59,7 +94,7 @@ rm -rf data/pglite
 pnpm dev
 ```
 
-## 5. Core Engineering Rules
+## 6. Core Engineering Rules
 
 1. Keep changes company-scoped.
 Every domain entity should be scoped to a company and company boundaries must be enforced in routes/services.
@@ -84,7 +119,7 @@ Prefer additive updates. Keep `doc/SPEC.md` and `doc/SPEC-implementation.md` ali
 5. Keep repo plan docs dated and centralized.
 When you are creating a plan file in the repository itself, new plan documents belong in `doc/plans/` and should use `YYYY-MM-DD-slug.md` filenames. This does not replace Paperclip issue planning: if a Paperclip issue asks for a plan, update the issue `plan` document per the `paperclip` skill instead of creating a repo markdown file.
 
-## 6. Database Change Workflow
+## 7. Database Change Workflow
 
 When changing data model:
 
@@ -106,7 +141,7 @@ Notes:
 - `packages/db/drizzle.config.ts` reads compiled schema from `dist/schema/*.js`
 - `pnpm db:generate` compiles `packages/db` first
 
-## 7. Verification Before Hand-off
+## 8. Verification Before Hand-off
 
 Default local/agent test path:
 
@@ -133,7 +168,7 @@ pnpm build
 
 If anything cannot be run, explicitly report what was not run and why.
 
-## 8. API and Auth Expectations
+## 9. API and Auth Expectations
 
 - Base path: `/api`
 - Board access is treated as full-control operator context
@@ -147,13 +182,13 @@ When adding endpoints:
 - write activity log entries for mutations
 - return consistent HTTP errors (`400/401/403/404/409/422/500`)
 
-## 9. UI Expectations
+## 10. UI Expectations
 
 - Keep routes and nav aligned with available API surface
 - Use company selection context for company-scoped pages
 - Surface failures clearly; do not silently ignore API errors
 
-## 10. Pull Request Requirements
+## 11. Pull Request Requirements
 
 When creating a pull request (via `gh pr create` or any other method), you **must** read and fill in every section of [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). Do not craft ad-hoc PR bodies — use the template as the structure for your PR description. Required sections:
 
@@ -164,7 +199,7 @@ When creating a pull request (via `gh pr create` or any other method), you **mus
 - **Model Used** — the AI model that produced or assisted with the change (provider, exact model ID, context window, capabilities). Write "None — human-authored" if no AI was used.
 - **Checklist** — all items checked
 
-## 11. Definition of Done
+## 12. Definition of Done
 
 A change is done when all are true:
 
@@ -174,43 +209,36 @@ A change is done when all are true:
 4. Docs updated when behavior or commands change
 5. PR description follows the [PR template](.github/PULL_REQUEST_TEMPLATE.md) with all sections filled in (including Model Used)
 
-## 11. Fork-Specific: HenkDz/paperclip
+## 13. Repository Lineage and Hermes Integration
 
-This is a fork of `paperclipai/paperclip` with QoL patches and an **external-only** Hermes adapter story on branch `feat/externalize-hermes-adapter` ([tree](https://github.com/HenkDz/paperclip/tree/feat/externalize-hermes-adapter)).
+Do not treat historical fork notes as authoritative unless they match the
+current checkout, branch, and dependency graph.
 
-### Branch Strategy
+### Repository lineage
 
-- `feat/externalize-hermes-adapter` → core has **no** `hermes-paperclip-adapter` dependency and **no** built-in `hermes_local` registration. Install Hermes via the Adapter Plugin manager (`@henkey/hermes-paperclip-adapter` or a `file:` path).
-- Older fork branches may still document built-in Hermes; treat this file as authoritative for the externalize branch.
+- This repository may be operated as a fork of `paperclipai/paperclip`, but
+  contributor guidance must describe the checkout that is actually on disk.
+- If local remotes, branches, or package dependencies differ from older fork
+  documentation, update this file instead of following stale instructions.
+- Historical branches or forks can be useful references, but they are not the
+  source of truth for current behavior.
 
-### Hermes (plugin only)
+### Hermes status
 
-- Register through **Board → Adapter manager** (same as Droid). Type remains `hermes_local` once the package is loaded.
-- UI uses generic **config-schema** + **ui-parser.js** from the package — no Hermes imports in `server/` or `ui/` source.
-- Optional: `file:` entry in `~/.paperclip/adapter-plugins.json` for local dev of the adapter repo.
+- Hermes is a supported and functional Paperclip integration in the current
+  product surface.
+- Support is provided through the dedicated `hermes-paperclip-adapter` package.
+- The adapter may live outside this monorepo while still being a first-class
+  supported runtime in the UI and server.
+- Do not infer "unsupported" from the adapter living in a separate repository or
+  package.
 
-### Local Dev
+### Hermes source-of-truth rule
 
-- Fork runs on port 3101+ (auto-detects if 3100 is taken by upstream instance)
-- `npx vite build` hangs on NTFS — use `node node_modules/vite/bin/vite.js build` instead
-- Server startup from NTFS takes 30-60s — don't assume failure immediately
-- Kill ALL paperclip processes before starting: `pkill -f "paperclip"; pkill -f "tsx.*index.ts"`
-- Vite cache survives `rm -rf dist` — delete both: `rm -rf ui/dist ui/node_modules/.vite`
-
-### Fork QoL Patches (not in upstream)
-
-These are local modifications in the fork's UI. If re-copying source, these must be re-applied:
-
-1. **stderr_group** — amber accordion for MCP init noise in `RunTranscriptView.tsx`
-2. **tool_group** — accordion for consecutive non-terminal tools (write, read, search, browser)
-3. **Dashboard excerpt** — `LatestRunCard` strips markdown, shows first 3 lines/280 chars
-
-### Plugin System
-
-PR #2218 (`feat/external-adapter-phase1`) adds external adapter support. See root `AGENTS.md` for full details.
-
-- Adapters can be loaded as external plugins via `~/.paperclip/adapter-plugins.json`
-- The plugin-loader should have ZERO hardcoded adapter imports — pure dynamic loading
-- `createServerAdapter()` must include ALL optional fields (especially `detectModel`)
-- Built-in UI adapters can shadow external plugin parsers — remove built-in when fully externalizing
-- Reference external adapters: Hermes (`@henkey/hermes-paperclip-adapter` or `file:`) and Droid (npm)
+- Treat the current codebase, active runtime registrations, and active adapter
+  plugin configuration as the source of truth for Hermes support.
+- Treat historical forks of the adapter as historical context unless they are
+  the package source currently configured in this checkout.
+- When documenting Hermes, state both facts together: Paperclip supports Hermes
+  today, and Hermes support is implemented via a dedicated adapter package
+  rather than requiring all adapter code to live in this monorepo.
