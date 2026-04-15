@@ -57,7 +57,7 @@ describeEmbeddedPostgres("heartbeat wakeup coalescing", () => {
     else process.env.PAPERCLIP_HOME = previousPaperclipHome;
   });
 
-  it("coalesces mention wakes using the enriched wake context in the generic same-scope path", async () => {
+  it("coalesces issue-scoped mention wakes under the issue-lock path", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -149,6 +149,108 @@ describeEmbeddedPostgres("heartbeat wakeup coalescing", () => {
       issueId,
       taskId: issueId,
       taskKey: issueId,
+      commentId: wakeCommentId,
+      wakeCommentId,
+      wakeReason: "issue_comment_mentioned",
+      wakeSource: "automation",
+      wakeTriggerDetail: "system",
+    });
+    expect(mergedContext.wakeCommentIds).toEqual([wakeCommentId]);
+
+    const coalescedWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.status, "coalesced"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+
+    expect(coalescedWake?.runId).toBe(runId);
+    expect(coalescedWake?.reason).toBe("issue_execution_same_name");
+  });
+
+  it("coalesces generic same-scope wakes using the enriched wake context", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const wakeupRequestId = randomUUID();
+    const wakeCommentId = randomUUID();
+    const taskKey = `task-${companyId}`;
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_comment_mentioned",
+      payload: { taskKey },
+      status: "queued",
+      runId,
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId,
+      contextSnapshot: {
+        taskKey,
+        wakeReason: "issue_comment_mentioned",
+      },
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_comment_mentioned",
+      payload: { taskKey, commentId: wakeCommentId },
+      contextSnapshot: {
+        taskKey,
+        wakeReason: "issue_comment_mentioned",
+      },
+      requestedByActorType: "user",
+      requestedByActorId: "user-1",
+    });
+
+    expect(run?.id).toBe(runId);
+
+    const mergedRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    const mergedContext = (mergedRun?.contextSnapshot ?? {}) as Record<string, unknown>;
+
+    expect(mergedContext).toMatchObject({
+      taskKey,
       commentId: wakeCommentId,
       wakeCommentId,
       wakeReason: "issue_comment_mentioned",
