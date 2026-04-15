@@ -29,12 +29,17 @@ import { ensurePiModelConfiguredAndAvailable } from "./models.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
+function resolvePiHomeDir(): string {
+  const envHome = process.env.HOME?.trim();
+  return envHome && envHome.length > 0 ? envHome : os.homedir();
+}
+
 function resolvePiSessionsDir(): string {
-  return path.join(os.homedir(), ".pi", "paperclips");
+  return path.join(resolvePiHomeDir(), ".pi", "paperclips");
 }
 
 function resolvePiAgentSkillsDir(): string {
-  return path.join(os.homedir(), ".pi", "agent", "skills");
+  return path.join(resolvePiHomeDir(), ".pi", "agent", "skills");
 }
 
 function firstNonEmptyLine(text: string): string {
@@ -110,9 +115,9 @@ async function ensureSessionsDir(): Promise<string> {
   return paperclipSessionsDir;
 }
 
-function buildSessionPath(agentId: string, timestamp: string): string {
+function buildSessionPath(sessionsDir: string, agentId: string, timestamp: string): string {
   const safeTimestamp = timestamp.replace(/[:.]/g, "-");
-  return path.join(resolvePiSessionsDir(), `${safeTimestamp}-${agentId}.jsonl`);
+  return path.join(sessionsDir, `${safeTimestamp}-${agentId}.jsonl`);
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
@@ -149,7 +154,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   
   // Ensure sessions directory exists
-  await ensureSessionsDir();
+  const sessionsDir = await ensureSessionsDir();
   
   // Inject skills
   const piSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
@@ -246,7 +251,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const canResumeSession =
     runtimeSessionId.length > 0 &&
     (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
-  const sessionPath = canResumeSession ? runtimeSessionId : buildSessionPath(agent.id, new Date().toISOString());
+  const sessionPath = canResumeSession
+    ? runtimeSessionId
+    : buildSessionPath(sessionsDir, agent.id, new Date().toISOString());
   
   if (runtimeSessionId && !canResumeSession) {
     await onLog(
@@ -502,7 +509,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       "stdout",
       `[paperclip] Pi session "${runtimeSessionId}" is unavailable; retrying with a fresh session.\n`,
     );
-    const newSessionPath = buildSessionPath(agent.id, new Date().toISOString());
+    const newSessionPath = buildSessionPath(sessionsDir, agent.id, new Date().toISOString());
     try {
       await fs.writeFile(newSessionPath, "", { flag: "wx" });
     } catch (err) {
