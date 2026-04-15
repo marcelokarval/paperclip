@@ -37,7 +37,7 @@ import { AgentIcon } from "./AgentIconPicker";
 import { applyMentionChipDecoration, clearMentionChipDecoration, parseMentionChipHref } from "../lib/mention-chips";
 import { MentionAwareLinkNode, mentionAwareLinkNodeReplacement } from "../lib/mention-aware-link-node";
 import { mentionDeletionPlugin } from "../lib/mention-deletion";
-import { looksLikeMarkdownPaste } from "../lib/markdownPaste";
+import { shouldPreferPlainMarkdownPaste } from "../lib/markdownPaste";
 import { normalizeMarkdown } from "../lib/normalize-markdown";
 import { pasteNormalizationPlugin } from "../lib/paste-normalization";
 import { cn } from "../lib/utils";
@@ -885,11 +885,12 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     const clipboard = event.clipboardData;
     if (!clipboard || !ref.current) return;
     const types = new Set(Array.from(clipboard.types));
-    if (types.has("Files") || types.has("text/html")) return;
-    if (isSelectionInsideCodeLikeElement(containerRef.current)) return;
-
     const rawText = clipboard.getData("text/plain");
-    if (!looksLikeMarkdownPaste(rawText)) return;
+    if (!shouldPreferPlainMarkdownPaste({
+      hasFiles: types.has("Files"),
+      plainText: rawText,
+      selectionInsideCodeLikeElement: isSelectionInsideCodeLikeElement(containerRef.current),
+    })) return;
 
     event.preventDefault();
     ref.current.insertMarkdown(normalizeMarkdown(rawText));
