@@ -391,6 +391,8 @@ export function renderPaperclipWakePrompt(
   if (!normalized) return "";
   const resumedSession = options.resumedSession === true;
   const executionStage = normalized.executionStage;
+  const commentAwareWake =
+    normalized.requestedCount > 0 || normalized.includedCount > 0 || Boolean(normalized.latestCommentId);
   const principalLabel = (principal: PaperclipWakeExecutionPrincipal | null) => {
     if (!principal || !principal.type) return "unknown";
     if (principal.type === "agent") return principal.agentId ? `agent ${principal.agentId}` : "agent";
@@ -417,7 +419,9 @@ export function renderPaperclipWakePrompt(
         "",
         "Treat this wake payload as the highest-priority change for the current heartbeat.",
         "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
-        "Before generic repo exploration or boilerplate heartbeat updates, acknowledge the latest comment and explain how it changes your next action.",
+        commentAwareWake
+          ? "Before generic repo exploration or boilerplate heartbeat updates, acknowledge the latest comment and explain how it changes your next action."
+          : "Before generic repo exploration or boilerplate heartbeat updates, explain how this wake changes your next action.",
         "Use this inline wake data first before refetching the issue thread.",
         "Only fetch the API thread when `fallbackFetchNeeded` is true or you need broader history than this batch.",
         "",

@@ -4639,7 +4639,7 @@ export function heartbeatService(db: Db) {
     if (coalescedTargetRun) {
       const mergedContextSnapshot = mergeCoalescedContextSnapshot(
         coalescedTargetRun.contextSnapshot,
-        contextSnapshot,
+        enrichedContextSnapshot,
       );
       const mergedRun = await db
         .update(heartbeatRuns)

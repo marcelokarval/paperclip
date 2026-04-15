@@ -360,6 +360,9 @@ describe("codex execute", () => {
       expect(capture.prompt).toContain(
         "acknowledge the latest comment and explain how it changes your next action.",
       );
+      expect(capture.prompt).not.toContain(
+        "Before generic repo exploration or boilerplate heartbeat updates, explain how this wake changes your next action.",
+      );
       expect(capture.prompt).toContain("First comment");
       expect(capture.prompt).toContain("Second comment");
     } finally {
@@ -611,6 +614,12 @@ describe("codex execute", () => {
       expect(capture.prompt).toContain("- pending comments: 0/0");
       expect(capture.prompt).toContain("- issue status: in_progress");
       expect(capture.prompt).toContain("- checkout: already claimed by the harness for this run");
+      expect(capture.prompt).not.toContain(
+        "acknowledge the latest comment and explain how it changes your next action.",
+      );
+      expect(capture.prompt).toContain(
+        "Before generic repo exploration or boilerplate heartbeat updates, explain how this wake changes your next action.",
+      );
       expect(capture.prompt).toContain("The harness already checked out this issue for the current run.");
     } finally {
       if (previousHome === undefined) delete process.env.HOME;

@@ -220,12 +220,16 @@ describe("heartbeat comment wake batching", () => {
   let db!: ReturnType<typeof createDb>;
   let instance: EmbeddedPostgresInstance | null = null;
   let dataDir = "";
+  let paperclipHome = "";
+  const previousPaperclipHome = process.env.PAPERCLIP_HOME;
 
   beforeAll(async () => {
     const started = await startTempDatabase();
     db = createDb(started.connectionString);
     instance = started.instance;
     dataDir = started.dataDir;
+    paperclipHome = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-heartbeat-comment-home-"));
+    process.env.PAPERCLIP_HOME = paperclipHome;
   }, 45_000);
 
   afterAll(async () => {
@@ -234,6 +238,11 @@ describe("heartbeat comment wake batching", () => {
     if (dataDir) {
       fs.rmSync(dataDir, { recursive: true, force: true });
     }
+    if (paperclipHome) {
+      fs.rmSync(paperclipHome, { recursive: true, force: true });
+    }
+    if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+    else process.env.PAPERCLIP_HOME = previousPaperclipHome;
   });
 
   it("batches deferred comment wakes and forwards the ordered batch to the next run", async () => {
