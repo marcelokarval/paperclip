@@ -35,4 +35,34 @@ describe("resolvePaperclipInstanceRoot", () => {
       path.resolve("/tmp/paperclip-home/instances/worktree-1"),
     );
   });
+
+  it("keeps PAPERCLIP_HOME as a stronger signal than PAPERCLIP_CONFIG when instance id is unset", () => {
+    process.env.PAPERCLIP_HOME = "/tmp/paperclip-home";
+    delete process.env.PAPERCLIP_INSTANCE_ID;
+    process.env.PAPERCLIP_CONFIG = "/tmp/paperclip-test/config/config.json";
+
+    expect(resolvePaperclipInstanceRoot()).toBe(
+      path.resolve("/tmp/paperclip-home/instances/default"),
+    );
+  });
+
+  it("keeps PAPERCLIP_INSTANCE_ID as a stronger signal than PAPERCLIP_CONFIG when home is unset", () => {
+    delete process.env.PAPERCLIP_HOME;
+    process.env.PAPERCLIP_INSTANCE_ID = "worktree-1";
+    process.env.PAPERCLIP_CONFIG = "/tmp/paperclip-test/config/config.json";
+
+    expect(resolvePaperclipInstanceRoot()).toBe(
+      path.resolve(path.join(process.env.HOME ?? "", ".paperclip", "instances", "worktree-1")),
+    );
+  });
+
+  it("expands home-prefixed PAPERCLIP_CONFIG paths before resolving the fallback instance root", () => {
+    delete process.env.PAPERCLIP_HOME;
+    delete process.env.PAPERCLIP_INSTANCE_ID;
+    process.env.PAPERCLIP_CONFIG = "~/.paperclip/custom/config.json";
+
+    expect(resolvePaperclipInstanceRoot()).toBe(
+      path.resolve(path.join(process.env.HOME ?? "", ".paperclip", "custom")),
+    );
+  });
 });
