@@ -117,6 +117,28 @@ function registerModuleMocks() {
   }));
 }
 
+registerModuleMocks();
+
+let appModulesPromise:
+  | Promise<{
+      errorHandler: typeof import("../middleware/index.js")["errorHandler"];
+      agentRoutes: typeof import("../routes/agents.js")["agentRoutes"];
+    }>
+  | null = null;
+
+async function loadAppModules() {
+  if (!appModulesPromise) {
+    appModulesPromise = Promise.all([
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+      vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+    ]).then(([middleware, routes]) => ({
+      errorHandler: middleware.errorHandler,
+      agentRoutes: routes.agentRoutes,
+    }));
+  }
+  return await appModulesPromise;
+}
+
 function createDbStub() {
   return {
     select: vi.fn().mockReturnValue({
@@ -134,10 +156,7 @@ function createDbStub() {
 }
 
 async function createApp(actor: Record<string, unknown>) {
-  const [{ errorHandler }, { agentRoutes }] = await Promise.all([
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
-  ]);
+  const { errorHandler, agentRoutes } = await loadAppModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -151,13 +170,6 @@ async function createApp(actor: Record<string, unknown>) {
 
 describe("agent permission routes", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("@paperclipai/shared/telemetry");
-    vi.doUnmock("../telemetry.js");
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../routes/agents.js");
-    vi.doUnmock("../middleware/index.js");
-    registerModuleMocks();
     vi.clearAllMocks();
     mockSyncInstructionsBundleConfigFromFilePath.mockImplementation((_agent, config) => config);
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
