@@ -67,6 +67,7 @@ describe("pi_local execute", () => {
 
       expect(result.exitCode).toBe(1);
       expect(result.errorMessage).toContain("RESOURCE_EXHAUSTED");
+      await expect(fs.readdir(path.join(root, ".pi", "paperclips"))).resolves.toHaveLength(1);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
