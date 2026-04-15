@@ -40,10 +40,26 @@ For every PR that receives Sourcery feedback:
    - the PR is being merged with that record preserved
 5. Only then merge the PR.
 
+## Status Model
+
+Entries in this document represent items whose initial classification was
+`pool for later`.
+
+Within that pooled set:
+
+- `Initial classification` records the original review decision and should stay
+  `pool for later` for every entry in this document
+- `Current status` records the lifecycle state of the pooled item:
+  - `active` when the pooled follow-up still remains relevant
+  - `superseded` when a later PR, upstream merge, or repository change makes
+    the pooled follow-up obsolete
+
 ## Entry Template
 
 ```md
 ## PR #<number> — <title>
+
+- Scope: <one-line summary of the pooled follow-up theme>
 
 - PR: <link>
 - Related issue: <link or "none">
@@ -54,13 +70,16 @@ For every PR that receives Sourcery feedback:
 1. **<short title>**
    - Sourcery said: <summary>
    - Analysis: <why it matters, or why it is deferred>
-   - Decision: <pool / decline / superseded>
+   - Initial classification: pool for later
+   - Current status: <active / superseded>
    - Future ROI: <what benefit we expect later>
 ```
 
 ## Active Pooled Items
 
 ## PR #17 — test(server): fix wakeup coalescing coverage
+
+- Scope: wakeup coalescing test maintenance and helper extraction follow-up
 
 - PR: https://github.com/marcelokarval/paperclip/pull/17
 - Related issue: https://github.com/marcelokarval/paperclip/issues/13
@@ -85,6 +104,8 @@ For every PR that receives Sourcery feedback:
 
 ## PR #8 — docs: expand technical wake workflow map
 
+- Scope: technical map clarity and code-navigation follow-ups
+
 - PR: https://github.com/marcelokarval/paperclip/pull/8
 - Related issue: https://github.com/marcelokarval/paperclip/issues/7
 - Review source: Sourcery
@@ -98,7 +119,8 @@ For every PR that receives Sourcery feedback:
      itself against upstream often. It is useful, but it does not block the
      current doc PR because the file already states `Repository snapshot
      analysis of the current checkout`.
-   - Decision: pool for later unless folded into a nearby doc pass.
+   - Initial classification: pool for later
+   - Current status: active
    - Future ROI: lowers the chance that future readers misread the map as an
      evergreen architecture contract.
 
@@ -108,11 +130,14 @@ For every PR that receives Sourcery feedback:
    - Analysis: high-value for maintenance, but it expands the doc with more
      code-level pointers and is better done together with a broader pass on
      `TECHNICAL-MAP.md`.
-   - Decision: pool for later.
+   - Initial classification: pool for later
+   - Current status: active
    - Future ROI: makes the technical map more actionable during future bug
      hunts and upstream/fork comparisons.
 
 ## PR #9 — fix(server): preserve enriched wake context when coalescing
+
+- Scope: shared test-infrastructure cleanup for server wake workflow suites
 
 - PR: https://github.com/marcelokarval/paperclip/pull/9
 - Related issue: https://github.com/marcelokarval/paperclip/issues/4
@@ -126,6 +151,7 @@ For every PR that receives Sourcery feedback:
    - Analysis: valid structural cleanup, but broader than the current bugfix
      and should be done as a dedicated test-infrastructure pass rather than as
      incidental churn inside the wake workflow PR.
-   - Decision: pool for later.
+   - Initial classification: pool for later
+   - Current status: active
    - Future ROI: reduces test fragility and avoids repeated environment-handling
      drift across server suites.
