@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { parse as parseEnvContents } from "dotenv";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   agents,
   companies,
@@ -1199,6 +1199,7 @@ describe("realizeExecutionWorkspace", () => {
     const fakeBin = path.join(tempRoot, "bin");
     const fakePnpmPath = path.join(fakeBin, "pnpm");
     const scriptPath = path.join(worktreeRoot, "provision-worktree.sh");
+    const isolatedWorktreeHome = path.join(tempRoot, ".paperclip-worktrees");
 
     try {
       await fs.mkdir(path.join(baseRoot, "node_modules"), { recursive: true });
@@ -1252,6 +1253,7 @@ describe("realizeExecutionWorkspace", () => {
         env: {
           ...process.env,
           PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+          PAPERCLIP_WORKTREES_DIR: isolatedWorktreeHome,
           PAPERCLIP_WORKSPACE_BASE_CWD: baseRoot,
           PAPERCLIP_WORKSPACE_CWD: worktreeRoot,
         },
@@ -2006,6 +2008,11 @@ describe("realizeExecutionWorkspace", () => {
 });
 
 describe("ensureRuntimeServicesForRun", () => {
+  beforeEach(async () => {
+    process.env.PAPERCLIP_HOME = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-home-"));
+    process.env.PAPERCLIP_INSTANCE_ID = `workspace-runtime-${randomUUID()}`;
+  });
+
   it("reuses shared runtime services across runs and starts a new service after release", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-workspace-"));
     const workspace = buildWorkspace(workspaceRoot);
@@ -2698,6 +2705,11 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  beforeEach(async () => {
+    process.env.PAPERCLIP_HOME = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-home-"));
+    process.env.PAPERCLIP_INSTANCE_ID = `runtime-reconcile-${randomUUID()}`;
   });
 
   afterEach(async () => {
