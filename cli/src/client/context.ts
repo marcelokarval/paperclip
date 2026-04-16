@@ -2,7 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolveDefaultContextPath } from "../config/home.js";
 
-const DEFAULT_CONTEXT_BASENAME = "context.json";
 const DEFAULT_PROFILE = "default";
 
 export interface ClientContextProfile {
@@ -17,28 +16,10 @@ export interface ClientContext {
   profiles: Record<string, ClientContextProfile>;
 }
 
-function findContextFileFromAncestors(startDir: string): string | null {
-  const absoluteStartDir = path.resolve(startDir);
-  let currentDir = absoluteStartDir;
-
-  while (true) {
-    const candidate = path.resolve(currentDir, ".paperclip", DEFAULT_CONTEXT_BASENAME);
-    if (fs.existsSync(candidate)) {
-      return candidate;
-    }
-
-    const nextDir = path.resolve(currentDir, "..");
-    if (nextDir === currentDir) break;
-    currentDir = nextDir;
-  }
-
-  return null;
-}
-
 export function resolveContextPath(overridePath?: string): string {
   if (overridePath) return path.resolve(overridePath);
   if (process.env.PAPERCLIP_CONTEXT) return path.resolve(process.env.PAPERCLIP_CONTEXT);
-  return findContextFileFromAncestors(process.cwd()) ?? resolveDefaultContextPath();
+  return resolveDefaultContextPath();
 }
 
 export function defaultClientContext(): ClientContext {
