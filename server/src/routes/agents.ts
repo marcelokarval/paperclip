@@ -1630,6 +1630,12 @@ export function agentRoutes(db: Db) {
 
     const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
     const explicitKey = asNonEmptyString(req.body.adapterConfigKey);
+    if (explicitKey && !KNOWN_INSTRUCTIONS_PATH_KEYS.has(explicitKey)) {
+      res.status(422).json({
+        error: `adapterConfigKey must be one of: ${Array.from(KNOWN_INSTRUCTIONS_PATH_KEYS).join(", ")}`,
+      });
+      return;
+    }
     const defaultKey = DEFAULT_INSTRUCTIONS_PATH_KEYS[existing.adapterType] ?? null;
     const adapterConfigKey = explicitKey ?? defaultKey;
     if (!adapterConfigKey) {

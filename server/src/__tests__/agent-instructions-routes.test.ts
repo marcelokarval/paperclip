@@ -355,6 +355,18 @@ describe("agent instructions bundle routes", () => {
     );
   });
 
+  it("rejects non-instructions adapterConfigKey values on instructions path updates", async () => {
+    const res = await request(await createApp())
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111/instructions-path")
+      .send({
+        path: "AGENTS.md",
+        adapterConfigKey: "command",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
   it("preserves managed instructions config when switching adapters", async () => {
     mockAgentService.getById.mockResolvedValue({
       ...makeAgent(),
