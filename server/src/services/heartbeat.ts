@@ -714,8 +714,26 @@ function parseIssueAssigneeAdapterOverrides(
 ): ParsedIssueAssigneeAdapterOverrides | null {
   const parsed = parseObject(raw);
   const parsedAdapterConfig = parseObject(parsed.adapterConfig);
-  const adapterConfig =
-    Object.keys(parsedAdapterConfig).length > 0 ? parsedAdapterConfig : null;
+  const adapterConfigEntries: [string, unknown][] = [];
+  if (typeof parsedAdapterConfig.model === "string" && parsedAdapterConfig.model.trim().length > 0) {
+    adapterConfigEntries.push(["model", parsedAdapterConfig.model]);
+  }
+  if (
+    typeof parsedAdapterConfig.modelReasoningEffort === "string" &&
+    parsedAdapterConfig.modelReasoningEffort.trim().length > 0
+  ) {
+    adapterConfigEntries.push(["modelReasoningEffort", parsedAdapterConfig.modelReasoningEffort]);
+  }
+  if (typeof parsedAdapterConfig.effort === "string" && parsedAdapterConfig.effort.trim().length > 0) {
+    adapterConfigEntries.push(["effort", parsedAdapterConfig.effort]);
+  }
+  if (typeof parsedAdapterConfig.variant === "string" && parsedAdapterConfig.variant.trim().length > 0) {
+    adapterConfigEntries.push(["variant", parsedAdapterConfig.variant]);
+  }
+  if (typeof parsedAdapterConfig.chrome === "boolean") {
+    adapterConfigEntries.push(["chrome", parsedAdapterConfig.chrome]);
+  }
+  const adapterConfig = adapterConfigEntries.length > 0 ? Object.fromEntries(adapterConfigEntries) : null;
   const useProjectWorkspace =
     typeof parsed.useProjectWorkspace === "boolean"
       ? parsed.useProjectWorkspace
