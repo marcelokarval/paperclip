@@ -3206,18 +3206,9 @@ export function heartbeatService(db: Db) {
       projectEnv: projectContext?.env ?? null,
       secretsSvc,
     });
-    const runScopedMentionedSkillKeys = await resolveRunScopedMentionedSkillKeys({
-      db,
-      companyId: agent.companyId,
-      issueId,
-    });
-    const effectiveResolvedConfig = applyRunScopedMentionedSkillKeys(
-      resolvedConfig,
-      runScopedMentionedSkillKeys,
-    );
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
     const runtimeConfig = {
-      ...effectiveResolvedConfig,
+      ...resolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
     const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
@@ -3585,12 +3576,6 @@ export function heartbeatService(db: Db) {
           },
         });
       };
-      if (runScopedMentionedSkillKeys.length > 0) {
-        await onLog(
-          "stdout",
-          `[paperclip] Enabled run-scoped skills from issue mentions: ${runScopedMentionedSkillKeys.join(", ")}\n`,
-        );
-      }
       for (const warning of runtimeWorkspaceWarnings) {
         const logEntry = formatRuntimeWorkspaceWarningLog(warning);
         await onLog(logEntry.stream, logEntry.chunk);
@@ -3611,7 +3596,7 @@ export function heartbeatService(db: Db) {
         issue: issueRef,
         workspace: executionWorkspace,
         executionWorkspaceId: persistedExecutionWorkspace?.id ?? issueRef?.executionWorkspaceId ?? null,
-        config: effectiveResolvedConfig,
+        config: resolvedConfig,
         adapterEnv,
         onLog,
       });
