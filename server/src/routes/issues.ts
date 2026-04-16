@@ -1323,7 +1323,11 @@ export function issueRoutes(
   router.post("/companies/:companyId/issues", validate(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    if (req.body.assigneeAgentId || req.body.assigneeUserId) {
+    if (
+      req.body.assigneeAgentId ||
+      req.body.assigneeUserId ||
+      req.body.assigneeAdapterOverrides !== undefined
+    ) {
       await assertCanAssignTasks(req, companyId);
     }
 
@@ -1507,6 +1511,9 @@ export function issueRoutes(
       if (!isAgentReturningIssueToCreator) {
         await assertCanAssignTasks(req, existing.companyId);
       }
+    }
+    if (req.body.assigneeAdapterOverrides !== undefined) {
+      await assertCanAssignTasks(req, existing.companyId);
     }
 
     let issue;

@@ -38,7 +38,16 @@ export const issueExecutionWorkspaceSettingsSchema = z
 
 export const issueAssigneeAdapterOverridesSchema = z
   .object({
-    adapterConfig: z.record(z.unknown()).optional(),
+    adapterConfig: z
+      .object({
+        model: z.string().min(1).optional(),
+        modelReasoningEffort: z.string().min(1).optional(),
+        effort: z.string().min(1).optional(),
+        variant: z.string().min(1).optional(),
+        chrome: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
     useProjectWorkspace: z.boolean().optional(),
   })
   .strict();

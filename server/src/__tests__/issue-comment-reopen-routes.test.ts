@@ -355,6 +355,42 @@ describe("issue comment reopen routes", () => {
     expect(res.body.error).toBe("Agent not found");
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
+
+  it("requires tasks:assign when patching assignee adapter overrides", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "board",
+        userId: "user-1",
+        companyIds: ["company-1"],
+        source: "session",
+        isInstanceAdmin: false,
+      }),
+    )
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ assigneeAdapterOverrides: { adapterConfig: { model: "claude-3-7-sonnet" } } });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("tasks:assign");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects unknown assignee adapter override keys", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({
+        assigneeAdapterOverrides: {
+          adapterConfig: { arbitraryKey: "danger" },
+        },
+      });
+
+    expect(res.status).toBe(400);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("reopens closed issues via the PATCH comment path", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
