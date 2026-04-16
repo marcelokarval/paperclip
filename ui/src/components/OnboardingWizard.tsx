@@ -35,7 +35,6 @@ import {
 } from "../lib/onboarding-launch";
 import { buildNewAgentRuntimeConfig } from "../lib/new-agent-runtime-config";
 import {
-  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
@@ -326,12 +325,9 @@ export function OnboardingWizard() {
       command,
       args,
       url,
-      dangerouslySkipPermissions:
-        adapterType === "claude_local" || adapterType === "opencode_local",
+      dangerouslySkipPermissions: defaultCreateValues.dangerouslySkipPermissions,
       dangerouslyBypassSandbox:
-        adapterType === "codex_local"
-          ? DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX
-          : defaultCreateValues.dangerouslyBypassSandbox
+        defaultCreateValues.dangerouslyBypassSandbox
     });
     if (adapterType === "claude_local" && forceUnsetAnthropicApiKey) {
       const env =

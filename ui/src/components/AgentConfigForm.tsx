@@ -11,7 +11,6 @@ import { agentsApi } from "../api/agents";
 import { secretsApi } from "../api/secrets";
 import { assetsApi } from "../api/assets";
 import {
-  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
@@ -544,8 +543,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     const nextValues: CreateConfigValues = { ...defaults, adapterType: t };
                     if (t === "codex_local") {
                       nextValues.model = DEFAULT_CODEX_LOCAL_MODEL;
-                      nextValues.dangerouslyBypassSandbox =
-                        DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
                     } else if (t === "gemini_local") {
                       nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
                     } else if (t === "cursor") {
@@ -575,8 +572,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                         mode: "",
                         ...(t === "codex_local"
                           ? {
-                              dangerouslyBypassApprovalsAndSandbox:
-                                DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
+                              dangerouslyBypassApprovalsAndSandbox: false,
                             }
                           : {}),
                       },
