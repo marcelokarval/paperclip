@@ -55,7 +55,7 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp() {
+async function createApp(actorOverrides: Partial<Record<string, unknown>> = {}) {
   const [{ projectRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/projects.js")>("../routes/projects.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -69,6 +69,7 @@ async function createApp() {
       companyIds: ["company-1"],
       source: "local_implicit",
       isInstanceAdmin: false,
+      ...actorOverrides,
     };
     next();
   });
@@ -192,6 +193,129 @@ describe("project env routes", () => {
           changedKeys: ["env"],
           envKeys: ["PLAIN_KEY"],
         },
+      }),
+    );
+  });
+
+  it("rejects non-admin project creation that sets workspace provision commands", async () => {
+    const app = await createApp({
+      source: "token",
+      isInstanceAdmin: false,
+    });
+    const res = await request(app)
+      .post("/api/companies/company-1/projects")
+      .send({
+        name: "Project",
+        executionWorkspacePolicy: {
+          enabled: true,
+          workspaceStrategy: {
+            provisionCommand: "bash ./scripts/provision.sh",
+          },
+        },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockProjectService.create).not.toHaveBeenCalled();
+  });
+
+  it("allows instance-admin project creation that sets workspace provision commands", async () => {
+    const createdProject = buildProject({
+      executionWorkspacePolicy: {
+        enabled: true,
+        workspaceStrategy: {
+          provisionCommand: "bash ./scripts/provision.sh",
+        },
+      },
+    });
+    mockProjectService.create.mockResolvedValue(createdProject);
+
+    const app = await createApp({
+      source: "token",
+      isInstanceAdmin: true,
+    });
+    const res = await request(app)
+      .post("/api/companies/company-1/projects")
+      .send({
+        name: "Project",
+        executionWorkspacePolicy: {
+          enabled: true,
+          workspaceStrategy: {
+            provisionCommand: "bash ./scripts/provision.sh",
+          },
+        },
+      });
+
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    expect(mockProjectService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        executionWorkspacePolicy: expect.objectContaining({
+          workspaceStrategy: expect.objectContaining({
+            provisionCommand: "bash ./scripts/provision.sh",
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("rejects non-admin project updates that set workspace provision commands", async () => {
+    mockProjectService.getById.mockResolvedValue(buildProject());
+
+    const app = await createApp({
+      source: "token",
+      isInstanceAdmin: false,
+    });
+    const res = await request(app)
+      .patch("/api/projects/project-1")
+      .send({
+        executionWorkspacePolicy: {
+          enabled: true,
+          workspaceStrategy: {
+            provisionCommand: "bash ./scripts/provision.sh",
+          },
+        },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockProjectService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows instance-admin project updates that set workspace provision commands", async () => {
+    const updatedProject = buildProject({
+      executionWorkspacePolicy: {
+        enabled: true,
+        workspaceStrategy: {
+          provisionCommand: "bash ./scripts/provision.sh",
+        },
+      },
+    });
+    mockProjectService.getById.mockResolvedValue(buildProject());
+    mockProjectService.update.mockResolvedValue(updatedProject);
+
+    const app = await createApp({
+      source: "token",
+      isInstanceAdmin: true,
+    });
+    const res = await request(app)
+      .patch("/api/projects/project-1")
+      .send({
+        executionWorkspacePolicy: {
+          enabled: true,
+          workspaceStrategy: {
+            provisionCommand: "bash ./scripts/provision.sh",
+          },
+        },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockProjectService.update).toHaveBeenCalledWith(
+      "project-1",
+      expect.objectContaining({
+        executionWorkspacePolicy: expect.objectContaining({
+          workspaceStrategy: expect.objectContaining({
+            provisionCommand: "bash ./scripts/provision.sh",
+          }),
+        }),
       }),
     );
   });
