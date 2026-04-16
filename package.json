@@ -55,6 +55,7 @@
       "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch"
     },
     "overrides": {
+      "lodash-es": "4.18.1",
       "rollup": ">=4.59.0"
     }
   }
