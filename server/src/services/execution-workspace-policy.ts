@@ -30,6 +30,17 @@ function parseExecutionWorkspaceStrategy(raw: unknown): ExecutionWorkspaceStrate
   };
 }
 
+function parseIssueExecutionWorkspaceStrategy(raw: unknown): ExecutionWorkspaceStrategy | null {
+  const parsed = parseExecutionWorkspaceStrategy(raw);
+  if (!parsed) return null;
+  return {
+    type: parsed.type,
+    ...(typeof parsed.baseRef === "string" ? { baseRef: parsed.baseRef } : {}),
+    ...(typeof parsed.branchTemplate === "string" ? { branchTemplate: parsed.branchTemplate } : {}),
+    ...(typeof parsed.worktreeParentDir === "string" ? { worktreeParentDir: parsed.worktreeParentDir } : {}),
+  };
+}
+
 export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecutionWorkspacePolicy | null {
   const parsed = parseObject(raw);
   if (Object.keys(parsed).length === 0) return null;
@@ -88,7 +99,7 @@ export function gateProjectExecutionWorkspacePolicy(
 export function parseIssueExecutionWorkspaceSettings(raw: unknown): IssueExecutionWorkspaceSettings | null {
   const parsed = parseObject(raw);
   if (Object.keys(parsed).length === 0) return null;
-  const workspaceStrategy = parseExecutionWorkspaceStrategy(parsed.workspaceStrategy);
+  const workspaceStrategy = parseIssueExecutionWorkspaceStrategy(parsed.workspaceStrategy);
   const mode = asString(parsed.mode, "");
   const normalizedMode = (() => {
     if (
