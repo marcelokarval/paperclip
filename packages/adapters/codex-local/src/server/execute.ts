@@ -404,22 +404,43 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     );
   }
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
-  const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
+  const resolvedInstructionsFilePath = instructionsFilePath
+    ? path.resolve(cwd, instructionsFilePath)
+    : "";
+  const instructionsPathRelativeToCwd = resolvedInstructionsFilePath
+    ? path.relative(cwd, resolvedInstructionsFilePath)
+    : "";
+  const isInstructionsPathWithinCwd =
+    instructionsPathRelativeToCwd.length === 0 ||
+    (!path.isAbsolute(instructionsPathRelativeToCwd) &&
+      instructionsPathRelativeToCwd !== ".." &&
+      !instructionsPathRelativeToCwd.startsWith(`..${path.sep}`));
+  if (instructionsFilePath && !isInstructionsPathWithinCwd) {
+    await onLog(
+      "stdout",
+      `[paperclip] Warning: instructionsFilePath must stay within cwd \"${cwd}\"; ignoring \"${resolvedInstructionsFilePath}\".\n`,
+    );
+  }
+  const effectiveInstructionsFilePath =
+    instructionsFilePath && isInstructionsPathWithinCwd ? resolvedInstructionsFilePath : "";
+  const instructionsDir = effectiveInstructionsFilePath
+    ? `${path.dirname(effectiveInstructionsFilePath)}/`
+    : "";
   let instructionsPrefix = "";
   let instructionsChars = 0;
-  if (instructionsFilePath) {
+  if (effectiveInstructionsFilePath) {
     try {
-      const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
+      const instructionsContents = await fs.readFile(effectiveInstructionsFilePath, "utf8");
       instructionsPrefix =
         `${instructionsContents}\n\n` +
-        `The above agent instructions were loaded from ${instructionsFilePath}. ` +
+        `The above agent instructions were loaded from ${effectiveInstructionsFilePath}. ` +
         `Resolve any relative file references from ${instructionsDir}.\n\n`;
       instructionsChars = instructionsPrefix.length;
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       await onLog(
         "stdout",
-        `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
+        `[paperclip] Warning: could not read agent instructions file "${effectiveInstructionsFilePath}": ${reason}\n`,
       );
     }
   }
@@ -444,25 +465,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
   instructionsChars = promptInstructionsPrefix.length;
   const commandNotes = (() => {
-    if (!instructionsFilePath) {
+    if (!effectiveInstructionsFilePath) {
       return [repoAgentsNote];
     }
     if (instructionsPrefix.length > 0) {
       if (shouldUseResumeDeltaPrompt) {
         return [
-          `Loaded agent instructions from ${instructionsFilePath}`,
+          `Loaded agent instructions from ${effectiveInstructionsFilePath}`,
           "Skipped stdin instruction reinjection because an existing Codex session is being resumed with a wake delta.",
           repoAgentsNote,
         ];
       }
       return [
-        `Loaded agent instructions from ${instructionsFilePath}`,
+        `Loaded agent instructions from ${effectiveInstructionsFilePath}`,
         `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
         repoAgentsNote,
       ];
     }
     return [
-      `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
+      `Configured instructionsFilePath ${effectiveInstructionsFilePath}, but file could not be read; continuing without injected instructions.`,
       repoAgentsNote,
     ];
   })();

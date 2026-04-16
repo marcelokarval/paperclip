@@ -169,6 +169,76 @@ describe("gemini execute", () => {
     }
   });
 
+  it("does not load instructionsFilePath outside cwd", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-instructions-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "gemini");
+    const capturePath = path.join(root, "capture.json");
+    const outsideInstructionsPath = path.join(root, "outside.md");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeGeminiCommand(commandPath);
+    await fs.writeFile(outsideInstructionsPath, "TOP SECRET INSTRUCTIONS", "utf8");
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    let invocationPrompt = "";
+    const logChunks: string[] = [];
+    try {
+      const result = await execute({
+        runId: "run-instructions",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Gemini Coder",
+          adapterType: "gemini_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          instructionsFilePath: "../outside.md",
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async (_stream, chunk) => {
+          logChunks.push(chunk);
+        },
+        onMeta: async (meta) => {
+          invocationPrompt = meta.prompt ?? "";
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+      expect(invocationPrompt).not.toContain("TOP SECRET INSTRUCTIONS");
+      expect(logChunks.join("")).toContain("instructionsFilePath must stay within cwd");
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      const promptFlagIndex = capture.argv.indexOf("--prompt");
+      const promptArg = promptFlagIndex >= 0 ? capture.argv[promptFlagIndex + 1] : "";
+      expect(promptArg).not.toContain("TOP SECRET INSTRUCTIONS");
+      expect(promptArg).toContain("Follow the paperclip heartbeat.");
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses a compact wake delta instead of the full heartbeat prompt when resuming a session", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-resume-wake-"));
     const workspace = path.join(root, "workspace");

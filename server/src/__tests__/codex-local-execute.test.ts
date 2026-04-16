@@ -633,7 +633,7 @@ describe("codex execute", () => {
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "codex");
     const capturePath = path.join(root, "capture.json");
-    const instructionsPath = path.join(root, "AGENTS.md");
+    const instructionsPath = path.join(workspace, "AGENTS.md");
     await fs.mkdir(workspace, { recursive: true });
     await fs.writeFile(instructionsPath, "You are managed instructions.\n", "utf8");
     await writeFakeCodexCommand(commandPath);

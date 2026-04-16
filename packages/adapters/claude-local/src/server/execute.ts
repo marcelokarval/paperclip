@@ -308,7 +308,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
-  const instructionsFileDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
   const runtimeConfig = await buildClaudeRuntimeConfig({
     runId,
     agent,
@@ -329,6 +328,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     graceSec,
     extraArgs,
   } = runtimeConfig;
+  const resolvedInstructionsFilePath = instructionsFilePath
+    ? path.resolve(cwd, instructionsFilePath)
+    : "";
+  const instructionsPathRelativeToCwd = resolvedInstructionsFilePath
+    ? path.relative(cwd, resolvedInstructionsFilePath)
+    : "";
+  const isInstructionsPathWithinCwd =
+    instructionsPathRelativeToCwd.length === 0 ||
+    (!path.isAbsolute(instructionsPathRelativeToCwd) &&
+      instructionsPathRelativeToCwd !== ".." &&
+      !instructionsPathRelativeToCwd.startsWith(`..${path.sep}`));
+  if (instructionsFilePath && !isInstructionsPathWithinCwd) {
+    await onLog(
+      "stderr",
+      `[paperclip] Warning: instructionsFilePath must stay within cwd "${cwd}"; ignoring "${resolvedInstructionsFilePath}".\n`,
+    );
+  }
+  const validatedInstructionsFilePath =
+    instructionsFilePath && isInstructionsPathWithinCwd ? resolvedInstructionsFilePath : "";
+  const instructionsFileDir = validatedInstructionsFilePath
+    ? `${path.dirname(validatedInstructionsFilePath)}/`
+    : "";
   const effectiveEnv = Object.fromEntries(
     Object.entries({ ...process.env, ...env }).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -341,11 +362,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // file that includes both the file content and the path directive, so we only
   // need --append-system-prompt-file (Claude CLI forbids using both flags together).
   let combinedInstructionsContents: string | null = null;
-  if (instructionsFilePath) {
+  if (validatedInstructionsFilePath) {
     try {
-      const instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
+      const instructionsContent = await fs.readFile(validatedInstructionsFilePath, "utf-8");
       const pathDirective =
-        `\nThe above agent instructions were loaded from ${instructionsFilePath}. ` +
+        `\nThe above agent instructions were loaded from ${validatedInstructionsFilePath}. ` +
         `Resolve any relative file references from ${instructionsFileDir}. ` +
         `This base directory is authoritative for sibling instruction files such as ` +
         `./HEARTBEAT.md, ./SOUL.md, and ./TOOLS.md; do not resolve those from the parent agent directory.`;
@@ -354,7 +375,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const reason = err instanceof Error ? err.message : String(err);
       await onLog(
         "stderr",
-        `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
+        `[paperclip] Warning: could not read agent instructions file "${validatedInstructionsFilePath}": ${reason}\n`,
       );
     }
   }
@@ -477,7 +498,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     if (attemptInstructionsFilePath && !resumeSessionId) {
       commandNotes.push(
-        `Injected agent instructions via --append-system-prompt-file ${instructionsFilePath} (with path directive appended)`,
+        `Injected agent instructions via --append-system-prompt-file ${effectiveInstructionsFilePath} (with path directive appended)`,
       );
     }
     if (onMeta) {

@@ -255,20 +255,39 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
-  const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
+  const resolvedInstructionsFilePath = instructionsFilePath
+    ? path.resolve(cwd, instructionsFilePath)
+    : "";
+  const instructionsPathRelativeToCwd = resolvedInstructionsFilePath
+    ? path.relative(cwd, resolvedInstructionsFilePath)
+    : "";
+  const isInstructionsPathWithinCwd =
+    instructionsPathRelativeToCwd.length === 0 ||
+    (!path.isAbsolute(instructionsPathRelativeToCwd) &&
+      instructionsPathRelativeToCwd !== ".." &&
+      !instructionsPathRelativeToCwd.startsWith(`..${path.sep}`));
+  if (instructionsFilePath && !isInstructionsPathWithinCwd) {
+    await onLog(
+      "stdout",
+      `[paperclip] Warning: instructionsFilePath must stay within cwd "${cwd}"; ignoring "${resolvedInstructionsFilePath}".\n`,
+    );
+  }
+  const effectiveInstructionsFilePath =
+    instructionsFilePath && isInstructionsPathWithinCwd ? resolvedInstructionsFilePath : "";
+  const instructionsDir = effectiveInstructionsFilePath ? `${path.dirname(effectiveInstructionsFilePath)}/` : "";
   let instructionsPrefix = "";
-  if (instructionsFilePath) {
+  if (effectiveInstructionsFilePath) {
     try {
-      const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
+      const instructionsContents = await fs.readFile(effectiveInstructionsFilePath, "utf8");
       instructionsPrefix =
         `${instructionsContents}\n\n` +
-        `The above agent instructions were loaded from ${instructionsFilePath}. ` +
+        `The above agent instructions were loaded from ${effectiveInstructionsFilePath}. ` +
         `Resolve any relative file references from ${instructionsDir}.\n\n`;
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       await onLog(
         "stdout",
-        `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
+        `[paperclip] Warning: could not read agent instructions file "${effectiveInstructionsFilePath}": ${reason}\n`,
       );
     }
   }
@@ -278,13 +297,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (!instructionsFilePath) return notes;
     if (instructionsPrefix.length > 0) {
       notes.push(
-        `Loaded agent instructions from ${instructionsFilePath}`,
+        `Loaded agent instructions from ${effectiveInstructionsFilePath}`,
         `Prepended instructions + path directive to prompt (relative references from ${instructionsDir}).`,
       );
       return notes;
     }
     notes.push(
-      `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
+      `Configured instructionsFilePath ${effectiveInstructionsFilePath || resolvedInstructionsFilePath}, but file could not be read; continuing without injected instructions.`,
     );
     return notes;
   })();
