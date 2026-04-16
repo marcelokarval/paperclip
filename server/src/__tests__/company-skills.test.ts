@@ -147,6 +147,22 @@ describe("project workspace skill discovery", () => {
     expect(imported.metadata?.sourceKind).toBe("project_scan");
   });
 
+  it("does not follow symlinked project-root support folders", async () => {
+    const workspace = await makeTempDir("paperclip-root-skill-symlink-");
+    const outsideDir = await makeTempDir("paperclip-root-skill-outside-");
+    await writeSkillDir(workspace, "Workspace Skill");
+    await fs.writeFile(path.join(outsideDir, "secret.txt"), "TOP_SECRET_CONTENT\n", "utf8");
+    await fs.symlink(outsideDir, path.join(workspace, "references"));
+
+    const imported = await readLocalSkillImportFromDirectory(
+      "33333333-3333-4333-8333-333333333333",
+      workspace,
+      { inventoryMode: "project_root", metadata: { sourceKind: "project_scan" } },
+    );
+
+    expect(imported.fileInventory.map((entry) => entry.path)).toEqual(["SKILL.md"]);
+  });
+
   it("parses inline object array items in skill frontmatter metadata", async () => {
     const workspace = await makeTempDir("paperclip-inline-skill-yaml-");
     await fs.mkdir(workspace, { recursive: true });
