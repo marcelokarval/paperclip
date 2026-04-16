@@ -607,6 +607,20 @@ export function agentRoutes(db: Db) {
     throw forbidden("Only the target agent or an ancestor manager can update instructions path");
   }
 
+  function instructionsBundleTouchesHostFilesystem(input: {
+    currentMode?: string | null;
+    requestedMode?: string | null;
+    requestedRootPath?: string | null;
+  }) {
+    return input.currentMode === "external"
+      || input.requestedMode === "external"
+      || Boolean(input.requestedRootPath && input.requestedRootPath.trim().length > 0);
+  }
+
+  function assertCanUseHostFilesystemForInstructions(req: Request) {
+    assertInstanceAdmin(req);
+  }
+
   function summarizeAgentUpdateDetails(patch: Record<string, unknown>) {
     const changedTopLevelKeys = Object.keys(patch).sort();
     const details: Record<string, unknown> = { changedTopLevelKeys };
@@ -1690,7 +1704,11 @@ export function agentRoutes(db: Db) {
       return;
     }
     await assertCanReadAgent(req, existing);
-    res.json(await instructions.getBundle(existing));
+    const bundle = await instructions.getBundle(existing);
+    if (bundle.mode === "external") {
+      assertCanUseHostFilesystemForInstructions(req);
+    }
+    res.json(bundle);
   });
 
   router.patch("/agents/:id/instructions-bundle", validate(updateAgentInstructionsBundleSchema), async (req, res) => {
@@ -1701,6 +1719,14 @@ export function agentRoutes(db: Db) {
       return;
     }
     await assertCanManageInstructionsPath(req, existing);
+    const currentBundle = await instructions.getBundle(existing);
+    if (instructionsBundleTouchesHostFilesystem({
+      currentMode: currentBundle.mode,
+      requestedMode: req.body.mode,
+      requestedRootPath: typeof req.body.rootPath === "string" ? req.body.rootPath : null,
+    })) {
+      assertCanUseHostFilesystemForInstructions(req);
+    }
 
     const actor = getActorInfo(req);
     const { bundle, adapterConfig } = await instructions.updateBundle(existing, req.body);
@@ -1749,6 +1775,10 @@ export function agentRoutes(db: Db) {
       return;
     }
     await assertCanReadAgent(req, existing);
+    const bundle = await instructions.getBundle(existing);
+    if (bundle.mode === "external") {
+      assertCanUseHostFilesystemForInstructions(req);
+    }
 
     const relativePath = typeof req.query.path === "string" ? req.query.path : "";
     if (!relativePath.trim()) {
@@ -1767,6 +1797,10 @@ export function agentRoutes(db: Db) {
       return;
     }
     await assertCanManageInstructionsPath(req, existing);
+    const bundle = await instructions.getBundle(existing);
+    if (bundle.mode === "external") {
+      assertCanUseHostFilesystemForInstructions(req);
+    }
 
     const actor = getActorInfo(req);
     const result = await instructions.writeFile(existing, req.body.path, req.body.content, {
@@ -1816,6 +1850,10 @@ export function agentRoutes(db: Db) {
       return;
     }
     await assertCanManageInstructionsPath(req, existing);
+    const bundle = await instructions.getBundle(existing);
+    if (bundle.mode === "external") {
+      assertCanUseHostFilesystemForInstructions(req);
+    }
 
     const relativePath = typeof req.query.path === "string" ? req.query.path : "";
     if (!relativePath.trim()) {
