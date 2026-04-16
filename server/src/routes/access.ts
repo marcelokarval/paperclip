@@ -63,6 +63,7 @@ const INVITE_TOKEN_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 const INVITE_TOKEN_SUFFIX_LENGTH = 8;
 const INVITE_TOKEN_MAX_RETRIES = 5;
 const COMPANY_INVITE_TTL_MS = 10 * 60 * 1000;
+const UNSAFE_HEADER_MAP_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 
 function createInviteToken() {
   const bytes = randomBytes(INVITE_TOKEN_SUFFIX_LENGTH);
@@ -354,13 +355,18 @@ function normalizeHeaderMap(
   const entries = extractHeaderEntries(input);
   if (entries.length === 0) return undefined;
 
-  const out: Record<string, string> = {};
+  const out: Record<string, string> = Object.create(null);
   for (const [key, value] of entries) {
     const normalizedValue = normalizeHeaderValue(value);
     if (!normalizedValue) continue;
     const trimmedKey = key.trim();
     const trimmedValue = normalizedValue.trim();
     if (!trimmedKey || !trimmedValue) continue;
+    // Treat header names case-insensitively and reject special object keys even
+    // when callers provide non-canonical casing.
+    if (UNSAFE_HEADER_MAP_KEYS.has(trimmedKey.toLowerCase())) {
+      continue;
+    }
     out[trimmedKey] = trimmedValue;
   }
   return Object.keys(out).length > 0 ? out : undefined;
