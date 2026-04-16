@@ -11,8 +11,9 @@
  * - Retrieving UI slot contributions for frontend rendering
  * - Discovering and executing plugin-contributed agent tools
  *
- * All routes require board-level authentication, and privileged mutations
- * (such as install) require instance-admin authorization.
+ * All routes require board-level authentication, and privileged package/runtime
+ * mutations (such as install, uninstall, and upgrade) require instance-admin
+ * authorization.
  *
  * @module server/routes/plugins
  * @see doc/plugins/PLUGIN_SPEC.md for the full plugin specification
@@ -1230,6 +1231,7 @@ export function pluginRoutes(
    */
   router.delete("/plugins/:pluginId", async (req, res) => {
     assertBoard(req);
+    assertInstanceAdmin(req);
     const { pluginId } = req.params;
     const purge = req.query.purge === "true";
 
@@ -1463,6 +1465,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/:pluginId/upgrade", async (req, res) => {
     assertBoard(req);
+    assertInstanceAdmin(req);
     const { pluginId } = req.params;
     const body = req.body as { version?: string } | undefined;
     const version = body?.version;
