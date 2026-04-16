@@ -71,6 +71,28 @@ describe("buildJoinDefaultsPayloadForAccept (openclaw_gateway)", () => {
       },
     });
   });
+
+  it("drops unsafe header keys while preserving valid gateway headers", () => {
+    const result = buildJoinDefaultsPayloadForAccept({
+      adapterType: "openclaw_gateway",
+      defaultsPayload: {
+        url: "ws://127.0.0.1:18789",
+        headers: {
+          "__proto__": "ignored-proto-value",
+          constructor: "ignored-constructor-value",
+          prototype: "ignored-prototype-value",
+          "x-openclaw-token": "gateway-token-1234567890",
+        },
+      },
+    }) as Record<string, unknown>;
+
+    expect(result.headers).toMatchObject({
+      "x-openclaw-token": "gateway-token-1234567890",
+    });
+    expect(Object.prototype.hasOwnProperty.call(result.headers as object, "__proto__")).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(result.headers as object, "constructor")).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(result.headers as object, "prototype")).toBe(false);
+  });
 });
 
 describe("normalizeAgentDefaultsForJoin (openclaw_gateway)", () => {

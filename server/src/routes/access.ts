@@ -354,13 +354,16 @@ function normalizeHeaderMap(
   const entries = extractHeaderEntries(input);
   if (entries.length === 0) return undefined;
 
-  const out: Record<string, string> = {};
+  const out: Record<string, string> = Object.create(null);
   for (const [key, value] of entries) {
     const normalizedValue = normalizeHeaderValue(value);
     if (!normalizedValue) continue;
     const trimmedKey = key.trim();
     const trimmedValue = normalizedValue.trim();
     if (!trimmedKey || !trimmedValue) continue;
+    if (trimmedKey === "__proto__" || trimmedKey === "constructor" || trimmedKey === "prototype") {
+      continue;
+    }
     out[trimmedKey] = trimmedValue;
   }
   return Object.keys(out).length > 0 ? out : undefined;
