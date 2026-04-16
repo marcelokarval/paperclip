@@ -50,11 +50,13 @@ import { conflict, forbidden, HttpError, notFound, unauthorized } from "../error
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
+  isAllowedContentType,
   isInlineAttachmentContentType,
   MAX_ATTACHMENT_BYTES,
   normalizeContentType,
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
+import { sanitizeSvgBuffer } from "../svg-sanitize.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import {
   applyIssueExecutionPolicyTransition,
@@ -2663,7 +2665,20 @@ export function issueRoutes(
       return;
     }
     const contentType = normalizeContentType(file.mimetype);
-    if (file.buffer.length <= 0) {
+    if (!isAllowedContentType(contentType)) {
+      res.status(422).json({ error: `Unsupported attachment type: ${contentType || "unknown"}` });
+      return;
+    }
+    let fileBody = file.buffer;
+    if (contentType === SVG_CONTENT_TYPE) {
+      const sanitized = sanitizeSvgBuffer(file.buffer);
+      if (!sanitized || sanitized.length <= 0) {
+        res.status(422).json({ error: "SVG could not be sanitized" });
+        return;
+      }
+      fileBody = sanitized;
+    }
+    if (fileBody.length <= 0) {
       res.status(422).json({ error: "Attachment is empty" });
       return;
     }
@@ -2680,7 +2695,7 @@ export function issueRoutes(
       namespace: `issues/${issueId}`,
       originalFilename: file.originalname || null,
       contentType,
-      body: file.buffer,
+      body: fileBody,
     });
 
     const attachment = await svc.createAttachment({
