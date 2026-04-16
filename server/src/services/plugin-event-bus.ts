@@ -146,9 +146,18 @@ function passesFilter(event: PluginEvent, filter: EventFilter | null): boolean {
  * });
  * ```
  */
-export function createPluginEventBus(): PluginEventBus {
+export interface PluginEventBusOptions {
+  /**
+   * Optional tenant guard. When provided and an event includes `companyId`,
+   * subscribers for plugins that are disabled for that company are skipped.
+   */
+  isPluginAvailableForCompany?: (pluginId: string, companyId: string) => Promise<boolean>;
+}
+
+export function createPluginEventBus(options: PluginEventBusOptions = {}): PluginEventBus {
   // Subscription registry: pluginKey → list of subscriptions
   const registry = new Map<string, Subscription[]>();
+  const { isPluginAvailableForCompany } = options;
 
   /**
    * Retrieve or create the subscription list for a plugin.
@@ -174,6 +183,10 @@ export function createPluginEventBus(): PluginEventBus {
     const promises: Promise<void>[] = [];
 
     for (const [pluginId, subs] of registry) {
+      if (event.companyId && isPluginAvailableForCompany) {
+        const allowed = await isPluginAvailableForCompany(pluginId, event.companyId);
+        if (!allowed) continue;
+      }
       for (const sub of subs) {
         if (!matchesPattern(event.eventType, sub.eventPattern)) continue;
         if (!passesFilter(event, sub.filter)) continue;
