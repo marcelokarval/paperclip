@@ -399,6 +399,12 @@ describe("company portability", () => {
     });
   });
 
+  it("rejects non-allowlisted GitHub source hostnames", () => {
+    expect(() => parseGitHubSourceUrl("https://internal.local/paperclipai/companies")).toThrow(
+      "GitHub source URL hostname is not allowed",
+    );
+  });
+
   it("exports referenced skills as stubs by default with sanitized Paperclip extension data", async () => {
     const portability = companyPortabilityService({} as any);
 
