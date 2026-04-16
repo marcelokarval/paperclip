@@ -11,7 +11,8 @@
  * - Retrieving UI slot contributions for frontend rendering
  * - Discovering and executing plugin-contributed agent tools
  *
- * All routes require board-level authentication (assertBoard middleware).
+ * All routes require board-level authentication, and privileged mutations
+ * (such as install) require instance-admin authorization.
  *
  * @module server/routes/plugins
  * @see doc/plugins/PLUGIN_SPEC.md for the full plugin specification
@@ -47,7 +48,7 @@ import type { PluginStreamBus } from "../services/plugin-stream-bus.js";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import type { ToolRunContext } from "@paperclipai/plugin-sdk";
 import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
 
 /** UI slot declaration extracted from plugin manifest */
@@ -601,7 +602,7 @@ export function pluginRoutes(
    * - `500` — installation succeeded but manifest is missing (indicates a loader bug)
    */
   router.post("/plugins/install", async (req, res) => {
-    assertBoard(req);
+    assertInstanceAdmin(req);
     const { packageName, version, isLocalPath } = req.body as PluginInstallRequest;
 
     // Input validation
