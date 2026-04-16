@@ -97,8 +97,7 @@ describe("gemini execute", () => {
       expect(capture.argv).toContain("--output-format");
       expect(capture.argv).toContain("stream-json");
       expect(capture.argv).toContain("--prompt");
-      expect(capture.argv).toContain("--approval-mode");
-      expect(capture.argv).toContain("yolo");
+      expect(capture.argv).not.toContain("--approval-mode");
       const promptFlagIndex = capture.argv.indexOf("--prompt");
       const promptArg = promptFlagIndex >= 0 ? capture.argv[promptFlagIndex + 1] : "";
       expect(promptArg).toContain("Follow the paperclip heartbeat.");
@@ -114,8 +113,8 @@ describe("gemini execute", () => {
       );
       expect(invocationPrompt).toContain("Paperclip runtime note:");
       expect(invocationPrompt).toContain("PAPERCLIP_API_URL");
-      expect(invocationPrompt).toContain("Paperclip API access note:");
-      expect(invocationPrompt).toContain("run_shell_command");
+      expect(invocationPrompt).not.toContain("Paperclip API access note:");
+      expect(invocationPrompt).not.toContain("run_shell_command");
       expect(result.question).toBeNull();
     } finally {
       if (previousHome === undefined) {
@@ -127,7 +126,7 @@ describe("gemini execute", () => {
     }
   });
 
-  it("always passes --approval-mode yolo", async () => {
+  it("passes --approval-mode only when explicitly configured", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-yolo-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "gemini");
@@ -146,6 +145,7 @@ describe("gemini execute", () => {
         config: {
           command: commandPath,
           cwd: workspace,
+          approvalMode: "yolo",
           env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
         },
         context: {},
