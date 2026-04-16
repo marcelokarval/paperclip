@@ -93,6 +93,61 @@ as each finding moves through:
 11. generic API key finding
 12. `ws://` disclosure finding
 
+## Upstream Sync Matrix (2026-04-16 snapshot)
+
+This matrix tracks the commits currently present in `upstream/master` but not
+yet absorbed into this fork.
+
+Fork state at snapshot time:
+
+- `master` is aligned in content with the fork remote, but not yet in exact SHA
+  parity
+- `master` remains ahead of `origin/master` by local planning/merge bookkeeping
+  commits
+- `upstream/master` remains ahead of this fork by 17 commits
+
+### Absorb soon
+
+| Commit | Summary | Why it matters |
+| --- | --- | --- |
+| `1afb6be9` | `fix(heartbeat): add hermes_local to SESSIONED_LOCAL_ADAPTERS` | Directly touches heartbeat session behavior and Hermes support, which are both active fork concerns. |
+| `7463479f` | `fix: disable HTTP caching on run log endpoints` | Small, contained hardening on observability surfaces with low merge risk. |
+| `0d87fd9a` | `fix: proper cache headers for static assets and SPA fallback` | Targeted server-side caching fix with clear runtime value and limited blast radius. |
+| `6059c665` | `fix(a11y): remove maximum-scale and user-scalable=no from viewport` | Tiny, safe accessibility fix with no architectural tradeoff. |
+| `c1a02497` | `[codex] fix worktree dev dependency ergonomics` | High ROI for the current fork workflow because we actively use worktrees and have already hit dev dependency friction. |
+| `3fa5d25d` | `[codex] harden heartbeat run summaries and recovery context` | Heartbeat/recovery continues to be a hot path for this fork; this is likely worth absorbing with priority. |
+| `d4c3899c` | `[codex] improve issue and routine UI responsiveness` | User-facing Paperclip workflow improvement in a surface we are actively exercising. |
+| `213bcd8c` | `fix: include routine-execution issues in agent inbox-lite` | Small, bounded data-shape fix in an active workflow surface. |
+| `d0a8d4e0` | `fix(routines): include cronExpression and timezone in list trigger response` | Compact routines contract fix with clear product correctness benefit. |
+
+### Evaluate with caution
+
+| Commit | Summary | Why it needs review first |
+| --- | --- | --- |
+| `32a9165d` | `[codex] harden authenticated routes and issue editor reliability` | High-value theme, but wide surface area; likely overlaps with local findings and deserves file-by-file review before intake. |
+| `50cd76d8` | `feat(adapters): add capability flags to ServerAdapterModule` | API/adapter contract expansion; useful, but not a blind cherry-pick into a fork with local adapter changes. |
+| `f460f744` | `fix: trust PAPERCLIP_PUBLIC_URL in board mutation guard` | Potentially important deployment fix, but auth/mutation guards are sensitive enough to review against our local assumptions first. |
+| `f6ce9765` | `fix: Anthropic subscription quota always shows 100% used` | Valuable if we actively depend on Anthropic quota reporting, but narrower than the heartbeat/workflow backlog. |
+| `39050273` | `chore(ui): drop console.* and legal comments in production builds` | Build hygiene change that may be worth taking later, but not urgent compared to runtime/security work. |
+| `5f457128` | `Sync/master post pap1497 followups 2026 04 15` | Bundled sync commit; likely contains multiple useful deltas, but should be decomposed before intake. |
+
+### Ignore for now
+
+| Commit | Summary | Why we can defer |
+| --- | --- | --- |
+| `b8725c52` | `release: v2026.416.0 notes` | Release-note churn only; no runtime or fork-behavior value. |
+
+## Upstream Sync Order
+
+When the scan-driven bug hunt cools down, the recommended upstream sync order is:
+
+1. heartbeat / execution correctness (`1afb6be9`, `3fa5d25d`)
+2. worktree and local-dev ergonomics (`c1a02497`)
+3. runtime caching / transport correctness (`7463479f`, `0d87fd9a`, optionally `f460f744`)
+4. routines / issue UI contract improvements (`213bcd8c`, `d0a8d4e0`, `d4c3899c`)
+5. wider surface review commits (`32a9165d`, `50cd76d8`, `5f457128`)
+6. low-priority hygiene (`39050273`, `b8725c52`)
+
 ## Per-item Closure Standard
 
 Each finding is only done when all are true:
