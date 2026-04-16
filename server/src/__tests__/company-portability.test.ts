@@ -915,6 +915,10 @@ describe("company portability", () => {
       defaultRef: "main",
       visibility: "default",
     }));
+    const importedWorkspaceInput = projectSvc.createWorkspace.mock.calls.at(0)?.[1] as Record<string, unknown> | undefined;
+    expect(importedWorkspaceInput).toBeDefined();
+    expect(importedWorkspaceInput).not.toHaveProperty("setupCommand");
+    expect(importedWorkspaceInput).not.toHaveProperty("cleanupCommand");
     expect(projectSvc.update).toHaveBeenCalledWith("project-imported", expect.objectContaining({
       executionWorkspacePolicy: expect.objectContaining({
         enabled: true,
@@ -926,6 +930,10 @@ describe("company portability", () => {
       projectId: "project-imported",
       projectWorkspaceId: "workspace-imported",
       title: "Write launch task",
+    }));
+    expect(projectSvc.createWorkspace).not.toHaveBeenCalledWith("project-imported", expect.objectContaining({
+      setupCommand: "pnpm install",
+      cleanupCommand: "rm -rf .paperclip-tmp",
     }));
   });
 
