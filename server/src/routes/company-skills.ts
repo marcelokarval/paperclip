@@ -10,8 +10,9 @@ import { trackSkillImported } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { accessService, agentService, companySkillService, logActivity } from "../services/index.js";
 import { forbidden } from "../errors.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { parseSkillImportSourceInput } from "../services/company-skills.js";
 
 type SkillTelemetryInput = {
   key: string;
@@ -79,6 +80,15 @@ export function companySkillRoutes(db: Db) {
     }
 
     throw forbidden("Missing permission: can create agents");
+  }
+
+  function skillImportTouchesHostFilesystem(source: string) {
+    const parsed = parseSkillImportSourceInput(source);
+    return !/^https?:\/\//i.test(parsed.resolvedSource);
+  }
+
+  function assertCanUseHostFilesystem(req: Request) {
+    assertInstanceAdmin(req);
   }
 
   router.get("/companies/:companyId/skills", async (req, res) => {
@@ -194,6 +204,9 @@ export function companySkillRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       await assertCanMutateCompanySkills(req, companyId);
       const source = String(req.body.source ?? "");
+      if (skillImportTouchesHostFilesystem(source)) {
+        assertCanUseHostFilesystem(req);
+      }
       const result = await svc.importFromSource(companyId, source);
 
       const actor = getActorInfo(req);
@@ -233,6 +246,7 @@ export function companySkillRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertCanMutateCompanySkills(req, companyId);
+      assertCanUseHostFilesystem(req);
       const result = await svc.scanProjectWorkspaces(companyId, req.body);
 
       const actor = getActorInfo(req);
