@@ -2695,6 +2695,8 @@ describe("resolveWorkspaceRuntimeReadinessTimeoutSec", () => {
 
 describe("resolveShell (shell fallback)", () => {
   const originalShell = process.env.SHELL;
+  const originalPath = process.env.PATH;
+  const originalPathExt = process.env.PATHEXT;
   const originalPlatform = process.platform;
 
   afterEach(() => {
@@ -2702,6 +2704,16 @@ describe("resolveShell (shell fallback)", () => {
       process.env.SHELL = originalShell;
     } else {
       delete process.env.SHELL;
+    }
+    if (originalPath !== undefined) {
+      process.env.PATH = originalPath;
+    } else {
+      delete process.env.PATH;
+    }
+    if (originalPathExt !== undefined) {
+      process.env.PATHEXT = originalPathExt;
+    } else {
+      delete process.env.PATHEXT;
     }
     Object.defineProperty(process, "platform", { value: originalPlatform });
   });
@@ -2727,10 +2739,15 @@ describe("resolveShell (shell fallback)", () => {
     expect(resolveShell()).toBe("/bin/sh");
   });
 
-  it("falls back to sh (bare) on Windows when SHELL is unset", () => {
+  it("resolves sh from PATH on Windows when SHELL is unset", async () => {
     delete process.env.SHELL;
+    const shellDir = await makeTempDir("paperclip-shell-");
+    const shellPath = path.join(shellDir, "sh.exe");
+    await fs.writeFile(shellPath, "placeholder", "utf8");
+    process.env.PATH = shellDir;
+    process.env.PATHEXT = ".EXE";
     Object.defineProperty(process, "platform", { value: "win32" });
-    expect(resolveShell()).toBe("sh");
+    expect(resolveShell()).toBe(shellPath);
   });
 
   it("falls back to /bin/sh on darwin when SHELL is unset", () => {
@@ -2748,7 +2765,8 @@ describe("resolveShell (shell fallback)", () => {
   it("treats whitespace-only SHELL as unset and uses platform fallback", () => {
     process.env.SHELL = "   ";
     Object.defineProperty(process, "platform", { value: "win32" });
-    expect(resolveShell()).toBe("sh");
+    process.env.PATH = "";
+    expect(resolveShell()).toBe("/bin/sh");
   });
 
   it("falls back when SHELL points to a missing absolute path", () => {

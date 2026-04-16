@@ -31,11 +31,48 @@ import { readExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 
 export function resolveShell(): string {
-  const fallback = process.platform === "win32" ? "sh" : "/bin/sh";
+  const fallback = "/bin/sh";
   const shell = process.env.SHELL?.trim();
-  if (!shell) return fallback;
+  if (!shell) {
+    if (process.platform === "win32") {
+      return resolveWindowsShellFromPath() ?? fallback;
+    }
+    return fallback;
+  }
   if (path.isAbsolute(shell) && !existsSync(shell)) return fallback;
+  if (process.platform === "win32" && shell === "sh") {
+    const resolved = resolveWindowsShellFromPath();
+    return resolved ?? fallback;
+  }
   return shell;
+}
+
+function resolveWindowsShellFromPath(): string | null {
+  const pathValue = process.env.PATH;
+  if (!pathValue) return null;
+
+  const pathEntries = pathValue
+    .split(path.delimiter)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+
+  const pathExtValue = process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD";
+  const executableExtensions = pathExtValue
+    .split(";")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+    .map((entry) => entry.toLowerCase());
+
+  for (const dir of pathEntries) {
+    const exact = path.join(dir, "sh");
+    if (existsSync(exact)) return exact;
+    for (const ext of executableExtensions) {
+      const candidate = path.join(dir, `sh${ext}`);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+
+  return null;
 }
 
 export interface ExecutionWorkspaceInput {
