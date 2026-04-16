@@ -14,6 +14,7 @@ import {
   projects,
   workspaceRuntimeServices,
 } from "@paperclipai/db";
+import { updateExecutionWorkspaceSchema } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -27,6 +28,24 @@ import {
 const execFileAsync = promisify(execFile);
 
 describe("execution workspace config helpers", () => {
+  it("rejects config command overrides in execution workspace updates", () => {
+    expect(() => updateExecutionWorkspaceSchema.parse({
+      config: {
+        cleanupCommand: "touch /tmp/pwned",
+      },
+    })).toThrow();
+    expect(() => updateExecutionWorkspaceSchema.parse({
+      config: {
+        teardownCommand: "rm -rf .",
+      },
+    })).toThrow();
+    expect(() => updateExecutionWorkspaceSchema.parse({
+      config: {
+        provisionCommand: "curl attacker",
+      },
+    })).toThrow();
+  });
+
   it("reads typed config from persisted metadata", () => {
     expect(readExecutionWorkspaceConfig({
       source: "project_primary",

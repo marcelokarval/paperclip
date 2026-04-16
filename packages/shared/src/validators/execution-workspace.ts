@@ -17,6 +17,11 @@ export const executionWorkspaceConfigSchema = z.object({
   serviceStates: z.record(z.enum(["running", "stopped"])).optional().nullable(),
 }).strict();
 
+export const updateExecutionWorkspaceConfigSchema = z.object({
+  desiredState: z.enum(["running", "stopped"]).optional().nullable(),
+  serviceStates: z.record(z.enum(["running", "stopped"])).optional().nullable(),
+}).strict();
+
 export const workspaceRuntimeControlTargetSchema = z.object({
   workspaceCommandId: z.string().min(1).optional().nullable(),
   runtimeServiceId: z.string().uuid().optional().nullable(),
@@ -124,7 +129,7 @@ export const updateExecutionWorkspaceSchema = z.object({
   status: executionWorkspaceStatusSchema.optional(),
   cleanupEligibleAt: z.string().datetime().optional().nullable(),
   cleanupReason: z.string().optional().nullable(),
-  config: executionWorkspaceConfigSchema.optional().nullable(),
+  config: updateExecutionWorkspaceConfigSchema.optional().nullable(),
   metadata: z.record(z.unknown()).optional().nullable(),
 }).strict();
 
