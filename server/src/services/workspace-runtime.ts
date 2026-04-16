@@ -447,12 +447,20 @@ function renderWorkspaceTemplate(template: string, input: {
 }
 
 function sanitizeBranchName(value: string): string {
-  return value
+  const sanitized = value
     .trim()
     .replace(/[^A-Za-z0-9._/-]+/g, "-")
     .replace(/-+/g, "-")
-    .replace(/^[-/.]+|[-/.]+$/g, "")
-    .slice(0, 120) || "paperclip-work";
+    .replace(/\\/g, "/")
+    .slice(0, 120);
+
+  const normalized = sanitized
+    .split("/")
+    .map((segment) => segment.replace(/^[-/.]+|[-/.]+$/g, ""))
+    .filter((segment) => segment.length > 0 && segment !== "." && segment !== "..")
+    .join("/");
+
+  return normalized || "paperclip-work";
 }
 
 function isAbsolutePath(value: string) {
@@ -464,6 +472,11 @@ function resolveConfiguredPath(value: string, baseDir: string): string {
     return resolveHomeAwarePath(value);
   }
   return path.resolve(baseDir, value);
+}
+
+function isPathWithinDirectory(parentDir: string, candidatePath: string): boolean {
+  const relative = path.relative(path.resolve(parentDir), path.resolve(candidatePath));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 function formatCommandForDisplay(command: string, args: string[]) {
@@ -1070,7 +1083,10 @@ export async function realizeExecutionWorkspace(input: {
   const worktreeParentDir = configuredParentDir
     ? resolveConfiguredPath(configuredParentDir, repoRoot)
     : path.join(repoRoot, ".paperclip", "worktrees");
-  const worktreePath = path.join(worktreeParentDir, branchName);
+  const worktreePath = path.resolve(worktreeParentDir, branchName);
+  if (!isPathWithinDirectory(worktreeParentDir, worktreePath)) {
+    throw new Error(`Derived worktree path "${worktreePath}" escapes configured worktree parent directory.`);
+  }
   const configuredBaseRef = typeof rawStrategy.baseRef === "string" && rawStrategy.baseRef.length > 0
     ? rawStrategy.baseRef
     : input.base.repoRef ?? null;
