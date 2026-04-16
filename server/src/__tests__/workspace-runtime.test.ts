@@ -653,6 +653,47 @@ describe("realizeExecutionWorkspace", () => {
     expect(path.basename(realized.cwd)).toBe("PAP-992.hotfix-april-1");
   });
 
+  it("normalizes branch templates so traversal segments cannot escape the worktree parent directory", async () => {
+    const repoRoot = await createTempRepo();
+    const expectedParent = path.join(repoRoot, ".paperclip", "worktrees");
+
+    const realized = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "release/../../../../tmp/escape-repo",
+        },
+      },
+      issue: {
+        id: "issue-template-traversal",
+        identifier: "PAP-993",
+        title: "Traversal attempt",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(realized.branchName).toBe("release/tmp/escape-repo");
+    expect(path.relative(expectedParent, realized.cwd).startsWith("..")).toBe(false);
+    expect(path.relative(expectedParent, realized.cwd)).not.toBe("");
+    expect(path.relative(expectedParent, realized.cwd)).not.toMatch(/^\.{2}(\/|\\|$)/);
+    expect(path.relative(expectedParent, realized.cwd)).toBe(
+      path.join("release", "tmp", "escape-repo"),
+    );
+    expect(realized.cwd.startsWith(expectedParent)).toBe(true);
+  });
+
   it("runs a configured provision command inside the derived worktree", async () => {
     const repoRoot = await createTempRepo();
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
