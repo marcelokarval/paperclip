@@ -320,6 +320,41 @@ describe("agent instructions bundle routes", () => {
     expect(mockAgentInstructionsService.writeFile).not.toHaveBeenCalled();
   });
 
+  it("allows instance admins to edit files under an external instructions root", async () => {
+    mockAgentInstructionsService.getBundle.mockResolvedValue({
+      agentId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      mode: "external",
+      rootPath: "/tmp/external-instructions",
+      managedRootPath: "/tmp/agent-1",
+      entryFile: "AGENTS.md",
+      resolvedEntryPath: "/tmp/external-instructions/AGENTS.md",
+      editable: true,
+      warnings: [],
+      legacyPromptTemplateActive: false,
+      legacyBootstrapPromptTemplateActive: false,
+      files: [],
+    });
+
+    const res = await request(await createApp({
+      source: "session",
+      isInstanceAdmin: true,
+    }))
+      .put("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle/file?companyId=company-1")
+      .send({
+        path: "AGENTS.md",
+        content: "# Updated Agent\n",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentInstructionsService.writeFile).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "11111111-1111-4111-8111-111111111111" }),
+      "AGENTS.md",
+      "# Updated Agent\n",
+      { clearLegacyPromptTemplate: false },
+    );
+  });
+
   it("preserves managed instructions config when switching adapters", async () => {
     mockAgentService.getById.mockResolvedValue({
       ...makeAgent(),
