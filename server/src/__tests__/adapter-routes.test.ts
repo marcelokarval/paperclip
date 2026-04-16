@@ -113,4 +113,14 @@ describe("adapter routes", () => {
       .send({});
     expect(badRequest.status, JSON.stringify(badRequest.body)).toBe(400);
   });
+
+  it("requires instance admin to remove an external adapter", async () => {
+    const nonAdminApp = createApp({ isInstanceAdmin: false, source: "session" });
+    const forbidden = await request(nonAdminApp).delete("/api/adapters/claude_local");
+    expect(forbidden.status, JSON.stringify(forbidden.body)).toBe(403);
+
+    const adminApp = createApp({ isInstanceAdmin: true });
+    const builtinRemoval = await request(adminApp).delete("/api/adapters/claude_local");
+    expect(builtinRemoval.status, JSON.stringify(builtinRemoval.body)).toBe(403);
+  });
 });

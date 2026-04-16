@@ -397,6 +397,7 @@ export function adapterRoutes() {
    */
   router.delete("/adapters/:type", async (req, res) => {
     assertBoard(req);
+    assertInstanceAdmin(req);
 
     const adapterType = req.params.type;
 
