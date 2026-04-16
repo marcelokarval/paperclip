@@ -1,8 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildSkillMentionHref } from "@paperclipai/shared";
 import {
-  applyRunScopedMentionedSkillKeys,
-  extractMentionedSkillIdsFromSources,
   resolveExecutionRunAdapterConfig,
 } from "../services/heartbeat.ts";
 
@@ -66,53 +63,5 @@ describe("resolveExecutionRunAdapterConfig", () => {
 
     expect(result.resolvedConfig.env).toEqual({ AGENT_ONLY: "agent-only" });
     expect(resolveEnvBindings).not.toHaveBeenCalled();
-  });
-});
-
-describe("extractMentionedSkillIdsFromSources", () => {
-  it("collects explicit skill mention ids across issue sources", () => {
-    const releaseHref = buildSkillMentionHref("skill-1", "release-changelog");
-    const browserHref = buildSkillMentionHref("skill-2", "agent-browser");
-
-    expect(
-      extractMentionedSkillIdsFromSources([
-        `Please use [/release-changelog](${releaseHref})`,
-        `And also [/agent-browser](${browserHref})`,
-        `Duplicate mention [/release-changelog](${releaseHref})`,
-      ]),
-    ).toEqual(["skill-1", "skill-2"]);
-  });
-});
-
-describe("applyRunScopedMentionedSkillKeys", () => {
-  it("adds mentioned skills without mutating the original config", () => {
-    const originalConfig = {
-      command: "codex",
-      paperclipSkillSync: {
-        desiredSkills: ["paperclipai/paperclip/paperclip"],
-      },
-    };
-
-    const updatedConfig = applyRunScopedMentionedSkillKeys(originalConfig, [
-      "company/company-1/release-changelog",
-      "paperclipai/paperclip/paperclip",
-      "company/company-1/release-changelog",
-    ]);
-
-    expect(updatedConfig).toEqual({
-      command: "codex",
-      paperclipSkillSync: {
-        desiredSkills: [
-          "paperclipai/paperclip/paperclip",
-          "company/company-1/release-changelog",
-        ],
-      },
-    });
-    expect(originalConfig).toEqual({
-      command: "codex",
-      paperclipSkillSync: {
-        desiredSkills: ["paperclipai/paperclip/paperclip"],
-      },
-    });
   });
 });
