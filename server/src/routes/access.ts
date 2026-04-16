@@ -1590,23 +1590,14 @@ export function accessRoutes(
     if (!allowed) throw forbidden("Instance admin required");
   }
 
-  router.get("/board-claim/:token", async (req, res) => {
-    const token = (req.params.token as string).trim();
-    const code =
-      typeof req.query.code === "string" ? req.query.code.trim() : undefined;
-    if (!token) throw notFound("Board claim challenge not found");
-    const challenge = inspectBoardClaimChallenge(token, code);
+  router.get("/board-claim", async (_req, res) => {
+    const challenge = inspectBoardClaimChallenge();
     if (challenge.status === "invalid")
       throw notFound("Board claim challenge not found");
     res.json(challenge);
   });
 
-  router.post("/board-claim/:token/claim", async (req, res) => {
-    const token = (req.params.token as string).trim();
-    const code =
-      typeof req.body?.code === "string" ? req.body.code.trim() : undefined;
-    if (!token) throw notFound("Board claim challenge not found");
-    if (!code) throw badRequest("Claim code is required");
+  router.post("/board-claim/claim", async (req, res) => {
     if (
       req.actor.type !== "board" ||
       req.actor.source !== "session" ||
@@ -1616,8 +1607,6 @@ export function accessRoutes(
     }
 
     const claimed = await claimBoardOwnership(db, {
-      token,
-      code,
       userId: req.actor.userId
     });
 
