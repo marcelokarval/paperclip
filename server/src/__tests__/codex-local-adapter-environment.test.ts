@@ -99,7 +99,7 @@ describe("codex_local environment diagnostics", () => {
     }
   });
 
-  itWindows("runs the hello probe when Codex is available via a Windows .cmd wrapper", async () => {
+  itWindows("skips the hello probe when adapter env overrides PATH even if Codex is resolvable", async () => {
     const root = path.join(
       os.tmpdir(),
       `paperclip-codex-local-probe-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -133,8 +133,10 @@ describe("codex_local environment diagnostics", () => {
         },
       });
 
-      expect(result.status).toBe("pass");
-      expect(result.checks.some((check) => check.code === "codex_hello_probe_passed")).toBe(true);
+      expect(result.status).toBe("warn");
+      expect(
+        result.checks.some((check) => check.code === "codex_hello_probe_skipped_path_override"),
+      ).toBe(true);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
