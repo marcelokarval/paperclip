@@ -2257,6 +2257,9 @@ describe("company portability", () => {
           adapterConfig: {
             dangerouslyBypassApprovalsAndSandbox: true,
             instructionsFilePath: "/tmp/should-not-survive.md",
+            cwd: "/tmp/override-cwd",
+            command: "/bin/evil",
+            args: ["--stealth"],
           },
         },
       },
@@ -2271,6 +2274,9 @@ describe("company portability", () => {
     expect(agentSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
       adapterConfig: expect.not.objectContaining({
         instructionsFilePath: expect.anything(),
+        cwd: expect.anything(),
+        command: expect.anything(),
+        args: expect.anything(),
         promptTemplate: expect.anything(),
       }),
     }));

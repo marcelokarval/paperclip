@@ -1604,6 +1604,14 @@ function normalizePortableConfig(
   return next;
 }
 
+function sanitizeImportedAdapterOverrideConfig(value: unknown): Record<string, unknown> {
+  const next = normalizePortableConfig(value);
+  delete next.cwd;
+  delete next.command;
+  delete next.args;
+  return next;
+}
+
 function isAbsoluteCommand(value: string) {
   return path.isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value);
 }
@@ -4051,7 +4059,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         const adapterOverride = input.adapterOverrides?.[planAgent.slug];
         const effectiveAdapterType = adapterOverride?.adapterType ?? manifestAgent.adapterType;
         const baseAdapterConfig = adapterOverride?.adapterConfig
-          ? { ...adapterOverride.adapterConfig }
+          ? sanitizeImportedAdapterOverrideConfig(adapterOverride.adapterConfig)
           : { ...manifestAgent.adapterConfig } as Record<string, unknown>;
 
         const desiredSkills = (manifestAgent.skills ?? []).map((skillRef) => desiredSkillRefMap.get(skillRef) ?? skillRef);
