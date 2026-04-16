@@ -64,7 +64,6 @@ import {
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
-import { ensureOpenCodeModelConfiguredAndAvailable } from "@paperclipai/adapter-opencode-local/server";
 import {
   loadDefaultAgentInstructionsBundle,
   resolveDefaultAgentInstructionsBundleRole,
@@ -513,23 +512,24 @@ export function agentRoutes(db: Db) {
   }
 
   async function assertAdapterConfigConstraints(
-    companyId: string,
+    _companyId: string,
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ) {
     if (adapterType !== "opencode_local") return;
-    const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(companyId, adapterConfig);
-    const runtimeEnv = asRecord(runtimeConfig.env) ?? {};
-    try {
-      await ensureOpenCodeModelConfiguredAndAvailable({
-        model: runtimeConfig.model,
-        command: runtimeConfig.command,
-        cwd: runtimeConfig.cwd,
-        env: runtimeEnv,
-      });
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
+    const model = asNonEmptyString(adapterConfig.model);
+    if (!model) {
+      throw unprocessable(
+        "Invalid opencode_local adapterConfig: OpenCode requires `adapterConfig.model` in provider/model format.",
+      );
+    }
+    const separatorIndex = model.indexOf("/");
+    const provider = separatorIndex >= 0 ? model.slice(0, separatorIndex).trim() : "";
+    const modelName = separatorIndex >= 0 ? model.slice(separatorIndex + 1).trim() : "";
+    if (!provider || !modelName) {
+      throw unprocessable(
+        "Invalid opencode_local adapterConfig: OpenCode requires `adapterConfig.model` in provider/model format.",
+      );
     }
   }
 
