@@ -84,6 +84,27 @@ describe("company skill import source parsing", () => {
     expect(parsed.resolvedSource).toBe("https://github.com/vercel-labs/skills");
     expect(parsed.originalSkillsShUrl).toBeNull();
   });
+
+  it("rejects non-HTTPS remote skill imports", () => {
+    expect(() => parseSkillImportSourceInput("http://github.com/vercel-labs/skills"))
+      .toThrowError("Skill source URL must use HTTPS.");
+  });
+
+  it("rejects non-GitHub remote skill import hosts", () => {
+    expect(() => parseSkillImportSourceInput("https://example.com/skills/find-skills.md"))
+      .toThrowError("Skill source URL host is not allowed.");
+  });
+
+  it("allows raw.githubusercontent.com remote skill URLs", () => {
+    const parsed = parseSkillImportSourceInput(
+      "https://raw.githubusercontent.com/paperclipai/paperclip/master/skills/paperclip/SKILL.md",
+    );
+
+    expect(parsed.resolvedSource).toBe(
+      "https://raw.githubusercontent.com/paperclipai/paperclip/master/skills/paperclip/SKILL.md",
+    );
+    expect(parsed.originalSkillsShUrl).toBeNull();
+  });
 });
 
 describe("project workspace skill discovery", () => {
