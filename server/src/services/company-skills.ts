@@ -820,6 +820,10 @@ async function statPath(targetPath: string) {
   return fs.stat(targetPath).catch(() => null);
 }
 
+async function lstatPath(targetPath: string) {
+  return fs.lstat(targetPath).catch(() => null);
+}
+
 async function collectLocalSkillInventory(
   skillDir: string,
   mode: LocalSkillInventoryMode = "full",
@@ -840,7 +844,7 @@ async function collectLocalSkillInventory(
   } else {
     for (const relativeDir of PROJECT_ROOT_SKILL_SUBDIRECTORIES) {
       const absoluteDir = path.join(skillDir, relativeDir);
-      const dirStat = await statPath(absoluteDir);
+      const dirStat = await lstatPath(absoluteDir);
       if (!dirStat?.isDirectory()) continue;
       const discoveredFiles: string[] = [];
       await walkLocalFiles(skillDir, absoluteDir, discoveredFiles);
