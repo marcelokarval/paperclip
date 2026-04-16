@@ -492,6 +492,8 @@ export {
   issueWorkProductTypeSchema,
   issueWorkProductStatusSchema,
   issueWorkProductReviewStateSchema,
+  updateExecutionWorkspaceConfigSchema,
+  updateExecutionWorkspaceMetadataSchema,
   updateExecutionWorkspaceSchema,
   executionWorkspaceStatusSchema,
   executionWorkspaceCloseActionKindSchema,

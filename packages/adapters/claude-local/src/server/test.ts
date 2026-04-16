@@ -14,7 +14,6 @@ import {
   ensurePathInEnv,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
-import path from "node:path";
 import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
 import { isBedrockModelId } from "./models.js";
 
@@ -37,9 +36,13 @@ function firstNonEmptyLine(text: string): string {
   );
 }
 
-function commandLooksLike(command: string, expected: string): boolean {
-  const base = path.basename(command).toLowerCase();
-  return base === expected || base === `${expected}.cmd` || base === `${expected}.exe`;
+function commandMatchesDefault(command: string, expected: string): boolean {
+  const normalized = command.trim().toLowerCase();
+  if (normalized === expected) return true;
+  if (process.platform === "win32") {
+    return normalized === `${expected}.cmd` || normalized === `${expected}.exe`;
+  }
+  return false;
 }
 
 function summarizeProbeDetail(stdout: string, stderr: string): string | null {
@@ -141,13 +144,21 @@ export async function testEnvironment(
   const canRunProbe =
     checks.every((check) => check.code !== "claude_cwd_invalid" && check.code !== "claude_command_unresolvable");
   if (canRunProbe) {
-    if (!commandLooksLike(command, "claude")) {
+    const hasPathOverride = typeof env.PATH === "string" || typeof env.Path === "string";
+    if (!commandMatchesDefault(command, "claude")) {
       checks.push({
         code: "claude_hello_probe_skipped_custom_command",
         level: "info",
-        message: "Skipped hello probe because command is not `claude`.",
+        message: "Skipped hello probe because command is not the default `claude` command.",
         detail: command,
-        hint: "Use the `claude` CLI command to run the automatic login and installation probe.",
+        hint: "Use `claude` as the command value to run the automatic login and installation probe.",
+      });
+    } else if (hasPathOverride) {
+      checks.push({
+        code: "claude_hello_probe_skipped_path_override",
+        level: "warn",
+        message: "Skipped hello probe because adapter env overrides PATH/Path.",
+        hint: "Remove PATH/Path overrides from adapter env and retry to run a trusted probe.",
       });
     } else {
       const model = asString(config.model, "").trim();
@@ -174,7 +185,7 @@ export async function testEnvironment(
 
       const probe = await runChildProcess(
         `claude-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        command,
+        "claude",
         args,
         {
           cwd,

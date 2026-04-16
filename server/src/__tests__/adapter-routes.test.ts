@@ -31,7 +31,9 @@ let setOverridePaused: typeof import("../adapters/registry.js").setOverridePause
 let adapterRoutes: typeof import("../routes/adapters.js").adapterRoutes;
 let errorHandler: typeof import("../middleware/index.js").errorHandler;
 
-function createApp() {
+function createApp(options?: { isInstanceAdmin?: boolean; source?: string }) {
+  const isInstanceAdmin = options?.isInstanceAdmin ?? false;
+  const source = options?.source ?? "local_implicit";
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -39,8 +41,8 @@ function createApp() {
       type: "board",
       userId: "local-board",
       companyIds: [],
-      source: "local_implicit",
-      isInstanceAdmin: false,
+      source,
+      isInstanceAdmin,
     };
     next();
   });
@@ -96,5 +98,29 @@ describe("adapter routes", () => {
     expect(builtin.body).not.toMatchObject({
       fields: [{ key: "mode" }],
     });
+  });
+
+  it("requires instance admin to install an adapter", async () => {
+    const nonAdminApp = createApp({ isInstanceAdmin: false, source: "session" });
+    const forbidden = await request(nonAdminApp)
+      .post("/api/adapters/install")
+      .send({ packageName: "example-paperclip-adapter" });
+    expect(forbidden.status, JSON.stringify(forbidden.body)).toBe(403);
+
+    const adminApp = createApp({ isInstanceAdmin: true });
+    const badRequest = await request(adminApp)
+      .post("/api/adapters/install")
+      .send({});
+    expect(badRequest.status, JSON.stringify(badRequest.body)).toBe(400);
+  });
+
+  it("requires instance admin to remove an external adapter", async () => {
+    const nonAdminApp = createApp({ isInstanceAdmin: false, source: "session" });
+    const forbidden = await request(nonAdminApp).delete("/api/adapters/claude_local");
+    expect(forbidden.status, JSON.stringify(forbidden.body)).toBe(403);
+
+    const adminApp = createApp({ isInstanceAdmin: true });
+    const builtinRemoval = await request(adminApp).delete("/api/adapters/claude_local");
+    expect(builtinRemoval.status, JSON.stringify(builtinRemoval.body)).toBe(403);
   });
 });

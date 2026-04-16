@@ -218,4 +218,35 @@ describe("agent routes adapter validation", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(422);
     expect(String(res.body.error ?? res.body.message ?? "")).toContain(`Unknown adapter type: ${missingAdapterType}`);
   });
+
+  it("rejects opencode_local agents without provider/model adapterConfig.model", async () => {
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "OpenCode Agent",
+        adapterType: "opencode_local",
+        adapterConfig: { model: "missing-separator" },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(String(res.body.error ?? res.body.message ?? "")).toContain(
+      "OpenCode requires `adapterConfig.model` in provider/model format.",
+    );
+    expect(mockSecretService.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
+  });
+
+  it("does not run runtime adapter resolution for syntactically valid opencode_local models", async () => {
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "OpenCode Agent",
+        adapterType: "opencode_local",
+        adapterConfig: { model: "openai/gpt-4.1" },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).not.toBe(422);
+    expect(mockSecretService.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
+  });
 });

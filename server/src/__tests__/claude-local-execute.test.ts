@@ -130,7 +130,7 @@ describe("claude execute", () => {
   it("passes --append-system-prompt-file on a fresh session when instructionsFile is set", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-fresh-"));
     const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
-    const instructionsFile = path.join(root, "instructions.md");
+    const instructionsFile = path.join(workspace, "instructions.md");
     await fs.writeFile(instructionsFile, "# Agent instructions", "utf-8");
     try {
       await execute({
@@ -160,7 +160,7 @@ describe("claude execute", () => {
   it("omits --append-system-prompt-file on a resumed session even when instructionsFile is set", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-resume-"));
     const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
-    const instructionsFile = path.join(root, "instructions.md");
+    const instructionsFile = path.join(workspace, "instructions.md");
     await fs.writeFile(instructionsFile, "# Agent instructions", "utf-8");
     try {
       await execute({
@@ -197,7 +197,7 @@ describe("claude execute", () => {
   it("commandNotes reports injection on a fresh session with instructionsFile", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-notes-fresh-"));
     const { workspace, commandPath, restore } = await setupExecuteEnv(root);
-    const instructionsFile = path.join(root, "instructions.md");
+    const instructionsFile = path.join(workspace, "instructions.md");
     await fs.writeFile(instructionsFile, "# Agent instructions", "utf-8");
     let capturedNotes: string[] = [];
     try {
@@ -227,7 +227,7 @@ describe("claude execute", () => {
   it("commandNotes is empty on a resumed session even when instructionsFile is set", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-notes-resume-"));
     const { workspace, commandPath, restore } = await setupExecuteEnv(root);
-    const instructionsFile = path.join(root, "instructions.md");
+    const instructionsFile = path.join(workspace, "instructions.md");
     await fs.writeFile(instructionsFile, "# Agent instructions", "utf-8");
     let capturedNotes: string[] = ["sentinel"];
     try {
@@ -259,7 +259,7 @@ describe("claude execute", () => {
     const { workspace, commandPath, capturePath, statePath, restore } = await setupExecuteEnv(root, {
       commandWriter: writeRetryThenSucceedClaudeCommand,
     });
-    const instructionsFile = path.join(root, "instructions.md");
+    const instructionsFile = path.join(workspace, "instructions.md");
     await fs.writeFile(instructionsFile, "# Agent instructions", "utf-8");
     const metaEvents: Array<{ commandArgs: string[]; commandNotes: string[] }> = [];
     try {
@@ -394,7 +394,7 @@ describe("claude execute", () => {
     const commandPath = path.join(root, "claude");
     const capturePath1 = path.join(root, "capture-1.json");
     const capturePath2 = path.join(root, "capture-2.json");
-    const instructionsPath = path.join(root, "AGENTS.md");
+    const instructionsPath = path.join(workspace, "AGENTS.md");
     const paperclipHome = path.join(root, "paperclip-home");
     await fs.mkdir(workspace, { recursive: true });
     await fs.writeFile(instructionsPath, "You are managed instructions.\n", "utf8");
@@ -548,7 +548,7 @@ describe("claude execute", () => {
     const commandPath = path.join(root, "claude");
     const capturePath1 = path.join(root, "capture-before.json");
     const capturePath2 = path.join(root, "capture-after.json");
-    const instructionsPath = path.join(root, "AGENTS.md");
+    const instructionsPath = path.join(workspace, "AGENTS.md");
     const paperclipHome = path.join(root, "paperclip-home");
     const logs: string[] = [];
     await fs.mkdir(workspace, { recursive: true });

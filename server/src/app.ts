@@ -2,7 +2,9 @@ import express, { Router, type Request as ExpressRequest } from "express";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { pluginCompanySettings, plugins } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
@@ -199,7 +201,23 @@ export async function createApp(
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = createPluginWorkerManager();
   const pluginRegistry = pluginRegistryService(db);
-  const eventBus = createPluginEventBus();
+  const eventBus = createPluginEventBus({
+    isPluginAvailableForCompany: async (pluginKey, companyId) => {
+      const plugin = await db.query.plugins.findFirst({
+        where: eq(plugins.pluginKey, pluginKey),
+        columns: { id: true },
+      });
+      if (!plugin) return false;
+      const companySetting = await db.query.pluginCompanySettings.findFirst({
+        where: and(
+          eq(pluginCompanySettings.pluginId, plugin.id),
+          eq(pluginCompanySettings.companyId, companyId),
+        ),
+        columns: { enabled: true },
+      });
+      return companySetting?.enabled !== false;
+    },
+  });
   setPluginEventBus(eventBus);
   const jobStore = pluginJobStore(db);
   const lifecycle = pluginLifecycleManager(db, { workerManager });

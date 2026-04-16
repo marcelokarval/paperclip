@@ -83,7 +83,7 @@ export type UpdateAgent = z.infer<typeof updateAgentSchema>;
 
 export const updateAgentInstructionsPathSchema = z.object({
   path: z.string().trim().min(1).nullable(),
-  adapterConfigKey: z.string().trim().min(1).optional(),
+  adapterConfigKey: z.enum(["instructionsFilePath", "agentsMdPath"]).optional(),
 });
 
 export type UpdateAgentInstructionsPath = z.infer<typeof updateAgentInstructionsPathSchema>;

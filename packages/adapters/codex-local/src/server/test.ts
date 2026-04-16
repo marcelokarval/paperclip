@@ -35,9 +35,13 @@ function firstNonEmptyLine(text: string): string {
   );
 }
 
-function commandLooksLike(command: string, expected: string): boolean {
-  const base = path.basename(command).toLowerCase();
-  return base === expected || base === `${expected}.cmd` || base === `${expected}.exe`;
+function commandMatchesDefault(command: string, expected: string): boolean {
+  const normalized = command.trim().toLowerCase();
+  if (normalized === expected) return true;
+  if (process.platform === "win32") {
+    return normalized === `${expected}.cmd` || normalized === `${expected}.exe`;
+  }
+  return false;
 }
 
 function summarizeProbeDetail(stdout: string, stderr: string, parsedError: string | null): string | null {
@@ -130,13 +134,21 @@ export async function testEnvironment(
   const canRunProbe =
     checks.every((check) => check.code !== "codex_cwd_invalid" && check.code !== "codex_command_unresolvable");
   if (canRunProbe) {
-    if (!commandLooksLike(command, "codex")) {
+    const hasPathOverride = typeof env.PATH === "string" || typeof env.Path === "string";
+    if (!commandMatchesDefault(command, "codex")) {
       checks.push({
         code: "codex_hello_probe_skipped_custom_command",
         level: "info",
-        message: "Skipped hello probe because command is not `codex`.",
+        message: "Skipped hello probe because command is not the default `codex` command.",
         detail: command,
-        hint: "Use the `codex` CLI command to run the automatic login and installation probe.",
+        hint: "Use `codex` as the command value to run the automatic login and installation probe.",
+      });
+    } else if (hasPathOverride) {
+      checks.push({
+        code: "codex_hello_probe_skipped_path_override",
+        level: "warn",
+        message: "Skipped hello probe because adapter env overrides PATH/Path.",
+        hint: "Remove PATH/Path overrides from adapter env and retry to run a trusted probe.",
       });
     } else {
       const execArgs = buildCodexExecArgs({ ...config, fastMode: false });
@@ -152,7 +164,7 @@ export async function testEnvironment(
 
       const probe = await runChildProcess(
         `codex-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        command,
+        "codex",
         args,
         {
           cwd,

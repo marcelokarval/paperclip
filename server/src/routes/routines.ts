@@ -277,6 +277,15 @@ export function routineRoutes(db: Db) {
       return;
     }
     await assertBoardCanAssignTasks(req, routine.companyId);
+    if (req.actor.type !== "board") {
+      const hasWorkspaceOverride =
+        req.body.executionWorkspaceId !== undefined ||
+        req.body.executionWorkspacePreference !== undefined ||
+        req.body.executionWorkspaceSettings !== undefined;
+      if (hasWorkspaceOverride) {
+        throw forbidden("Only board actors can override execution workspace settings on routine runs");
+      }
+    }
     const run = await svc.runRoutine(routine.id, req.body);
     const actor = getActorInfo(req);
     await logActivity(db, {

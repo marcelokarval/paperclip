@@ -560,6 +560,30 @@ function extractCommandTokens(raw: string) {
   return matches.map((token) => token.replace(/^['"]|['"]$/g, ""));
 }
 
+function isAllowedSkillImportHostname(hostname: string) {
+  const normalized = hostname.trim().toLowerCase();
+  return normalized === "github.com"
+    || normalized === "www.github.com"
+    || normalized === "gist.github.com"
+    || normalized === "raw.githubusercontent.com"
+    || normalized.endsWith(".githubusercontent.com");
+}
+
+function assertAllowedRemoteSkillImportSource(source: string) {
+  let parsed: URL;
+  try {
+    parsed = new URL(source);
+  } catch {
+    throw unprocessable("Skill source URL is invalid.");
+  }
+  if (parsed.protocol !== "https:") {
+    throw unprocessable("Skill source URL must use HTTPS.");
+  }
+  if (!isAllowedSkillImportHostname(parsed.hostname)) {
+    throw unprocessable("Skill source URL host is not allowed.");
+  }
+}
+
 export function parseSkillImportSourceInput(rawInput: string): ParsedSkillImportSource {
   const trimmed = rawInput.trim();
   if (!trimmed) {
@@ -629,6 +653,10 @@ export function parseSkillImportSourceInput(rawInput: string): ParsedSkillImport
       originalSkillsShUrl: normalizedSource,
       warnings,
     };
+  }
+
+  if (/^https?:\/\//i.test(normalizedSource)) {
+    assertAllowedRemoteSkillImportSource(normalizedSource);
   }
 
   return {
@@ -792,6 +820,10 @@ async function statPath(targetPath: string) {
   return fs.stat(targetPath).catch(() => null);
 }
 
+async function lstatPath(targetPath: string) {
+  return fs.lstat(targetPath).catch(() => null);
+}
+
 async function collectLocalSkillInventory(
   skillDir: string,
   mode: LocalSkillInventoryMode = "full",
@@ -812,7 +844,7 @@ async function collectLocalSkillInventory(
   } else {
     for (const relativeDir of PROJECT_ROOT_SKILL_SUBDIRECTORIES) {
       const absoluteDir = path.join(skillDir, relativeDir);
-      const dirStat = await statPath(absoluteDir);
+      const dirStat = await lstatPath(absoluteDir);
       if (!dirStat?.isDirectory()) continue;
       const discoveredFiles: string[] = [];
       await walkLocalFiles(skillDir, absoluteDir, discoveredFiles);

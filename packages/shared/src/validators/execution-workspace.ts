@@ -17,6 +17,21 @@ export const executionWorkspaceConfigSchema = z.object({
   serviceStates: z.record(z.enum(["running", "stopped"])).optional().nullable(),
 }).strict();
 
+export const updateExecutionWorkspaceConfigSchema = executionWorkspaceConfigSchema.pick({
+  desiredState: true,
+  serviceStates: true,
+});
+
+export const updateExecutionWorkspaceMetadataSchema = z.record(z.unknown()).superRefine((metadata, ctx) => {
+  if (Object.prototype.hasOwnProperty.call(metadata, "config")) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["config"],
+      message: "Execution workspace metadata.config cannot be updated via this route",
+    });
+  }
+});
+
 export const workspaceRuntimeControlTargetSchema = z.object({
   workspaceCommandId: z.string().min(1).optional().nullable(),
   runtimeServiceId: z.string().uuid().optional().nullable(),
@@ -124,8 +139,8 @@ export const updateExecutionWorkspaceSchema = z.object({
   status: executionWorkspaceStatusSchema.optional(),
   cleanupEligibleAt: z.string().datetime().optional().nullable(),
   cleanupReason: z.string().optional().nullable(),
-  config: executionWorkspaceConfigSchema.optional().nullable(),
-  metadata: z.record(z.unknown()).optional().nullable(),
+  config: updateExecutionWorkspaceConfigSchema.optional().nullable(),
+  metadata: updateExecutionWorkspaceMetadataSchema.optional().nullable(),
 }).strict();
 
 export type UpdateExecutionWorkspace = z.infer<typeof updateExecutionWorkspaceSchema>;

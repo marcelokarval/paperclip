@@ -172,6 +172,8 @@ export {
 
 export {
   executionWorkspaceConfigSchema,
+  updateExecutionWorkspaceConfigSchema,
+  updateExecutionWorkspaceMetadataSchema,
   updateExecutionWorkspaceSchema,
   executionWorkspaceStatusSchema,
   executionWorkspaceCloseActionKindSchema,

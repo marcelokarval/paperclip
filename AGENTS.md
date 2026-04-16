@@ -211,6 +211,14 @@ When creating a pull request (via `gh pr create` or any other method), you **mus
 - The final merge/closure comment for a PR must state that Sourcery feedback was
   reviewed and, when applicable, that deferred items were saved in
   `doc/SOURCERY-REVIEW-POOL.md`.
+- Keep fixes in the same PR only when they remain honestly bounded to the
+  current PR scope, such as typos, missing assertions, or other local
+  corrections.
+- When Sourcery feedback turns into a real follow-up slice, broader hardening,
+  or structurally separate work item, open a new GitHub issue and implement it
+  in a new branch/PR cycle that links back to the originating PR.
+- Do not keep the same PR alive indefinitely as a container for every follow-up
+  discovered by review. Treat substantive follow-ups as new tracked work.
 - For multi-line GitHub issue or PR comments, use a temporary file and
   `gh ... --body-file <path>` instead of inline `--body "..."`.
 - Reserve inline `--body` for genuinely short plain-text comments only.

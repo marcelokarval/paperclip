@@ -34,11 +34,16 @@ For every PR that receives Sourcery feedback:
    - Sourcery summary
    - local analysis
    - action decision
+4. If feedback grows beyond a bounded local fix and becomes a separate slice of
+   work, open a new GitHub issue and handle it in a new branch/PR cycle linked
+   back to the originating PR.
 4. Leave a closing PR comment stating that:
    - Sourcery feedback was reviewed
    - deferred items were recorded in this document
    - the PR is being merged with that record preserved
-5. Only then merge the PR.
+5. Do not keep the same PR alive indefinitely for substantive follow-up work;
+   use the current PR only for bounded in-scope fixes.
+6. Only then merge the PR.
 
 ## Status Model
 
