@@ -148,6 +148,7 @@ type WorkspaceLinkMismatch = {
   packageName: string;
   expectedPath: string;
   actualPath: string | null;
+  linkPath: string;
 };
 
 function readJsonFile(filePath: string): Record<string, unknown> {
@@ -206,6 +207,25 @@ function discoverWorkspacePackagePaths(rootDir: string): Map<string, string> {
   return packagePaths;
 }
 
+function resolveServerNodeModulesLinkPath(rootDir: string, packageName: string): string | null {
+  if (packageName.includes("\\")) return null;
+
+  const segments = packageName.split("/");
+  if (segments.some((segment) => segment.length === 0 || segment === "." || segment === ".." || segment.includes("\0"))) {
+    return null;
+  }
+
+  const isScoped = segments[0]?.startsWith("@") ?? false;
+  if (isScoped ? segments.length !== 2 : segments.length !== 1) return null;
+
+  const nodeModulesRoot = path.resolve(rootDir, "server", "node_modules");
+  const linkPath = path.resolve(nodeModulesRoot, ...segments);
+  const relativePath = path.relative(nodeModulesRoot, linkPath);
+  if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) return null;
+
+  return linkPath;
+}
+
 function findServerWorkspaceLinkMismatches(rootDir: string): WorkspaceLinkMismatch[] {
   const serverPackageJsonPath = path.join(rootDir, "server", "package.json");
   if (!existsSync(serverPackageJsonPath)) return [];
@@ -225,7 +245,9 @@ function findServerWorkspaceLinkMismatches(rootDir: string): WorkspaceLinkMismat
     if (!expectedPath) continue;
     const normalizedExpectedPath = existsSync(expectedPath) ? path.resolve(realpathSync(expectedPath)) : path.resolve(expectedPath);
 
-    const linkPath = path.join(rootDir, "server", "node_modules", ...packageName.split("/"));
+    const linkPath = resolveServerNodeModulesLinkPath(rootDir, packageName);
+    if (!linkPath) continue;
+
     const actualPath = existsSync(linkPath) ? path.resolve(realpathSync(linkPath)) : null;
     if (actualPath === normalizedExpectedPath) continue;
 
@@ -233,6 +255,7 @@ function findServerWorkspaceLinkMismatches(rootDir: string): WorkspaceLinkMismat
       packageName,
       expectedPath: normalizedExpectedPath,
       actualPath,
+      linkPath,
     });
   }
 
@@ -263,10 +286,9 @@ export async function ensureServerWorkspaceLinksCurrent(
   }
 
   for (const mismatch of mismatches) {
-    const linkPath = path.join(workspaceRoot, "server", "node_modules", ...mismatch.packageName.split("/"));
-    await fs.mkdir(path.dirname(linkPath), { recursive: true });
-    await fs.rm(linkPath, { recursive: true, force: true });
-    await fs.symlink(mismatch.expectedPath, linkPath);
+    await fs.mkdir(path.dirname(mismatch.linkPath), { recursive: true });
+    await fs.rm(mismatch.linkPath, { recursive: true, force: true });
+    await fs.symlink(mismatch.expectedPath, mismatch.linkPath);
   }
 
   const remainingMismatches = findServerWorkspaceLinkMismatches(workspaceRoot);
