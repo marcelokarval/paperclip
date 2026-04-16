@@ -4235,6 +4235,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         if (!projectId) continue;
 
         for (const workspace of manifestProject.workspaces) {
+          if (workspace.setupCommand) {
+            warnings.push(`Project ${planProject.slug} workspace ${workspace.key} setupCommand was omitted during import for security.`);
+          }
+          if (workspace.cleanupCommand) {
+            warnings.push(`Project ${planProject.slug} workspace ${workspace.key} cleanupCommand was omitted during import for security.`);
+          }
           const createdWorkspace = await projects.createWorkspace(projectId, {
             name: workspace.name,
             sourceType: workspace.sourceType ?? undefined,
@@ -4242,8 +4248,6 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             repoRef: workspace.repoRef ?? undefined,
             defaultRef: workspace.defaultRef ?? undefined,
             visibility: workspace.visibility ?? undefined,
-            setupCommand: workspace.setupCommand ?? undefined,
-            cleanupCommand: workspace.cleanupCommand ?? undefined,
             metadata: workspace.metadata ?? undefined,
             isPrimary: workspace.isPrimary,
           });
