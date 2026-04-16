@@ -79,19 +79,36 @@ describe("buildJoinDefaultsPayloadForAccept (openclaw_gateway)", () => {
         url: "ws://127.0.0.1:18789",
         headers: {
           "__proto__": "ignored-proto-value",
-          constructor: "ignored-constructor-value",
+          Constructor: "ignored-constructor-value",
           prototype: "ignored-prototype-value",
           "x-openclaw-token": "gateway-token-1234567890",
         },
       },
     }) as Record<string, unknown>;
 
+    expect(Object.getPrototypeOf(result.headers)).toBeNull();
     expect(result.headers).toMatchObject({
       "x-openclaw-token": "gateway-token-1234567890",
     });
     expect(Object.prototype.hasOwnProperty.call(result.headers as object, "__proto__")).toBe(false);
     expect(Object.prototype.hasOwnProperty.call(result.headers as object, "constructor")).toBe(false);
     expect(Object.prototype.hasOwnProperty.call(result.headers as object, "prototype")).toBe(false);
+  });
+
+  it("drops headers entirely when only unsafe keys are provided", () => {
+    const result = buildJoinDefaultsPayloadForAccept({
+      adapterType: "openclaw_gateway",
+      defaultsPayload: {
+        url: "ws://127.0.0.1:18789",
+        headers: {
+          "__proto__": "ignored-proto-value",
+          constructor: "ignored-constructor-value",
+          prototype: "ignored-prototype-value",
+        },
+      },
+    }) as Record<string, unknown>;
+
+    expect(result.headers).toBeUndefined();
   });
 });
 
