@@ -689,6 +689,42 @@ function formatCount(value: number | null | undefined) {
   return value.toLocaleString("en-US");
 }
 
+const REDACTED_META_VALUE = "***REDACTED***";
+
+function sanitizeAdapterMetaForRunEvent(
+  meta: AdapterInvocationMeta,
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    adapterType: meta.adapterType,
+    command: meta.command,
+  };
+
+  if (typeof meta.cwd === "string" && meta.cwd.length > 0) payload.cwd = meta.cwd;
+  if (Array.isArray(meta.commandArgs)) payload.commandArgs = meta.commandArgs;
+  if (Array.isArray(meta.commandNotes)) payload.commandNotes = meta.commandNotes;
+
+  if (meta.env && typeof meta.env === "object") {
+    const redactedEnv: Record<string, string> = {};
+    for (const [key] of Object.entries(meta.env)) {
+      redactedEnv[key] = REDACTED_META_VALUE;
+    }
+    payload.env = redactedEnv;
+  }
+
+  if (meta.promptMetrics && typeof meta.promptMetrics === "object") {
+    payload.promptMetrics = meta.promptMetrics;
+  }
+
+  if (typeof meta.prompt === "string" && meta.prompt.length > 0) {
+    payload.prompt = `<redacted ${meta.prompt.length} chars>`;
+  }
+  if (meta.context && typeof meta.context === "object" && Object.keys(meta.context).length > 0) {
+    payload.context = REDACTED_META_VALUE;
+  }
+
+  return payload;
+}
+
 export function parseSessionCompactionPolicy(agent: typeof agents.$inferSelect): SessionCompactionPolicy {
   return resolveSessionCompactionPolicy(agent.adapterType, agent.runtimeConfig).policy;
 }
@@ -3646,17 +3682,12 @@ export function heartbeatService(db: Db) {
         }
       }
       const onAdapterMeta = async (meta: AdapterInvocationMeta) => {
-        if (meta.env && secretKeys.size > 0) {
-          for (const key of secretKeys) {
-            if (key in meta.env) meta.env[key] = "***REDACTED***";
-          }
-        }
         await appendRunEvent(currentRun, seq++, {
           eventType: "adapter.invoke",
           stream: "system",
           level: "info",
           message: "adapter invocation",
-          payload: meta as unknown as Record<string, unknown>,
+          payload: sanitizeAdapterMetaForRunEvent(meta),
         });
       };
 
