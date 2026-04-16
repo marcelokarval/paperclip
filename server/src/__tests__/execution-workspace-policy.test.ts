@@ -137,9 +137,19 @@ describe("execution workspace policy helpers", () => {
     expect(
       parseIssueExecutionWorkspaceSettings({
         mode: "project_primary",
+        workspaceStrategy: {
+          type: "git_worktree",
+          baseRef: "origin/main",
+          provisionCommand: "bash ./scripts/provision-worktree.sh",
+          teardownCommand: "bash ./scripts/teardown-worktree.sh",
+        },
       }),
     ).toEqual({
       mode: "shared_workspace",
+      workspaceStrategy: {
+        type: "git_worktree",
+        baseRef: "origin/main",
+      },
     });
   });
 
