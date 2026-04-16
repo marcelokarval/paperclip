@@ -235,7 +235,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     resolvedCommand,
   });
 
-  const timeoutSec = asNumber(config.timeoutSec, 0);
+  const timeoutSec = asNumber(config.timeoutSec, 1_800);
   const graceSec = asNumber(config.graceSec, 20);
   const extraArgs = (() => {
     const fromExtraArgs = asStringArray(config.extraArgs);
