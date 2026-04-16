@@ -27,7 +27,7 @@ import { Router } from "express";
 import type { Request } from "express";
 import { and, desc, eq, gte } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companies, pluginLogs, pluginWebhookDeliveries } from "@paperclipai/db";
+import { companies, pluginCompanySettings, pluginLogs, pluginWebhookDeliveries } from "@paperclipai/db";
 import type {
   PluginStatus,
   PaperclipPluginManifestV1,
@@ -558,6 +558,20 @@ export function pluginRoutes(
     const registeredTool = toolDeps.toolDispatcher.getTool(tool);
     if (!registeredTool) {
       res.status(404).json({ error: `Tool "${tool}" not found` });
+      return;
+    }
+
+    const companySetting = await db.query.pluginCompanySettings.findFirst({
+      where: and(
+        eq(pluginCompanySettings.pluginId, registeredTool.pluginDbId),
+        eq(pluginCompanySettings.companyId, runContext.companyId),
+      ),
+      columns: { enabled: true },
+    });
+    if (companySetting?.enabled === false) {
+      res.status(403).json({
+        error: `Plugin "${registeredTool.pluginId}" is disabled for company "${runContext.companyId}"`,
+      });
       return;
     }
 
