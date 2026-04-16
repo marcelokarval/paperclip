@@ -197,6 +197,67 @@ describe("project env routes", () => {
     );
   });
 
+  it("rejects non-admin project creation that sets workspace provision commands", async () => {
+    const app = await createApp({
+      source: "token",
+      isInstanceAdmin: false,
+    });
+    const res = await request(app)
+      .post("/api/companies/company-1/projects")
+      .send({
+        name: "Project",
+        executionWorkspacePolicy: {
+          enabled: true,
+          workspaceStrategy: {
+            provisionCommand: "bash ./scripts/provision.sh",
+          },
+        },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockProjectService.create).not.toHaveBeenCalled();
+  });
+
+  it("allows instance-admin project creation that sets workspace provision commands", async () => {
+    const createdProject = buildProject({
+      executionWorkspacePolicy: {
+        enabled: true,
+        workspaceStrategy: {
+          provisionCommand: "bash ./scripts/provision.sh",
+        },
+      },
+    });
+    mockProjectService.create.mockResolvedValue(createdProject);
+
+    const app = await createApp({
+      source: "token",
+      isInstanceAdmin: true,
+    });
+    const res = await request(app)
+      .post("/api/companies/company-1/projects")
+      .send({
+        name: "Project",
+        executionWorkspacePolicy: {
+          enabled: true,
+          workspaceStrategy: {
+            provisionCommand: "bash ./scripts/provision.sh",
+          },
+        },
+      });
+
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    expect(mockProjectService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        executionWorkspacePolicy: expect.objectContaining({
+          workspaceStrategy: expect.objectContaining({
+            provisionCommand: "bash ./scripts/provision.sh",
+          }),
+        }),
+      }),
+    );
+  });
+
   it("rejects non-admin project updates that set workspace provision commands", async () => {
     mockProjectService.getById.mockResolvedValue(buildProject());
 
