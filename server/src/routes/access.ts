@@ -552,10 +552,7 @@ export function canReplayOpenClawGatewayInviteAccept(input: {
   ) {
     return false;
   }
-  return (
-    input.existingJoinRequest.status === "pending_approval" ||
-    input.existingJoinRequest.status === "approved"
-  );
+  return input.existingJoinRequest.status === "pending_approval";
 }
 
 function summarizeSecretForLog(
