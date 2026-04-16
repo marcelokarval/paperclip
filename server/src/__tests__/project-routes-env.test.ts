@@ -20,6 +20,8 @@ const mockSecretService = vi.hoisted(() => ({
 const mockWorkspaceOperationService = vi.hoisted(() => ({}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
+const mockStartRuntimeServicesForWorkspaceControl = vi.hoisted(() => vi.fn());
+const mockStopRuntimeServicesForProjectWorkspace = vi.hoisted(() => vi.fn());
 
 vi.mock("../telemetry.js", () => ({
   getTelemetryClient: mockGetTelemetryClient,
@@ -33,8 +35,8 @@ vi.mock("../services/index.js", () => ({
 }));
 
 vi.mock("../services/workspace-runtime.js", () => ({
-  startRuntimeServicesForWorkspaceControl: vi.fn(),
-  stopRuntimeServicesForProjectWorkspace: vi.fn(),
+  startRuntimeServicesForWorkspaceControl: mockStartRuntimeServicesForWorkspaceControl,
+  stopRuntimeServicesForProjectWorkspace: mockStopRuntimeServicesForProjectWorkspace,
 }));
 
 function registerModuleMocks() {
@@ -50,12 +52,20 @@ function registerModuleMocks() {
   }));
 
   vi.doMock("../services/workspace-runtime.js", () => ({
-    startRuntimeServicesForWorkspaceControl: vi.fn(),
-    stopRuntimeServicesForProjectWorkspace: vi.fn(),
+    startRuntimeServicesForWorkspaceControl: mockStartRuntimeServicesForWorkspaceControl,
+    stopRuntimeServicesForProjectWorkspace: mockStopRuntimeServicesForProjectWorkspace,
   }));
 }
 
-async function createApp() {
+async function createApp(
+  actor: Record<string, unknown> = {
+    type: "board",
+    userId: "board-user",
+    companyIds: ["company-1"],
+    source: "local_implicit",
+    isInstanceAdmin: false,
+  },
+) {
   const [{ projectRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/projects.js")>("../routes/projects.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -63,13 +73,7 @@ async function createApp() {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
-      type: "board",
-      userId: "board-user",
-      companyIds: ["company-1"],
-      source: "local_implicit",
-      isInstanceAdmin: false,
-    };
+    (req as any).actor = actor;
     next();
   });
   app.use("/api", projectRoutes({} as any));
@@ -128,6 +132,8 @@ describe("project env routes", () => {
     mockProjectService.createWorkspace.mockResolvedValue(null);
     mockProjectService.listWorkspaces.mockResolvedValue([]);
     mockSecretService.normalizeEnvBindingsForPersistence.mockImplementation(async (_companyId, env) => env);
+    mockStartRuntimeServicesForWorkspaceControl.mockResolvedValue([]);
+    mockStopRuntimeServicesForProjectWorkspace.mockResolvedValue(undefined);
   });
 
   it("normalizes env bindings on create and logs only env keys", async () => {
@@ -194,5 +200,37 @@ describe("project env routes", () => {
         },
       }),
     );
+  });
+
+  it("rejects runtime service controls for agent actors", async () => {
+    mockProjectService.getById.mockResolvedValue(buildProject({
+      workspaces: [
+        {
+          id: "workspace-1",
+          name: "Workspace 1",
+          isPrimary: true,
+          cwd: "/tmp/workspace-1",
+          repoUrl: null,
+          repoRef: null,
+          defaultRef: null,
+          runtimeConfig: { workspaceRuntime: { services: [{ name: "web", command: "pnpm dev" }] } },
+          runtimeServices: [],
+        },
+      ],
+    }));
+
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "api_key",
+    });
+    const res = await request(app)
+      .post("/api/projects/project-1/workspaces/workspace-1/runtime-services/start")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "Board access required" });
+    expect(mockStartRuntimeServicesForWorkspaceControl).not.toHaveBeenCalled();
   });
 });
