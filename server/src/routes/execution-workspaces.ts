@@ -22,7 +22,7 @@ import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 
 export function executionWorkspaceRoutes(db: Db) {
   const router = Router();
@@ -95,6 +95,7 @@ export function executionWorkspaceRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    assertBoard(req);
 
     const workspaceCwd = existing.cwd;
     if (!workspaceCwd) {
