@@ -41,7 +41,7 @@ import type { AdapterPluginRecord } from "../services/adapter-plugin-store.js";
 import type { ServerAdapterModule, AdapterConfigSchema } from "../adapters/types.js";
 import { loadExternalAdapterPackage, getUiParserSource, getOrExtractUiParserSource, reloadExternalAdapter } from "../adapters/plugin-loader.js";
 import { logger } from "../middleware/logger.js";
-import { assertBoard } from "./authz.js";
+import { assertBoard, assertInstanceAdmin } from "./authz.js";
 import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
 
 const execFileAsync = promisify(execFile);
@@ -201,6 +201,7 @@ export function adapterRoutes() {
    */
   router.post("/adapters/install", async (req, res) => {
     assertBoard(req);
+    assertInstanceAdmin(req);
 
     const { packageName, isLocalPath = false, version } = req.body as AdapterInstallRequest;
 
@@ -471,6 +472,7 @@ export function adapterRoutes() {
    */
   router.post("/adapters/:type/reload", async (req, res) => {
     assertBoard(req);
+    assertInstanceAdmin(req);
 
     const type = req.params.type;
 
@@ -523,6 +525,7 @@ export function adapterRoutes() {
   // package name, but without the risk of losing the store record.
   router.post("/adapters/:type/reinstall", async (req, res) => {
     assertBoard(req);
+    assertInstanceAdmin(req);
 
     const type = req.params.type;
 
