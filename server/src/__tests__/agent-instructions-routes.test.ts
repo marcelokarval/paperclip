@@ -101,7 +101,7 @@ async function loadAppModules() {
   return await appModulesPromise;
 }
 
-async function createApp() {
+async function createApp(actor?: Record<string, unknown>) {
   const { agentRoutes, errorHandler } = await loadAppModules();
   const app = express();
   app.use(express.json());
@@ -112,6 +112,7 @@ async function createApp() {
       companyIds: ["company-1"],
       source: "local_implicit",
       isInstanceAdmin: false,
+      ...(actor ?? {}),
     };
     next();
   });
@@ -246,6 +247,77 @@ describe("agent instructions bundle routes", () => {
       }),
       expect.any(Object),
     );
+  });
+
+  it("blocks non-instance-admin board users from switching an instructions bundle to an external root", async () => {
+    const res = await request(await createApp({
+      source: "session",
+      isInstanceAdmin: false,
+    }))
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle?companyId=company-1")
+      .send({
+        mode: "external",
+        rootPath: "/tmp/external-instructions",
+        entryFile: "AGENTS.md",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockAgentInstructionsService.updateBundle).not.toHaveBeenCalled();
+  });
+
+  it("blocks non-instance-admin board users from reading external instructions bundle metadata", async () => {
+    mockAgentInstructionsService.getBundle.mockResolvedValue({
+      agentId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      mode: "external",
+      rootPath: "/tmp/external-instructions",
+      managedRootPath: "/tmp/agent-1",
+      entryFile: "AGENTS.md",
+      resolvedEntryPath: "/tmp/external-instructions/AGENTS.md",
+      editable: true,
+      warnings: [],
+      legacyPromptTemplateActive: false,
+      legacyBootstrapPromptTemplateActive: false,
+      files: [],
+    });
+
+    const res = await request(await createApp({
+      source: "session",
+      isInstanceAdmin: false,
+    }))
+      .get("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle?companyId=company-1");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+  });
+
+  it("blocks non-instance-admin board users from editing files under an external instructions root", async () => {
+    mockAgentInstructionsService.getBundle.mockResolvedValue({
+      agentId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      mode: "external",
+      rootPath: "/tmp/external-instructions",
+      managedRootPath: "/tmp/agent-1",
+      entryFile: "AGENTS.md",
+      resolvedEntryPath: "/tmp/external-instructions/AGENTS.md",
+      editable: true,
+      warnings: [],
+      legacyPromptTemplateActive: false,
+      legacyBootstrapPromptTemplateActive: false,
+      files: [],
+    });
+
+    const res = await request(await createApp({
+      source: "session",
+      isInstanceAdmin: false,
+    }))
+      .put("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle/file?companyId=company-1")
+      .send({
+        path: "AGENTS.md",
+        content: "# Updated Agent\n",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockAgentInstructionsService.writeFile).not.toHaveBeenCalled();
   });
 
   it("preserves managed instructions config when switching adapters", async () => {

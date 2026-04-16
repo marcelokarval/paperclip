@@ -13,6 +13,7 @@ const mockAccessService = vi.hoisted(() => ({
 
 const mockCompanySkillService = vi.hoisted(() => ({
   importFromSource: vi.fn(),
+  scanProjectWorkspaces: vi.fn(),
   deleteSkill: vi.fn(),
 }));
 
@@ -64,6 +65,16 @@ describe("company skill mutation permissions", () => {
       imported: [],
       warnings: [],
     });
+    mockCompanySkillService.scanProjectWorkspaces.mockResolvedValue({
+      scannedProjects: 0,
+      scannedWorkspaces: 0,
+      discovered: 0,
+      imported: [],
+      updated: [],
+      skipped: [],
+      conflicts: [],
+      warnings: [],
+    });
     mockCompanySkillService.deleteSkill.mockResolvedValue({
       id: "skill-1",
       slug: "find-skills",
@@ -90,6 +101,85 @@ describe("company skill mutation permissions", () => {
       "company-1",
       "https://github.com/vercel-labs/agent-browser",
     );
+  });
+
+  it("blocks non-instance-admin board users from importing local-path skills", async () => {
+    const res = await request(await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: ["company-1"],
+      source: "session",
+      isInstanceAdmin: false,
+    }))
+      .post("/api/companies/company-1/skills/import")
+      .send({ source: "/tmp/skills" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockCompanySkillService.importFromSource).not.toHaveBeenCalled();
+  });
+
+  it("blocks same-company agents from importing local-path skills even with canCreateAgents", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      permissions: { canCreateAgents: true },
+    });
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .post("/api/companies/company-1/skills/import")
+      .send({ source: "/tmp/skills" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockCompanySkillService.importFromSource).not.toHaveBeenCalled();
+  });
+
+  it("allows local board operators to import local-path skills", async () => {
+    const res = await request(await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .post("/api/companies/company-1/skills/import")
+      .send({ source: "/tmp/skills" });
+
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    expect(mockCompanySkillService.importFromSource).toHaveBeenCalledWith("company-1", "/tmp/skills");
+  });
+
+  it("blocks non-instance-admin board users from scanning local project workspaces", async () => {
+    const res = await request(await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: ["company-1"],
+      source: "session",
+      isInstanceAdmin: false,
+    }))
+      .post("/api/companies/company-1/skills/scan-projects")
+      .send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+  });
+
+  it("allows local board operators to scan local project workspaces", async () => {
+    const res = await request(await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .post("/api/companies/company-1/skills/scan-projects")
+      .send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockCompanySkillService.scanProjectWorkspaces).toHaveBeenCalledWith("company-1", {});
   });
 
   it("tracks public GitHub skill imports with an explicit skill reference", async () => {
