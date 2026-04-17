@@ -613,7 +613,7 @@ export async function resolveCommandForLogs(command: string, cwd: string, env: N
 
 function quoteForCmd(arg: string) {
   if (!arg.length) return '""';
-  const escaped = arg.replace(/"/g, '""');
+  const escaped = arg.replace(/%/g, "%%").replace(/"/g, '""');
   return /[\s"&<>|^()]/.test(escaped) ? `"${escaped}"` : escaped;
 }
 
