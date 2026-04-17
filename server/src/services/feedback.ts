@@ -1865,6 +1865,7 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
       authorUserId: string;
       reason?: string | null;
       allowSharing?: boolean;
+      canManageInstanceSettings?: boolean;
     }) =>
       db.transaction(async (tx) => {
         const issue = await tx
@@ -1948,7 +1949,11 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
             .then((rows) => rows[0] ?? null));
 
         const currentGeneral = normalizeInstanceGeneralSettings(currentInstanceSettings?.general);
-        if (currentInstanceSettings && currentGeneral.feedbackDataSharingPreference === "prompt") {
+        if (
+          currentInstanceSettings &&
+          currentGeneral.feedbackDataSharingPreference === "prompt" &&
+          input.canManageInstanceSettings !== false
+        ) {
           const nextSharingPreference = sharedWithLabs ? "allowed" : "not_allowed";
           const currentGeneralRaw = asRecord(currentInstanceSettings.general) ?? {};
           await tx

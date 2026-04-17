@@ -2540,6 +2540,7 @@ export function issueRoutes(
       return;
     }
 
+    const canManageInstanceSettings = req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true;
     const actor = getActorInfo(req);
     const result = await feedback.saveIssueVote({
       issueId: id,
@@ -2549,6 +2550,7 @@ export function issueRoutes(
       reason: req.body.reason,
       authorUserId: req.actor.userId ?? "local-board",
       allowSharing: req.body.allowSharing === true,
+      canManageInstanceSettings,
     });
 
     await logActivity(db, {
