@@ -61,6 +61,7 @@ export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
+const SENSITIVE_ENV_EXACT_KEYS = new Set(["PAPERCLIP_WAKE_PAYLOAD_JSON"]);
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
   "../../../../../skills",
@@ -507,7 +508,10 @@ export function renderPaperclipWakePrompt(
 export function redactEnvForLogs(env: Record<string, string>): Record<string, string> {
   const redacted: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
-    redacted[key] = SENSITIVE_ENV_KEY.test(key) ? "***REDACTED***" : value;
+    redacted[key] =
+      SENSITIVE_ENV_KEY.test(key) || SENSITIVE_ENV_EXACT_KEYS.has(key.toUpperCase())
+        ? "***REDACTED***"
+        : value;
   }
   return redacted;
 }

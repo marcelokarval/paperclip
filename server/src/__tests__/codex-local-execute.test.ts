@@ -261,6 +261,86 @@ describe("codex execute", () => {
     }
   });
 
+  it("redacts wake payload JSON from invocation metadata env", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-meta-wake-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    let loggedEnv: Record<string, string> = {};
+    try {
+      const result = await execute({
+        runId: "run-meta-wake-redaction",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          wakeReason: "issue_commented",
+          wakeCommentId: "comment-1",
+          paperclipWake: {
+            reason: "issue_commented",
+            issue: { id: "issue-1", identifier: "PAP-1", title: "Wake test" },
+            commentIds: ["comment-1"],
+            latestCommentId: "comment-1",
+            comments: [
+              {
+                id: "comment-1",
+                issueId: "issue-1",
+                body: "secret in comment body",
+                bodyTruncated: false,
+                createdAt: "2026-03-28T14:35:10.000Z",
+                author: { type: "user", id: "user-1" },
+              },
+            ],
+            commentWindow: {
+              requestedCount: 1,
+              includedCount: 1,
+              missingCount: 0,
+            },
+            truncated: false,
+            fallbackFetchNeeded: false,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+        onMeta: async (meta) => {
+          loggedEnv = meta.env ?? {};
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+      expect(loggedEnv.PAPERCLIP_WAKE_PAYLOAD_JSON).toBe("***REDACTED***");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("injects structured Paperclip wake payloads into env and prompt", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-wake-"));
     const workspace = path.join(root, "workspace");
