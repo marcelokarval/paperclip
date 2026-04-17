@@ -2019,6 +2019,80 @@ describe("company portability", () => {
     });
   });
 
+  it("sanitizes imported SVG company logos before storage", async () => {
+    const storage = {
+      putFile: vi.fn().mockResolvedValue({
+        provider: "local_disk",
+        objectKey: "assets/companies/imported-logo",
+        contentType: "image/svg+xml",
+        byteSize: 9,
+        sha256: "logo-sha",
+        originalFilename: "company-logo.svg",
+      }),
+    };
+    companySvc.create.mockResolvedValue({
+      id: "company-imported",
+      name: "Imported Paperclip",
+      logoAssetId: null,
+    });
+    companySvc.update.mockResolvedValue({
+      id: "company-imported",
+      name: "Imported Paperclip",
+      logoAssetId: "asset-created",
+    });
+    agentSvc.create.mockResolvedValue({
+      id: "agent-created",
+      name: "ClaudeCoder",
+    });
+
+    const portability = companyPortabilityService({} as any, storage as any);
+    const exported = await portability.exportBundle("company-1", {
+      include: {
+        company: true,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+    });
+
+    exported.files["images/company-logo.svg"] = `<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)">
+  <script>alert("xss")</script>
+  <a href="https://evil.example">bad</a>
+  <rect width="10" height="10" />
+</svg>`;
+    exported.files[".paperclip.yaml"] = `${exported.files[".paperclip.yaml"]}`.replace(
+      'brandColor: "#5c5fff"\n',
+      'brandColor: "#5c5fff"\n  logoPath: "images/company-logo.svg"\n',
+    );
+
+    agentSvc.list.mockResolvedValue([]);
+
+    await portability.importBundle({
+      source: {
+        type: "inline",
+        rootPath: exported.rootPath,
+        files: exported.files,
+      },
+      include: {
+        company: true,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+      target: {
+        mode: "new_company",
+        newCompanyName: "Imported Paperclip",
+      },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    const putBody = storage.putFile.mock.calls[0]?.[0]?.body as Buffer;
+    expect(putBody.toString("utf8")).not.toContain("<script");
+    expect(putBody.toString("utf8")).not.toContain("onload=");
+    expect(putBody.toString("utf8")).not.toContain("https://evil.example");
+  });
+
   it("copies source company memberships for safe new-company imports", async () => {
     const portability = companyPortabilityService({} as any);
 

@@ -62,6 +62,8 @@ import { validateCron } from "./cron.js";
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 import { routineService } from "./routines.js";
+import { MAX_ATTACHMENT_BYTES, SVG_CONTENT_TYPE } from "../attachment-types.js";
+import { sanitizeSvgBuffer } from "../svg-sanitize.js";
 
 /** Build OrgNode tree from manifest agent list (slug + reportsToSlug). */
 function buildOrgTreeFromManifest(agents: CompanyPortabilityManifest["agents"]): OrgNode[] {
@@ -1378,6 +1380,20 @@ function portableFileToBuffer(entry: CompanyPortabilityFileEntry, filePath: stri
     return portableBinaryFileToBuffer(entry);
   }
   throw unprocessable(`Unsupported file entry encoding for ${filePath}`);
+}
+
+function prepareImportedCompanyLogoBuffer(contentType: string, body: Buffer, filePath: string): Buffer {
+  if (body.length > MAX_ATTACHMENT_BYTES) {
+    throw unprocessable(`Logo ${filePath} exceeds ${MAX_ATTACHMENT_BYTES} bytes.`);
+  }
+  if (contentType !== SVG_CONTENT_TYPE) {
+    return body;
+  }
+  const sanitized = sanitizeSvgBuffer(body);
+  if (!sanitized || sanitized.length <= 0) {
+    throw unprocessable(`SVG logo ${filePath} could not be sanitized.`);
+  }
+  return sanitized;
 }
 
 function bufferToPortableBinaryFile(buffer: Buffer, contentType: string | null): CompanyPortabilityFileEntry {
@@ -3951,7 +3967,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             warnings.push(`Skipped company logo import for ${logoPath} because the file type is unsupported.`);
           } else {
             try {
-              const body = portableFileToBuffer(logoFile, logoPath);
+              const rawBody = portableFileToBuffer(logoFile, logoPath);
+              const body = prepareImportedCompanyLogoBuffer(contentType, rawBody, logoPath);
               const stored = await storage.putFile({
                 companyId: targetCompany.id,
                 namespace: "assets/companies",
