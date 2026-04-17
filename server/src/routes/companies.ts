@@ -122,9 +122,17 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   router.get("/:companyId", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    // Allow agents (CEO) to read their own company; board always allowed
     if (req.actor.type !== "agent") {
       assertBoard(req);
+    } else {
+      if (!req.actor.agentId) throw forbidden("Agent authentication required");
+      const actorAgent = await agents.getById(req.actor.agentId);
+      if (!actorAgent || actorAgent.companyId !== companyId) {
+        throw forbidden("Agent key cannot access another company");
+      }
+      if (actorAgent.role !== "ceo") {
+        throw forbidden("Only CEO agents can read company details");
+      }
     }
     const company = await svc.getById(companyId);
     if (!company) {
