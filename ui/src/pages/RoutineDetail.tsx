@@ -59,7 +59,7 @@ import type { RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
 const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active"];
 const catchUpPolicies = ["skip_missed", "enqueue_missed_with_cap"];
 const triggerKinds = ["schedule", "webhook"];
-const signingModes = ["bearer", "hmac_sha256", "github_hmac", "none"];
+const signingModes = ["bearer", "hmac_sha256", "github_hmac"];
 const routineTabs = ["triggers", "runs", "activity"] as const;
 const concurrencyPolicyDescriptions: Record<string, string> = {
   coalesce_if_active: "Keep one follow-up run queued while an active run is still working.",
@@ -74,9 +74,8 @@ const signingModeDescriptions: Record<string, string> = {
   bearer: "Expect a shared bearer token in the Authorization header.",
   hmac_sha256: "Expect an HMAC SHA-256 signature over the request using the shared secret.",
   github_hmac: "Accept GitHub-style X-Hub-Signature-256 header (HMAC over raw body, no timestamp).",
-  none: "No authentication — the webhook URL itself acts as a shared secret.",
 };
-const SIGNING_MODES_WITHOUT_REPLAY_WINDOW = new Set(["github_hmac", "none"]);
+const SIGNING_MODES_WITHOUT_REPLAY_WINDOW = new Set(["github_hmac"]);
 
 type RoutineTab = (typeof routineTabs)[number];
 

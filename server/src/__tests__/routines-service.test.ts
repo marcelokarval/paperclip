@@ -761,22 +761,26 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     ).rejects.toThrow();
   });
 
-  it("accepts any request with none signing mode", async () => {
+  it("rejects legacy none signing mode triggers", async () => {
     const { routine, svc } = await seedFixture();
     const { trigger } = await svc.createTrigger(
       routine.id,
       {
         kind: "webhook",
-        signingMode: "none",
+        signingMode: "bearer",
       },
       {},
     );
 
-    const run = await svc.firePublicTrigger(trigger.publicId!, {
-      payload: { event: "error.created" },
-    });
+    await db
+      .update(routineTriggers)
+      .set({ signingMode: "none" })
+      .where(eq(routineTriggers.id, trigger.id));
 
-    expect(run.source).toBe("webhook");
-    expect(run.status).toBe("issue_created");
+    await expect(
+      svc.firePublicTrigger(trigger.publicId!, {
+        payload: { event: "error.created" },
+      }),
+    ).rejects.toThrow();
   });
 });
