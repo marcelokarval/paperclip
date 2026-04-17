@@ -30,7 +30,7 @@ import { normalizeAgentUrlKey } from "@paperclipai/shared";
 import { findActiveServerAdapter } from "../adapters/index.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { notFound, unprocessable } from "../errors.js";
-import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
+import { assertAllowedGitHubHostname, ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
 import { secretService } from "./secrets.js";
@@ -515,6 +515,7 @@ function parseGitHubSourceUrl(rawUrl: string) {
   if (url.protocol !== "https:") {
     throw unprocessable("GitHub source URL must use HTTPS");
   }
+  const hostname = assertAllowedGitHubHostname(url.hostname);
   const parts = url.pathname.split("/").filter(Boolean);
   if (parts.length < 2) {
     throw unprocessable("Invalid GitHub URL");
@@ -535,7 +536,7 @@ function parseGitHubSourceUrl(rawUrl: string) {
     basePath = filePath ? path.posix.dirname(filePath) : "";
     explicitRef = true;
   }
-  return { hostname: url.hostname, owner, repo, ref, basePath, filePath, explicitRef };
+  return { hostname, owner, repo, ref, basePath, filePath, explicitRef };
 }
 
 async function resolveGitHubPinnedRef(parsed: ReturnType<typeof parseGitHubSourceUrl>) {
