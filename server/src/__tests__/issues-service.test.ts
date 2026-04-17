@@ -697,6 +697,108 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       "2026-03-26T10:00:00.000Z",
     );
   });
+
+  it("retries without activity logs when UTF-8 decoding fails during issue list ordering", async () => {
+    const companyId = randomUUID();
+    const olderIssueId = randomUUID();
+    const commentIssueId = randomUUID();
+    const activityIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: olderIssueId,
+        companyId,
+        title: "Older issue",
+        status: "todo",
+        priority: "medium",
+        updatedAt: new Date("2026-03-26T09:00:00.000Z"),
+      },
+      {
+        id: commentIssueId,
+        companyId,
+        title: "Comment activity issue",
+        status: "todo",
+        priority: "medium",
+        updatedAt: new Date("2026-03-26T10:00:00.000Z"),
+      },
+      {
+        id: activityIssueId,
+        companyId,
+        title: "Logged activity issue",
+        status: "todo",
+        priority: "medium",
+        updatedAt: new Date("2026-03-26T10:00:00.000Z"),
+      },
+    ]);
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: commentIssueId,
+      body: "New comment without touching issue.updatedAt",
+      createdAt: new Date("2026-03-26T11:00:00.000Z"),
+      updatedAt: new Date("2026-03-26T11:00:00.000Z"),
+    });
+
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "system",
+      actorId: "system",
+      action: "issue.document_updated",
+      entityType: "issue",
+      entityId: activityIssueId,
+      createdAt: new Date("2026-03-26T12:00:00.000Z"),
+    });
+
+    const originalSelect = db.select.bind(db);
+    let injected = false;
+    (db as typeof db & { select: typeof db.select }).select = ((...args: Parameters<typeof db.select>) => {
+      const builder = originalSelect(...args);
+      if (!("from" in builder) || typeof builder.from !== "function") {
+        return builder;
+      }
+      const originalFrom = builder.from.bind(builder);
+      builder.from = ((table: Parameters<typeof originalFrom>[0]) => {
+        if (!injected && table === activityLog) {
+          injected = true;
+          const error = Object.assign(
+            new Error('invalid byte sequence for encoding "UTF8": 0xe2'),
+            {
+              code: "22021",
+              routine: "report_invalid_encoding",
+            },
+          );
+          throw error;
+        }
+        return originalFrom(table);
+      }) as typeof builder.from;
+      return builder;
+    }) as typeof db.select;
+
+    try {
+      const result = await svc.list(companyId, {});
+
+      expect(result.map((issue) => issue.id)).toEqual([
+        commentIssueId,
+        activityIssueId,
+        olderIssueId,
+      ]);
+      expect(result.find((issue) => issue.id === commentIssueId)?.lastActivityAt?.toISOString()).toBe(
+        "2026-03-26T11:00:00.000Z",
+      );
+      expect(result.find((issue) => issue.id === activityIssueId)?.lastActivityAt?.toISOString()).toBe(
+        "2026-03-26T10:00:00.000Z",
+      );
+    } finally {
+      (db as typeof db & { select: typeof db.select }).select = originalSelect;
+    }
+  });
 });
 
 describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
