@@ -332,6 +332,28 @@ function issueCanonicalLastActivityAtExpr(companyId: string) {
   `;
 }
 
+function issueCommentOnlyLastActivityAtExpr(companyId: string) {
+  const latestCommentAt = issueLatestCommentAtExpr(companyId);
+  return sql<Date>`
+    GREATEST(
+      ${issues.updatedAt},
+      COALESCE(${latestCommentAt}, to_timestamp(0))
+    )
+  `;
+}
+
+function isInvalidUtf8DbError(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as {
+    code?: unknown;
+    routine?: unknown;
+    message?: unknown;
+  };
+  if (candidate.code === "22021") return true;
+  if (candidate.routine === "report_invalid_encoding") return true;
+  return typeof candidate.message === "string" && /invalid byte sequence for encoding "UTF8"/i.test(candidate.message);
+}
+
 function unreadForUserCondition(companyId: string, userId: string) {
   const touchedCondition = touchedByUserCondition(companyId, userId);
   const myLastTouchAt = myLastTouchAtExpr(companyId, userId);
@@ -538,6 +560,263 @@ function withActiveRuns(
 
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
+
+  async function listInternal(
+    companyId: string,
+    filters: IssueFilters | undefined,
+    opts?: { includeActivityLogs?: boolean },
+  ) {
+      const includeActivityLogs = opts?.includeActivityLogs !== false;
+
+      const conditions = [eq(issues.companyId, companyId)];
+      const limit = typeof filters?.limit === "number" && Number.isFinite(filters.limit)
+        ? Math.max(1, Math.floor(filters.limit))
+        : undefined;
+      const touchedByUserId = filters?.touchedByUserId?.trim() || undefined;
+      const inboxArchivedByUserId = filters?.inboxArchivedByUserId?.trim() || undefined;
+      const unreadForUserId = filters?.unreadForUserId?.trim() || undefined;
+      const contextUserId = unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId;
+      const rawSearch = filters?.q?.trim() ?? "";
+      const hasSearch = rawSearch.length > 0;
+      const escapedSearch = hasSearch ? escapeLikePattern(rawSearch) : "";
+      const startsWithPattern = `${escapedSearch}%`;
+      const containsPattern = `%${escapedSearch}%`;
+      const titleStartsWithMatch = sql<boolean>`${issues.title} ILIKE ${startsWithPattern} ESCAPE '\\'`;
+      const titleContainsMatch = sql<boolean>`${issues.title} ILIKE ${containsPattern} ESCAPE '\\'`;
+      const identifierStartsWithMatch = sql<boolean>`${issues.identifier} ILIKE ${startsWithPattern} ESCAPE '\\'`;
+      const identifierContainsMatch = sql<boolean>`${issues.identifier} ILIKE ${containsPattern} ESCAPE '\\'`;
+      const descriptionContainsMatch = sql<boolean>`${issues.description} ILIKE ${containsPattern} ESCAPE '\\'`;
+      const commentContainsMatch = sql<boolean>`
+        EXISTS (
+          SELECT 1
+          FROM ${issueComments}
+          WHERE ${issueComments.issueId} = ${issues.id}
+            AND ${issueComments.companyId} = ${companyId}
+            AND ${issueComments.body} ILIKE ${containsPattern} ESCAPE '\\'
+        )
+      `;
+      if (filters?.status) {
+        const statuses = filters.status.split(",").map((s) => s.trim());
+        conditions.push(statuses.length === 1 ? eq(issues.status, statuses[0]) : inArray(issues.status, statuses));
+      }
+      if (filters?.assigneeAgentId) {
+        conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));
+      }
+      if (filters?.participantAgentId) {
+        conditions.push(participatedByAgentCondition(companyId, filters.participantAgentId));
+      }
+      if (filters?.assigneeUserId) {
+        conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
+      }
+      if (touchedByUserId) {
+        conditions.push(touchedByUserCondition(companyId, touchedByUserId));
+      }
+      if (inboxArchivedByUserId) {
+        conditions.push(inboxVisibleForUserCondition(companyId, inboxArchivedByUserId));
+      }
+      if (unreadForUserId) {
+        conditions.push(unreadForUserCondition(companyId, unreadForUserId));
+      }
+      if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
+      if (filters?.executionWorkspaceId) {
+        conditions.push(eq(issues.executionWorkspaceId, filters.executionWorkspaceId));
+      }
+      if (filters?.parentId) conditions.push(eq(issues.parentId, filters.parentId));
+      if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
+      if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
+      if (filters?.labelId) {
+        const labeledIssueIds = await db
+          .select({ issueId: issueLabels.issueId })
+          .from(issueLabels)
+          .where(and(eq(issueLabels.companyId, companyId), eq(issueLabels.labelId, filters.labelId)));
+        if (labeledIssueIds.length === 0) return [];
+        conditions.push(inArray(issues.id, labeledIssueIds.map((row) => row.issueId)));
+      }
+      if (hasSearch) {
+        conditions.push(
+          or(
+            titleContainsMatch,
+            identifierContainsMatch,
+            descriptionContainsMatch,
+            commentContainsMatch,
+          )!,
+        );
+      }
+      if (!filters?.includeRoutineExecutions && !filters?.originKind && !filters?.originId) {
+        conditions.push(ne(issues.originKind, "routine_execution"));
+      }
+      conditions.push(isNull(issues.hiddenAt));
+
+      const priorityOrder = sql`CASE ${issues.priority} WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`;
+      const searchOrder = sql<number>`
+        CASE
+          WHEN ${titleStartsWithMatch} THEN 0
+          WHEN ${titleContainsMatch} THEN 1
+          WHEN ${identifierStartsWithMatch} THEN 2
+          WHEN ${identifierContainsMatch} THEN 3
+          WHEN ${commentContainsMatch} THEN 4
+          WHEN ${descriptionContainsMatch} THEN 5
+          ELSE 6
+        END
+      `;
+      const canonicalLastActivityAt = includeActivityLogs
+        ? issueCanonicalLastActivityAtExpr(companyId)
+        : issueCommentOnlyLastActivityAtExpr(companyId);
+      const baseQuery = db
+        .select()
+        .from(issues)
+        .where(and(...conditions))
+        .orderBy(
+          hasSearch ? asc(searchOrder) : asc(priorityOrder),
+          asc(priorityOrder),
+          desc(canonicalLastActivityAt),
+          desc(issues.updatedAt),
+        );
+      const rows = limit === undefined ? await baseQuery : await baseQuery.limit(limit);
+      const withLabels = await withIssueLabels(db, rows);
+      const runMap = await activeRunMapForIssues(db, withLabels);
+      const withRuns = withActiveRuns(withLabels, runMap);
+      if (withRuns.length === 0) {
+        return withRuns;
+      }
+
+      const issueIds = withRuns.map((row) => row.id);
+      const [statsRows, readRows, lastActivityRows] = await Promise.all([
+        contextUserId
+          ? db
+            .select({
+              issueId: issueComments.issueId,
+              myLastCommentAt: sql<Date | null>`
+                MAX(CASE WHEN ${issueComments.authorUserId} = ${contextUserId} THEN ${issueComments.createdAt} END)
+              `,
+              lastExternalCommentAt: sql<Date | null>`
+                MAX(
+                  CASE
+                    WHEN ${issueComments.authorUserId} IS NULL OR ${issueComments.authorUserId} <> ${contextUserId}
+                    THEN ${issueComments.createdAt}
+                  END
+                )
+              `,
+            })
+            .from(issueComments)
+            .where(
+              and(
+                eq(issueComments.companyId, companyId),
+                inArray(issueComments.issueId, issueIds),
+              ),
+            )
+            .groupBy(issueComments.issueId)
+          : Promise.resolve([]),
+        contextUserId
+          ? db
+            .select({
+              issueId: issueReadStates.issueId,
+              myLastReadAt: issueReadStates.lastReadAt,
+            })
+            .from(issueReadStates)
+            .where(
+              and(
+                eq(issueReadStates.companyId, companyId),
+                eq(issueReadStates.userId, contextUserId),
+                inArray(issueReadStates.issueId, issueIds),
+              ),
+            )
+          : Promise.resolve([]),
+        Promise.all([
+          db
+            .select({
+              issueId: issueComments.issueId,
+              latestCommentAt: sql<Date | null>`MAX(${issueComments.createdAt})`,
+            })
+            .from(issueComments)
+            .where(
+              and(
+                eq(issueComments.companyId, companyId),
+                inArray(issueComments.issueId, issueIds),
+              ),
+            )
+            .groupBy(issueComments.issueId),
+          includeActivityLogs
+            ? db
+              .select({
+                issueId: activityLog.entityId,
+                latestLogAt: sql<Date | null>`MAX(${activityLog.createdAt})`,
+              })
+              .from(activityLog)
+              .where(
+                and(
+                  eq(activityLog.companyId, companyId),
+                  eq(activityLog.entityType, "issue"),
+                  inArray(activityLog.entityId, issueIds),
+                  sql`${activityLog.action} NOT IN (${sql.join(
+                    ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS.map((action) => sql`${action}`),
+                    sql`, `,
+                  )})`,
+                ),
+              )
+              .groupBy(activityLog.entityId)
+            : Promise.resolve([]),
+        ]).then(([commentRows, logRows]) => {
+          const byIssueId = new Map<string, IssueLastActivityStat>();
+          for (const row of commentRows) {
+            byIssueId.set(row.issueId, {
+              issueId: row.issueId,
+              latestCommentAt: row.latestCommentAt,
+              latestLogAt: null,
+            });
+          }
+          for (const row of logRows) {
+            const existing = byIssueId.get(row.issueId);
+            if (existing) existing.latestLogAt = row.latestLogAt;
+            else {
+              byIssueId.set(row.issueId, {
+                issueId: row.issueId,
+                latestCommentAt: null,
+                latestLogAt: row.latestLogAt,
+              });
+            }
+          }
+          return [...byIssueId.values()];
+        }),
+      ]);
+      const statsByIssueId = new Map(statsRows.map((row) => [row.issueId, row]));
+      const lastActivityByIssueId = new Map(lastActivityRows.map((row) => [row.issueId, row]));
+
+      if (!contextUserId) {
+        return withRuns.map((row) => {
+          const activity = lastActivityByIssueId.get(row.id);
+          const lastActivityAt = latestIssueActivityAt(
+            row.updatedAt,
+            activity?.latestCommentAt ?? null,
+            activity?.latestLogAt ?? null,
+          ) ?? row.updatedAt;
+          return {
+            ...row,
+            lastActivityAt,
+          };
+        });
+      }
+
+      const readByIssueId = new Map(readRows.map((row) => [row.issueId, row.myLastReadAt]));
+
+      return withRuns.map((row) => {
+        const activity = lastActivityByIssueId.get(row.id);
+        const lastActivityAt = latestIssueActivityAt(
+          row.updatedAt,
+          activity?.latestCommentAt ?? null,
+          activity?.latestLogAt ?? null,
+        ) ?? row.updatedAt;
+        return {
+          ...row,
+          lastActivityAt,
+          ...deriveIssueUserContext(row, contextUserId, {
+            myLastCommentAt: statsByIssueId.get(row.id)?.myLastCommentAt ?? null,
+            myLastReadAt: readByIssueId.get(row.id) ?? null,
+            lastExternalCommentAt: statsByIssueId.get(row.id)?.lastExternalCommentAt ?? null,
+          }),
+        };
+      });
+  }
 
   async function getIssueByUuid(id: string) {
     const row = await db
@@ -911,250 +1190,12 @@ export function issueService(db: Db) {
 
   return {
     list: async (companyId: string, filters?: IssueFilters) => {
-      const conditions = [eq(issues.companyId, companyId)];
-      const limit = typeof filters?.limit === "number" && Number.isFinite(filters.limit)
-        ? Math.max(1, Math.floor(filters.limit))
-        : undefined;
-      const touchedByUserId = filters?.touchedByUserId?.trim() || undefined;
-      const inboxArchivedByUserId = filters?.inboxArchivedByUserId?.trim() || undefined;
-      const unreadForUserId = filters?.unreadForUserId?.trim() || undefined;
-      const contextUserId = unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId;
-      const rawSearch = filters?.q?.trim() ?? "";
-      const hasSearch = rawSearch.length > 0;
-      const escapedSearch = hasSearch ? escapeLikePattern(rawSearch) : "";
-      const startsWithPattern = `${escapedSearch}%`;
-      const containsPattern = `%${escapedSearch}%`;
-      const titleStartsWithMatch = sql<boolean>`${issues.title} ILIKE ${startsWithPattern} ESCAPE '\\'`;
-      const titleContainsMatch = sql<boolean>`${issues.title} ILIKE ${containsPattern} ESCAPE '\\'`;
-      const identifierStartsWithMatch = sql<boolean>`${issues.identifier} ILIKE ${startsWithPattern} ESCAPE '\\'`;
-      const identifierContainsMatch = sql<boolean>`${issues.identifier} ILIKE ${containsPattern} ESCAPE '\\'`;
-      const descriptionContainsMatch = sql<boolean>`${issues.description} ILIKE ${containsPattern} ESCAPE '\\'`;
-      const commentContainsMatch = sql<boolean>`
-        EXISTS (
-          SELECT 1
-          FROM ${issueComments}
-          WHERE ${issueComments.issueId} = ${issues.id}
-            AND ${issueComments.companyId} = ${companyId}
-            AND ${issueComments.body} ILIKE ${containsPattern} ESCAPE '\\'
-        )
-      `;
-      if (filters?.status) {
-        const statuses = filters.status.split(",").map((s) => s.trim());
-        conditions.push(statuses.length === 1 ? eq(issues.status, statuses[0]) : inArray(issues.status, statuses));
+      try {
+        return await listInternal(companyId, filters, { includeActivityLogs: true });
+      } catch (error) {
+        if (!isInvalidUtf8DbError(error)) throw error;
+        return await listInternal(companyId, filters, { includeActivityLogs: false });
       }
-      if (filters?.assigneeAgentId) {
-        conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));
-      }
-      if (filters?.participantAgentId) {
-        conditions.push(participatedByAgentCondition(companyId, filters.participantAgentId));
-      }
-      if (filters?.assigneeUserId) {
-        conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
-      }
-      if (touchedByUserId) {
-        conditions.push(touchedByUserCondition(companyId, touchedByUserId));
-      }
-      if (inboxArchivedByUserId) {
-        conditions.push(inboxVisibleForUserCondition(companyId, inboxArchivedByUserId));
-      }
-      if (unreadForUserId) {
-        conditions.push(unreadForUserCondition(companyId, unreadForUserId));
-      }
-      if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
-      if (filters?.executionWorkspaceId) {
-        conditions.push(eq(issues.executionWorkspaceId, filters.executionWorkspaceId));
-      }
-      if (filters?.parentId) conditions.push(eq(issues.parentId, filters.parentId));
-      if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
-      if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
-      if (filters?.labelId) {
-        const labeledIssueIds = await db
-          .select({ issueId: issueLabels.issueId })
-          .from(issueLabels)
-          .where(and(eq(issueLabels.companyId, companyId), eq(issueLabels.labelId, filters.labelId)));
-        if (labeledIssueIds.length === 0) return [];
-        conditions.push(inArray(issues.id, labeledIssueIds.map((row) => row.issueId)));
-      }
-      if (hasSearch) {
-        conditions.push(
-          or(
-            titleContainsMatch,
-            identifierContainsMatch,
-            descriptionContainsMatch,
-            commentContainsMatch,
-          )!,
-        );
-      }
-      if (!filters?.includeRoutineExecutions && !filters?.originKind && !filters?.originId) {
-        conditions.push(ne(issues.originKind, "routine_execution"));
-      }
-      conditions.push(isNull(issues.hiddenAt));
-
-      const priorityOrder = sql`CASE ${issues.priority} WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`;
-      const searchOrder = sql<number>`
-        CASE
-          WHEN ${titleStartsWithMatch} THEN 0
-          WHEN ${titleContainsMatch} THEN 1
-          WHEN ${identifierStartsWithMatch} THEN 2
-          WHEN ${identifierContainsMatch} THEN 3
-          WHEN ${commentContainsMatch} THEN 4
-          WHEN ${descriptionContainsMatch} THEN 5
-          ELSE 6
-        END
-      `;
-      const canonicalLastActivityAt = issueCanonicalLastActivityAtExpr(companyId);
-      const baseQuery = db
-        .select()
-        .from(issues)
-        .where(and(...conditions))
-        .orderBy(
-          hasSearch ? asc(searchOrder) : asc(priorityOrder),
-          asc(priorityOrder),
-          desc(canonicalLastActivityAt),
-          desc(issues.updatedAt),
-        );
-      const rows = limit === undefined ? await baseQuery : await baseQuery.limit(limit);
-      const withLabels = await withIssueLabels(db, rows);
-      const runMap = await activeRunMapForIssues(db, withLabels);
-      const withRuns = withActiveRuns(withLabels, runMap);
-      if (withRuns.length === 0) {
-        return withRuns;
-      }
-
-      const issueIds = withRuns.map((row) => row.id);
-      const [statsRows, readRows, lastActivityRows] = await Promise.all([
-        contextUserId
-          ? db
-            .select({
-              issueId: issueComments.issueId,
-              myLastCommentAt: sql<Date | null>`
-                MAX(CASE WHEN ${issueComments.authorUserId} = ${contextUserId} THEN ${issueComments.createdAt} END)
-              `,
-              lastExternalCommentAt: sql<Date | null>`
-                MAX(
-                  CASE
-                    WHEN ${issueComments.authorUserId} IS NULL OR ${issueComments.authorUserId} <> ${contextUserId}
-                    THEN ${issueComments.createdAt}
-                  END
-                )
-              `,
-            })
-            .from(issueComments)
-            .where(
-              and(
-                eq(issueComments.companyId, companyId),
-                inArray(issueComments.issueId, issueIds),
-              ),
-            )
-            .groupBy(issueComments.issueId)
-          : Promise.resolve([]),
-        contextUserId
-          ? db
-            .select({
-              issueId: issueReadStates.issueId,
-              myLastReadAt: issueReadStates.lastReadAt,
-            })
-            .from(issueReadStates)
-            .where(
-              and(
-                eq(issueReadStates.companyId, companyId),
-                eq(issueReadStates.userId, contextUserId),
-                inArray(issueReadStates.issueId, issueIds),
-              ),
-            )
-          : Promise.resolve([]),
-        Promise.all([
-          db
-            .select({
-              issueId: issueComments.issueId,
-              latestCommentAt: sql<Date | null>`MAX(${issueComments.createdAt})`,
-            })
-            .from(issueComments)
-            .where(
-              and(
-                eq(issueComments.companyId, companyId),
-                inArray(issueComments.issueId, issueIds),
-              ),
-            )
-            .groupBy(issueComments.issueId),
-          db
-            .select({
-              issueId: activityLog.entityId,
-              latestLogAt: sql<Date | null>`MAX(${activityLog.createdAt})`,
-            })
-            .from(activityLog)
-            .where(
-              and(
-                eq(activityLog.companyId, companyId),
-                eq(activityLog.entityType, "issue"),
-                inArray(activityLog.entityId, issueIds),
-                sql`${activityLog.action} NOT IN (${sql.join(
-                  ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS.map((action) => sql`${action}`),
-                  sql`, `,
-                )})`,
-              ),
-            )
-            .groupBy(activityLog.entityId),
-        ]).then(([commentRows, logRows]) => {
-          const byIssueId = new Map<string, IssueLastActivityStat>();
-          for (const row of commentRows) {
-            byIssueId.set(row.issueId, {
-              issueId: row.issueId,
-              latestCommentAt: row.latestCommentAt,
-              latestLogAt: null,
-            });
-          }
-          for (const row of logRows) {
-            const existing = byIssueId.get(row.issueId);
-            if (existing) existing.latestLogAt = row.latestLogAt;
-            else {
-              byIssueId.set(row.issueId, {
-                issueId: row.issueId,
-                latestCommentAt: null,
-                latestLogAt: row.latestLogAt,
-              });
-            }
-          }
-          return [...byIssueId.values()];
-        }),
-      ]);
-      const statsByIssueId = new Map(statsRows.map((row) => [row.issueId, row]));
-      const lastActivityByIssueId = new Map(lastActivityRows.map((row) => [row.issueId, row]));
-
-      if (!contextUserId) {
-        return withRuns.map((row) => {
-          const activity = lastActivityByIssueId.get(row.id);
-          const lastActivityAt = latestIssueActivityAt(
-            row.updatedAt,
-            activity?.latestCommentAt ?? null,
-            activity?.latestLogAt ?? null,
-          ) ?? row.updatedAt;
-          return {
-            ...row,
-            lastActivityAt,
-          };
-        });
-      }
-
-      const readByIssueId = new Map(readRows.map((row) => [row.issueId, row.myLastReadAt]));
-
-      return withRuns.map((row) => {
-        const activity = lastActivityByIssueId.get(row.id);
-        const lastActivityAt = latestIssueActivityAt(
-          row.updatedAt,
-          activity?.latestCommentAt ?? null,
-          activity?.latestLogAt ?? null,
-        ) ?? row.updatedAt;
-        return {
-          ...row,
-          lastActivityAt,
-          ...deriveIssueUserContext(row, contextUserId, {
-            myLastCommentAt: statsByIssueId.get(row.id)?.myLastCommentAt ?? null,
-            myLastReadAt: readByIssueId.get(row.id) ?? null,
-            lastExternalCommentAt: statsByIssueId.get(row.id)?.lastExternalCommentAt ?? null,
-          }),
-        };
-      });
     },
 
     countUnreadTouchedByUser: async (companyId: string, userId: string, status?: string) => {
