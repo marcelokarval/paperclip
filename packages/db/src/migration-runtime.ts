@@ -87,6 +87,10 @@ async function loadEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
   }
 }
 
+function buildEmbeddedPostgresAdminConnectionString(port: number): string {
+  return `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
+}
+
 async function ensureEmbeddedPostgresConnection(
   dataDir: string,
   preferredPort: number,
@@ -103,7 +107,7 @@ async function ensureEmbeddedPostgresConnection(
     actualDataDir: string | null;
   }> {
     const actualDataDir = await getPostgresDataDirectory(
-      `postgres://paperclip:paperclip@127.0.0.1:${preferredPort}/postgres`,
+      buildEmbeddedPostgresAdminConnectionString(preferredPort),
     );
     return {
       matchesDataDir:
@@ -125,7 +129,7 @@ async function ensureEmbeddedPostgresConnection(
     }
 
     await ensurePostgresDatabase(
-      `postgres://paperclip:paperclip@127.0.0.1:${preferredPort}/postgres`,
+      buildEmbeddedPostgresAdminConnectionString(preferredPort),
       "paperclip",
     );
     process.emitWarning(
@@ -145,7 +149,7 @@ async function ensureEmbeddedPostgresConnection(
         throw new Error("reachable postgres does not use the expected embedded data directory");
       }
       await ensurePostgresDatabase(
-        `postgres://paperclip:paperclip@127.0.0.1:${preferredPort}/postgres`,
+        buildEmbeddedPostgresAdminConnectionString(preferredPort),
         "paperclip",
       );
       process.emitWarning(
@@ -163,7 +167,7 @@ async function ensureEmbeddedPostgresConnection(
 
   if (runningPid) {
     const port = runningPort ?? preferredPort;
-    const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
+    const adminConnectionString = buildEmbeddedPostgresAdminConnectionString(port);
     await ensurePostgresDatabase(adminConnectionString, "paperclip");
     return {
       connectionString: `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`,
@@ -207,7 +211,7 @@ async function ensureEmbeddedPostgresConnection(
     });
   }
 
-  const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${selectedPort}/postgres`;
+  const adminConnectionString = buildEmbeddedPostgresAdminConnectionString(selectedPort);
   await ensurePostgresDatabase(adminConnectionString, "paperclip");
 
   return {

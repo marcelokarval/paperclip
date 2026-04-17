@@ -51,11 +51,13 @@ import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+let moduleImportVersionNonce = 0;
 
 export async function resolveVersionedModuleImportUrl(modulePath: string): Promise<string> {
   const moduleUrl = pathToFileURL(modulePath);
   const metadata = await stat(modulePath);
-  moduleUrl.searchParams.set("v", `${metadata.mtimeMs}-${metadata.size}`);
+  moduleImportVersionNonce += 1;
+  moduleUrl.searchParams.set("v", `${metadata.mtimeMs}-${metadata.size}-${moduleImportVersionNonce}`);
   return moduleUrl.href;
 }
 
