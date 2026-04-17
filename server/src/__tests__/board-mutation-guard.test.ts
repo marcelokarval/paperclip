@@ -6,6 +6,7 @@ import { boardMutationGuard } from "../middleware/board-mutation-guard.js";
 function createApp(
   actorType: "board" | "agent",
   boardSource: "session" | "local_implicit" | "board_key" = "session",
+  options?: Parameters<typeof boardMutationGuard>[0],
 ) {
   const app = express();
   app.use(express.json());
@@ -15,7 +16,7 @@ function createApp(
       : { type: "agent", agentId: "agent-1" };
     next();
   });
-  app.use(boardMutationGuard());
+  app.use(boardMutationGuard(options));
   app.post("/mutate", (_req, res) => {
     res.status(204).end();
   });
@@ -84,25 +85,14 @@ describe("boardMutationGuard", () => {
     expect([200, 204]).toContain(res.status);
   });
 
-  it("allows board mutations when x-forwarded-host matches origin", async () => {
-    const app = createApp("board");
-    const res = await request(app)
-      .post("/mutate")
-      .set("Host", "127.0.0.1")
-      .set("X-Forwarded-Host", "10.90.10.20:3443")
-      .set("Origin", "https://10.90.10.20:3443")
-      .send({ ok: true });
-    expect([200, 204]).toContain(res.status);
-  });
-
-  it("blocks board mutations when x-forwarded-host does not match origin", async () => {
+  it("blocks board mutations when host and origin are attacker-controlled", () => {
     const middleware = boardMutationGuard();
     const req = {
       method: "POST",
       actor: { type: "board", userId: "board", source: "session" },
       header: (name: string) => {
-        if (name === "host") return "127.0.0.1";
-        if (name === "x-forwarded-host") return "10.90.10.20:3443";
+        if (name === "host") return "evil.example.com";
+        if (name === "x-forwarded-host") return "evil.example.com";
         if (name === "origin") return "https://evil.example.com";
         return undefined;
       },
@@ -120,6 +110,17 @@ describe("boardMutationGuard", () => {
     expect(res.json).toHaveBeenCalledWith({
       error: "Board mutation requires trusted browser origin",
     });
+  });
+
+  it("allows board mutations from configured trusted origin", async () => {
+    const app = createApp("board", "session", {
+      trustedOrigins: ["https://board.paperclip.local"],
+    });
+    const res = await request(app)
+      .post("/mutate")
+      .set("Origin", "https://board.paperclip.local")
+      .send({ ok: true });
+    expect([200, 204]).toContain(res.status);
   });
 
   it("does not block authenticated agent mutations", async () => {

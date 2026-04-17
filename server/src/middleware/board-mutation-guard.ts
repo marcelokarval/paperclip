@@ -6,6 +6,10 @@ const DEFAULT_DEV_ORIGINS = [
   "http://127.0.0.1:3100",
 ];
 
+type BoardMutationGuardOptions = {
+  trustedOrigins?: string[];
+};
+
 function parseOrigin(value: string | undefined) {
   if (!value) return null;
   try {
@@ -16,19 +20,7 @@ function parseOrigin(value: string | undefined) {
   }
 }
 
-function trustedOriginsForRequest(req: Request) {
-  const origins = new Set(DEFAULT_DEV_ORIGINS.map((value) => value.toLowerCase()));
-  const forwardedHost = req.header("x-forwarded-host")?.split(",")[0]?.trim();
-  const host = forwardedHost || req.header("host")?.trim();
-  if (host) {
-    origins.add(`http://${host}`.toLowerCase());
-    origins.add(`https://${host}`.toLowerCase());
-  }
-  return origins;
-}
-
-function isTrustedBoardMutationRequest(req: Request) {
-  const allowedOrigins = trustedOriginsForRequest(req);
+function isTrustedBoardMutationRequest(req: Request, allowedOrigins: Set<string>) {
   const origin = parseOrigin(req.header("origin"));
   if (origin && allowedOrigins.has(origin)) return true;
 
@@ -38,7 +30,13 @@ function isTrustedBoardMutationRequest(req: Request) {
   return false;
 }
 
-export function boardMutationGuard(): RequestHandler {
+export function boardMutationGuard(options: BoardMutationGuardOptions = {}): RequestHandler {
+  const allowedOrigins = new Set(
+    (options.trustedOrigins ?? DEFAULT_DEV_ORIGINS)
+      .map((value) => parseOrigin(value))
+      .filter((value): value is string => value !== null),
+  );
+
   return (req, res, next) => {
     if (SAFE_METHODS.has(req.method.toUpperCase())) {
       next();
@@ -57,7 +55,7 @@ export function boardMutationGuard(): RequestHandler {
       return;
     }
 
-    if (!isTrustedBoardMutationRequest(req)) {
+    if (!isTrustedBoardMutationRequest(req, allowedOrigins)) {
       res.status(403).json({ error: "Board mutation requires trusted browser origin" });
       return;
     }

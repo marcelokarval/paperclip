@@ -74,6 +74,29 @@ const VITE_DEV_STATIC_PATHS = new Set([
   "/site.webmanifest",
 ]);
 
+function deriveTrustedBoardOrigins(opts: {
+  serverPort: number;
+  allowedHostnames: string[];
+  bindHost: string;
+}): string[] {
+  const trustedOrigins = new Set<string>([
+    `http://localhost:${opts.serverPort}`,
+    `http://127.0.0.1:${opts.serverPort}`,
+  ]);
+
+  const addHostnameOrigins = (hostname: string) => {
+    const normalized = hostname.trim().toLowerCase();
+    if (!normalized || normalized === "0.0.0.0" || normalized === "::") return;
+    trustedOrigins.add(`http://${normalized}`);
+    trustedOrigins.add(`https://${normalized}`);
+  };
+
+  addHostnameOrigins(opts.bindHost);
+  for (const hostname of opts.allowedHostnames) addHostnameOrigins(hostname);
+
+  return Array.from(trustedOrigins);
+}
+
 export function resolveViteHmrPort(serverPort: number): number {
   if (serverPort <= 55_535) {
     return serverPort + 10_000;
@@ -168,7 +191,13 @@ export async function createApp(
 
   // Mount API routes
   const api = Router();
-  api.use(boardMutationGuard());
+  api.use(boardMutationGuard({
+    trustedOrigins: deriveTrustedBoardOrigins({
+      serverPort: opts.serverPort,
+      allowedHostnames: opts.allowedHostnames,
+      bindHost: opts.bindHost,
+    }),
+  }));
   api.use(
     "/health",
     healthRoutes(db, {
