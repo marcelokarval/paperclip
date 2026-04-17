@@ -26,6 +26,12 @@ as each finding moves through:
 4. Sourcery review
 5. merge / closure
 
+For recurring upstream merged-PR monitoring outside this scan queue, use:
+
+- `doc/plans/TEMPLATE-upstream-pr-monitoring-ledger.md`
+- Active ledger for the current monitoring window:
+  - `doc/plans/2026-04-16-upstream-pr-monitoring-ledger.md`
+
 ## Operating Rules
 
 - Use the fork as the remediation workspace and compare against

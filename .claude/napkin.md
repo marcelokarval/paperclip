@@ -23,7 +23,11 @@
    Do instead: read Sourcery feedback, classify each item, save deferred high-ROI items in `doc/SOURCERY-REVIEW-POOL.md`, then mention that record in the closing PR comment before merge.
 4. **[2026-04-16] Turn substantive Sourcery follow-ups into new issue + PR cycles**
    Do instead: keep only bounded local fixes in the same PR; if review feedback becomes a separate slice, open a new GitHub issue and a new PR linked back to the original one.
-5. **[2026-04-15] Use body files for GitHub markdown comments**
+5. **[2026-04-16] Apply bounded PR follow-ups on the PR branch itself**
+   Do instead: check out the existing PR branch, make the bounded fix there, and rerun proof on that same branch before updating the review thread.
+6. **[2026-04-16] Fall back to `gh` when GitHub MCP is degraded**
+   Do instead: if the GitHub MCP call stalls or fails, continue the PR/issue workflow with `gh` rather than blocking on the connector.
+7. **[2026-04-15] Use body files for GitHub markdown comments**
    Do instead: write multi-line issue/PR comments to a temp file and send them with `gh ... --body-file`; reserve inline `--body` only for genuinely short plain-text comments.
 
 ## Shell & Command Reliability

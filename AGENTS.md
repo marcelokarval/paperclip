@@ -66,6 +66,20 @@ user actually executed.
 - If a fix exists upstream but not in this fork, prefer aligning or backporting
   from upstream rather than re-diagnosing the same bug from zero.
 
+### Upstream monitoring ledger rule
+
+- When monitoring merged upstream PRs for possible intake into this fork, use:
+  - `doc/plans/TEMPLATE-upstream-pr-monitoring-ledger.md`
+- Treat upstream monitoring as a tracked decision process, not an ad-hoc note.
+- The active monitoring document must always record:
+  - the last upstream PR analyzed
+  - when it was analyzed
+  - the next PR to inspect
+  - the decision status for every PR reviewed
+  - whether it was incorporated into this fork and why
+- Do not skip merged upstream PRs on intuition alone. Record the analysis and
+  decision even when the result is `ignore`.
+
 ## 5. Dev Setup (Auto DB)
 
 Use embedded PGlite in dev by leaving `DATABASE_URL` unset.
@@ -214,6 +228,10 @@ When creating a pull request (via `gh pr create` or any other method), you **mus
 - Keep fixes in the same PR only when they remain honestly bounded to the
   current PR scope, such as typos, missing assertions, or other local
   corrections.
+- When a bounded follow-up belongs in the same PR, prefer checking out the
+  existing PR branch directly and applying the fix there.
+- Rerun the relevant verification on that same PR branch so the proof matches
+  the exact branch that will be merged.
 - When Sourcery feedback turns into a real follow-up slice, broader hardening,
   or structurally separate work item, open a new GitHub issue and implement it
   in a new branch/PR cycle that links back to the originating PR.
