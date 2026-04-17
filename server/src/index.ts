@@ -1,12 +1,13 @@
 /// <reference path="./types/express.d.ts" />
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
+import { randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import type { Request as ExpressRequest, RequestHandler } from "express";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   createDb,
   ensurePostgresDatabase,
@@ -69,6 +70,41 @@ type EmbeddedPostgresCtor = new (opts: {
   onLog?: (message: unknown) => void;
   onError?: (message: unknown) => void;
 }) => EmbeddedPostgresInstance;
+
+type EmbeddedPostgresCredentials = {
+  user: string;
+  password: string;
+  source: "file" | "generated";
+};
+
+function resolveEmbeddedPostgresCredentials(dataDir: string): EmbeddedPostgresCredentials {
+  const credentialsPath = resolve(dataDir, ".paperclip-embedded-postgres-credentials.json");
+  if (existsSync(credentialsPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(credentialsPath, "utf8")) as Partial<EmbeddedPostgresCredentials>;
+      if (typeof parsed.user === "string" && parsed.user && typeof parsed.password === "string" && parsed.password) {
+        return { user: parsed.user, password: parsed.password, source: "file" };
+      }
+    } catch {
+      // Ignore and regenerate below.
+    }
+  }
+
+  const generated: EmbeddedPostgresCredentials = {
+    user: "paperclip",
+    password: randomBytes(24).toString("base64url"),
+    source: "generated",
+  };
+
+  mkdirSync(dataDir, { recursive: true });
+  writeFileSync(
+    credentialsPath,
+    `${JSON.stringify({ user: generated.user, password: generated.password }, null, 2)}\n`,
+    "utf8",
+  );
+  chmodSync(credentialsPath, 0o600);
+  return generated;
+}
 
 
 export interface StartedServer {
@@ -321,6 +357,8 @@ export async function startServer(): Promise<StartedServer> {
   
     const clusterVersionFile = resolve(dataDir, "PG_VERSION");
     const clusterAlreadyInitialized = existsSync(clusterVersionFile);
+    const embeddedCredentials = resolveEmbeddedPostgresCredentials(dataDir);
+    const { user: embeddedUser, password: embeddedPassword } = embeddedCredentials;
     const postmasterPidFile = resolve(dataDir, "postmaster.pid");
     const isPidRunning = (pid: number): boolean => {
       try {
@@ -348,7 +386,7 @@ export async function startServer(): Promise<StartedServer> {
     if (runningPid) {
       logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${runningPid}, port=${port})`);
     } else {
-      const configuredAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${configuredPort}/postgres`;
+      const configuredAdminConnectionString = `postgres://${embeddedUser}:${embeddedPassword}@127.0.0.1:${configuredPort}/postgres`;
       try {
         const actualDataDir = await getPostgresDataDirectory(configuredAdminConnectionString);
         if (
@@ -370,8 +408,8 @@ export async function startServer(): Promise<StartedServer> {
         logger.info(`Using embedded PostgreSQL because no DATABASE_URL set (dataDir=${dataDir}, port=${port})`);
         embeddedPostgres = new EmbeddedPostgres({
           databaseDir: dataDir,
-          user: "paperclip",
-          password: "paperclip",
+          user: embeddedUser,
+          password: embeddedPassword,
           port,
           persistent: true,
           initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
@@ -410,13 +448,29 @@ export async function startServer(): Promise<StartedServer> {
       }
     }
   
-    const embeddedAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
+    let effectiveEmbeddedPassword = embeddedPassword;
+    let embeddedAdminConnectionString = `postgres://${embeddedUser}:${effectiveEmbeddedPassword}@127.0.0.1:${port}/postgres`;
+    if (clusterAlreadyInitialized && embeddedCredentials.source === "generated") {
+      const legacyConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
+      try {
+        const legacyDb = createDb(legacyConnectionString);
+        await legacyDb.execute(sql`ALTER ROLE "paperclip" WITH PASSWORD ${embeddedPassword}`);
+        logger.info("Rotated embedded PostgreSQL password from legacy default credentials");
+      } catch (err) {
+        effectiveEmbeddedPassword = "paperclip";
+        embeddedAdminConnectionString = legacyConnectionString;
+        logger.warn(
+          { err },
+          "Unable to rotate embedded PostgreSQL password from legacy default credentials; continuing with legacy credentials for this run",
+        );
+      }
+    }
     const dbStatus = await ensurePostgresDatabase(embeddedAdminConnectionString, "paperclip");
     if (dbStatus === "created") {
       logger.info("Created embedded PostgreSQL database: paperclip");
     }
   
-    const embeddedConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
+    const embeddedConnectionString = `postgres://${embeddedUser}:${effectiveEmbeddedPassword}@127.0.0.1:${port}/paperclip`;
     const shouldAutoApplyFirstRunMigrations = !clusterAlreadyInitialized || dbStatus === "created";
     if (shouldAutoApplyFirstRunMigrations) {
       logger.info("Detected first-run embedded PostgreSQL setup; applying pending migrations automatically");
