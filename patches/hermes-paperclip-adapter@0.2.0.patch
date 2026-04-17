@@ -1,0 +1,80 @@
+diff --git a/dist/index.js b/dist/index.js
+index d6afd5d43617e6ce96b1247ade584532f2385144..31c95d7bbcb059e78480938d1994ae56ef989d89 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -64,6 +64,7 @@ tools, persistent memory, session persistence, skills, and MCP support.
+ | verbose | boolean | false | Enable verbose output |
+ | extraArgs | string[] | [] | Additional CLI arguments |
+ | env | object | {} | Extra environment variables |
++| instructionsFilePath | string | (none) | Absolute or cwd-relative path to AGENTS.md injected into the Hermes prompt before the Paperclip wake instructions |
+ | promptTemplate | string | (default) | Custom prompt template with {{variable}} placeholders |
+ 
+ ## Available Template Variables
+diff --git a/dist/server/execute.js b/dist/server/execute.js
+index 93cddf8243271f5fb3ab101617f9114257e41328..c5661ae85ffdd389e3698a6f0757e73f905946aa 100644
+--- a/dist/server/execute.js
++++ b/dist/server/execute.js
+@@ -15,6 +15,8 @@
+  *   -v/--verbose       verbose output
+  *   --checkpoints      filesystem checkpoints
+  */
++import fs from "node:fs/promises";
++import path from "node:path";
+ import { runChildProcess, buildPaperclipEnv, renderTemplate, ensureAbsoluteDirectory, } from "@paperclipai/adapter-utils/server-utils";
+ import { HERMES_CLI, DEFAULT_TIMEOUT_SEC, DEFAULT_GRACE_SEC, VALID_PROVIDERS, } from "../shared/constants.js";
+ // ---------------------------------------------------------------------------
+@@ -34,6 +36,9 @@ function cfgStringArray(v) {
+         ? v
+         : undefined;
+ }
++function resolveInstructionsFilePath(candidatePath, cwd) {
++    return path.isAbsolute(candidatePath) ? candidatePath : path.resolve(cwd, candidatePath);
++}
+ // ---------------------------------------------------------------------------
+ // Wake-up prompt builder
+ // ---------------------------------------------------------------------------
+@@ -253,12 +258,10 @@ export async function execute(ctx) {
+     const persistSession = cfgBoolean(config.persistSession) !== false;
+     const worktreeMode = cfgBoolean(config.worktreeMode) === true;
+     const checkpoints = cfgBoolean(config.checkpoints) === true;
+-    // ── Build prompt ───────────────────────────────────────────────────────
+-    const prompt = buildPrompt(ctx, config);
+     // ── Build command args ─────────────────────────────────────────────────
+     // Use -Q (quiet) to get clean output: just response + session_id line
+     const useQuiet = cfgBoolean(config.quiet) !== false; // default true
+-    const args = ["chat", "-q", prompt];
++    const args = ["chat"];
+     if (useQuiet)
+         args.push("-Q");
+     if (model) {
+@@ -310,6 +313,30 @@ export async function execute(ctx) {
+     catch {
+         // Non-fatal
+     }
++    const instructionsFilePath = cfgString(config.instructionsFilePath);
++    const effectiveInstructionsFilePath = instructionsFilePath
++        ? resolveInstructionsFilePath(instructionsFilePath, cwd)
++        : null;
++    const instructionsDir = effectiveInstructionsFilePath
++        ? `${path.dirname(effectiveInstructionsFilePath)}/`
++        : "";
++    let instructionsPrefix = "";
++    if (effectiveInstructionsFilePath) {
++        try {
++            const instructionsContents = await fs.readFile(effectiveInstructionsFilePath, "utf8");
++            instructionsPrefix =
++                `${instructionsContents}\n\n` +
++                    `The above agent instructions were loaded from ${effectiveInstructionsFilePath}. ` +
++                    `Resolve any relative file references from ${instructionsDir}.\n\n`;
++        }
++        catch (err) {
++            const reason = err instanceof Error ? err.message : String(err);
++            await ctx.onLog("stdout", `[paperclip] Warning: could not read agent instructions file "${effectiveInstructionsFilePath}": ${reason}\n`);
++        }
++    }
++    // ── Build prompt ───────────────────────────────────────────────────────
++    const prompt = `${instructionsPrefix}${buildPrompt(ctx, config)}`;
++    args.push("-q", prompt);
+     // ── Log start ──────────────────────────────────────────────────────────
+     await ctx.onLog("stdout", `[hermes] Starting Hermes Agent (model=${model ?? "configured-default"}, timeout=${timeoutSec}s)\n`);
+     if (prevSessionId) {
