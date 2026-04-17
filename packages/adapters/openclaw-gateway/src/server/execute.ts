@@ -891,10 +891,10 @@ async function autoApproveDevicePairing(params: {
       const pendingRecords = pending
         .map((entry) => asRecord(entry))
         .filter((entry): entry is Record<string, unknown> => Boolean(entry));
-      const matching =
-        (params.deviceId
-          ? pendingRecords.find((entry) => nonEmpty(entry.deviceId) === params.deviceId)
-          : null) ?? pendingRecords[pendingRecords.length - 1];
+      if (!params.deviceId) {
+        return { ok: false, reason: "cannot auto-approve pairing without device identity" };
+      }
+      const matching = pendingRecords.find((entry) => nonEmpty(entry.deviceId) === params.deviceId);
       requestId = nonEmpty(matching?.requestId);
     }
 

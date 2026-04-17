@@ -374,6 +374,124 @@ async function createMockGatewayServerWithPairing() {
   };
 }
 
+async function createMockGatewayServerWithPairingDeviceMismatch() {
+  const wss = new WebSocketServer({ port: 0 });
+  const address = wss.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  const url = `ws://127.0.0.1:${port}`;
+
+  let approved = false;
+
+  wss.on("connection", (socket) => {
+    socket.send(
+      JSON.stringify({
+        type: "event",
+        event: "connect.challenge",
+        payload: { nonce: "nonce-123" },
+      }),
+    );
+
+    socket.on("message", (raw) => {
+      const text = Buffer.isBuffer(raw) ? raw.toString("utf8") : String(raw);
+      const frame = JSON.parse(text) as {
+        type: string;
+        id: string;
+        method: string;
+        params?: Record<string, unknown>;
+      };
+
+      if (frame.type !== "req") return;
+
+      if (frame.method === "connect") {
+        const device = frame.params?.device as Record<string, unknown> | undefined;
+        const deviceId = typeof device?.id === "string" ? device.id : null;
+        if (deviceId && !approved) {
+          socket.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: false,
+              error: {
+                code: "NOT_PAIRED",
+                message: "pairing required",
+                details: {
+                  code: "PAIRING_REQUIRED",
+                  reason: "not-paired",
+                },
+              },
+            }),
+          );
+          socket.close(1008, "pairing required");
+          return;
+        }
+
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: {
+              type: "hello-ok",
+              protocol: 3,
+              server: { version: "test", connId: "conn-1" },
+              features: {
+                methods: ["connect", "agent", "agent.wait", "device.pair.list", "device.pair.approve"],
+                events: ["agent"],
+              },
+              snapshot: { version: 1, ts: Date.now() },
+              policy: { maxPayload: 1_000_000, maxBufferedBytes: 1_000_000, tickIntervalMs: 30_000 },
+            },
+          }),
+        );
+        return;
+      }
+
+      if (frame.method === "device.pair.list") {
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: {
+              pending: [
+                {
+                  requestId: "req-other",
+                  deviceId: "device-other",
+                },
+              ],
+            },
+          }),
+        );
+        return;
+      }
+
+      if (frame.method === "device.pair.approve") {
+        approved = true;
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: {
+              requestId: "req-other",
+            },
+          }),
+        );
+      }
+    });
+  });
+
+  return {
+    url,
+    wasApproved() {
+      return approved;
+    },
+    async close() {
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
+    },
+  };
+}
+
 afterEach(() => {
   // no global mocks
 });
@@ -601,6 +719,39 @@ describe("openclaw gateway adapter execute", () => {
       );
       expect(logs.some((entry) => entry.includes("auto-approved pairing request"))).toBe(true);
       expect(gateway.getAgentPayload()).toBeTruthy();
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it("does not auto-approve an unrelated pending pairing request", async () => {
+    const gateway = await createMockGatewayServerWithPairingDeviceMismatch();
+    const logs: string[] = [];
+
+    try {
+      const result = await execute(
+        buildContext(
+          {
+            url: gateway.url,
+            headers: {
+              "x-openclaw-token": "gateway-token",
+            },
+            waitTimeoutMs: 2000,
+          },
+          {
+            onLog: async (_stream, chunk) => {
+              logs.push(chunk);
+            },
+          },
+        ),
+      );
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("openclaw_gateway_pairing_required");
+      expect(gateway.wasApproved()).toBe(false);
+      expect(
+        logs.some((entry) => entry.includes("auto-pairing failed: no pending device pairing request found")),
+      ).toBe(true);
     } finally {
       await gateway.close();
     }
