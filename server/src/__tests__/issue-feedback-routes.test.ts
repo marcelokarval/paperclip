@@ -163,11 +163,61 @@ describe("issue feedback trace routes", () => {
       });
 
     expect([200, 201]).toContain(res.status);
+    expect(mockFeedbackService.saveIssueVote).toHaveBeenCalledWith(
+      expect.objectContaining({
+        canManageInstanceSettings: true,
+      }),
+    );
     expect(mockFeedbackExportService.flushPendingFeedbackTraces).toHaveBeenCalledWith({
       companyId: "company-1",
       traceId: "trace-1",
       limit: 1,
     });
+  });
+
+  it("does not allow non-admin board users to mutate instance settings via feedback votes", async () => {
+    const targetId = "11111111-1111-4111-8111-111111111111";
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PAP-1",
+    });
+    mockFeedbackService.saveIssueVote.mockResolvedValue({
+      vote: {
+        targetType: "issue_comment",
+        targetId,
+        vote: "up",
+        reason: null,
+      },
+      traceId: null,
+      consentEnabledNow: false,
+      persistedSharingPreference: null,
+      sharingEnabled: true,
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+    });
+
+    const res = await request(app)
+      .post("/api/issues/issue-1/feedback-votes")
+      .send({
+        targetType: "issue_comment",
+        targetId,
+        vote: "up",
+        allowSharing: true,
+      });
+
+    expect([200, 201]).toContain(res.status);
+    expect(mockFeedbackService.saveIssueVote).toHaveBeenCalledWith(
+      expect.objectContaining({
+        canManageInstanceSettings: false,
+      }),
+    );
   });
 
   it("rejects non-board callers before fetching a feedback trace", async () => {
