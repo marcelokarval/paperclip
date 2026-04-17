@@ -442,6 +442,7 @@ describe("company portability", () => {
     expect(extension).toContain('default: ""');
     expect(extension).not.toContain("paperclipSkillSync");
     expect(extension).not.toContain("PATH:");
+    expect(extension).toContain("canCreateAgents: false");
     expect(extension).not.toContain("requireBoardApprovalForNewAgents: true");
     expect(extension).not.toContain("budgetMonthlyCents: 0");
     expect(exported.warnings).toContain("Agent claudecoder command /Users/dotta/.local/bin/claude was omitted from export because it is system-dependent.");

@@ -3171,7 +3171,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             defaultRules: RUNTIME_DEFAULT_RULES,
           },
         ) as Record<string, unknown>;
-        const portablePermissions = pruneDefaultLikeValue(agent.permissions ?? {}, { dropFalseBooleans: true }) as Record<string, unknown>;
+        const portablePermissions = pruneDefaultLikeValue(agent.permissions ?? {}, { dropFalseBooleans: false }) as Record<string, unknown>;
         const agentEnvInputs = dedupeEnvInputs(
           envInputs
             .slice(envInputsStart)
