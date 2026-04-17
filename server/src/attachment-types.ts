@@ -71,7 +71,11 @@ export function matchesContentType(contentType: string, allowedPatterns: string[
 }
 
 export function normalizeContentType(contentType: string | null | undefined): string {
-  const normalized = (contentType ?? "").trim().toLowerCase();
+  const normalized = (contentType ?? "")
+    .trim()
+    .toLowerCase()
+    .split(";", 1)[0]
+    ?.trim();
   return normalized || DEFAULT_ATTACHMENT_CONTENT_TYPE;
 }
 
