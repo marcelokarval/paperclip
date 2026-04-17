@@ -488,4 +488,44 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       executionWorkspaceSettings: { mode: "isolated_workspace" },
     });
   });
+
+  it("rejects execution workspace overrides from agent-triggered routine runs", async () => {
+    const { companyId, agentId, projectId } = await seedFixture();
+    const app = await createApp({
+      type: "agent",
+      companyId,
+      agentId,
+    });
+
+    const createRoutineApp = await createApp({
+      type: "board",
+      userId: randomUUID(),
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const createRes = await request(createRoutineApp)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Agent workspace override guard",
+        assigneeAgentId: agentId,
+      });
+
+    expect([200, 201], JSON.stringify(createRes.body)).toContain(createRes.status);
+
+    const runRes = await postRoutineRun(app, createRes.body.id, {
+      source: "api",
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+        workspaceStrategy: {
+          provisionCommand: "echo should-not-run",
+        },
+      },
+    });
+
+    expect(runRes.status).toBe(403);
+    expect(runRes.body.error).toContain("Only board actors can override execution workspace settings");
+  });
 });

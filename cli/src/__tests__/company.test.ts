@@ -10,6 +10,7 @@ import {
   renderCompanyImportResult,
   resolveCompanyImportApplyConfirmationMode,
   resolveCompanyImportApiPath,
+  resolvePathWithinBase,
 } from "../commands/client/company.js";
 
 describe("resolveCompanyImportApiPath", () => {
@@ -107,6 +108,20 @@ describe("buildCompanyDashboardUrl", () => {
     expect(buildCompanyDashboardUrl("https://paperclip.example/app/", "PAP")).toBe(
       "https://paperclip.example/app/PAP/dashboard",
     );
+  });
+});
+
+describe("resolvePathWithinBase", () => {
+  it("resolves relative paths within the base directory", () => {
+    expect(resolvePathWithinBase("/tmp/export", "agents/ceo/AGENT.md")).toBe("/tmp/export/agents/ceo/AGENT.md");
+  });
+
+  it("rejects traversal paths that escape the base directory", () => {
+    expect(() => resolvePathWithinBase("/tmp/export", "../outside.txt")).toThrow(/outside export directory/i);
+  });
+
+  it("rejects absolute paths", () => {
+    expect(() => resolvePathWithinBase("/tmp/export", "/etc/passwd")).toThrow(/outside export directory/i);
   });
 });
 

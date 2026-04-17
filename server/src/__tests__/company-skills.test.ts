@@ -84,6 +84,27 @@ describe("company skill import source parsing", () => {
     expect(parsed.resolvedSource).toBe("https://github.com/vercel-labs/skills");
     expect(parsed.originalSkillsShUrl).toBeNull();
   });
+
+  it("rejects non-HTTPS remote skill imports", () => {
+    expect(() => parseSkillImportSourceInput("http://github.com/vercel-labs/skills"))
+      .toThrowError("Skill source URL must use HTTPS.");
+  });
+
+  it("rejects non-GitHub remote skill import hosts", () => {
+    expect(() => parseSkillImportSourceInput("https://example.com/skills/find-skills.md"))
+      .toThrowError("Skill source URL host is not allowed.");
+  });
+
+  it("allows raw.githubusercontent.com remote skill URLs", () => {
+    const parsed = parseSkillImportSourceInput(
+      "https://raw.githubusercontent.com/paperclipai/paperclip/master/skills/paperclip/SKILL.md",
+    );
+
+    expect(parsed.resolvedSource).toBe(
+      "https://raw.githubusercontent.com/paperclipai/paperclip/master/skills/paperclip/SKILL.md",
+    );
+    expect(parsed.originalSkillsShUrl).toBeNull();
+  });
 });
 
 describe("project workspace skill discovery", () => {
@@ -145,6 +166,22 @@ describe("project workspace skill discovery", () => {
     ]));
     expect(imported.fileInventory.map((entry) => entry.kind)).toContain("script");
     expect(imported.metadata?.sourceKind).toBe("project_scan");
+  });
+
+  it("does not follow symlinked project-root support folders", async () => {
+    const workspace = await makeTempDir("paperclip-root-skill-symlink-");
+    const outsideDir = await makeTempDir("paperclip-root-skill-outside-");
+    await writeSkillDir(workspace, "Workspace Skill");
+    await fs.writeFile(path.join(outsideDir, "secret.txt"), "TOP_SECRET_CONTENT\n", "utf8");
+    await fs.symlink(outsideDir, path.join(workspace, "references"));
+
+    const imported = await readLocalSkillImportFromDirectory(
+      "33333333-3333-4333-8333-333333333333",
+      workspace,
+      { inventoryMode: "project_root", metadata: { sourceKind: "project_scan" } },
+    );
+
+    expect(imported.fileInventory.map((entry) => entry.path)).toEqual(["SKILL.md"]);
   });
 
   it("parses inline object array items in skill frontmatter metadata", async () => {

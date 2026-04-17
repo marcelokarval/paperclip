@@ -605,6 +605,49 @@ describe("openclaw gateway adapter execute", () => {
       await gateway.close();
     }
   });
+
+  it("redacts camelCase secret keys in outbound payload logs", async () => {
+    const gateway = await createMockGatewayServer();
+    const logs: string[] = [];
+
+    try {
+      const result = await execute(
+        buildContext(
+          {
+            url: gateway.url,
+            headers: {
+              "x-openclaw-token": "gateway-token",
+            },
+            payloadTemplate: {
+              authToken: "camelcase-secret-token",
+              clientSecret: "client-secret-value",
+              nested: {
+                accessToken: "access-token-value",
+              },
+            },
+            waitTimeoutMs: 2000,
+          },
+          {
+            onLog: async (_stream, chunk) => {
+              logs.push(chunk);
+            },
+          },
+        ),
+      );
+
+      expect(result.exitCode).toBe(0);
+      const outboundPayloadLog = logs.find((entry) => entry.includes("[openclaw-gateway] outbound payload"));
+      expect(outboundPayloadLog).toBeTruthy();
+      expect(outboundPayloadLog).not.toContain("camelcase-secret-token");
+      expect(outboundPayloadLog).not.toContain("client-secret-value");
+      expect(outboundPayloadLog).not.toContain("access-token-value");
+      expect(outboundPayloadLog).toContain("\"authToken\":\"[redacted len=");
+      expect(outboundPayloadLog).toContain("\"clientSecret\":\"[redacted len=");
+      expect(outboundPayloadLog).toContain("\"accessToken\":\"[redacted len=");
+    } finally {
+      await gateway.close();
+    }
+  });
 });
 
 describe("openclaw gateway ui build config", () => {

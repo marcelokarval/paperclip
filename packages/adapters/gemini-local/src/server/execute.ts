@@ -63,7 +63,8 @@ function renderPaperclipEnvNote(env: Record<string, string>): string {
   ].join("\n");
 }
 
-function renderApiAccessNote(env: Record<string, string>): string {
+function renderApiAccessNote(env: Record<string, string>, approvalMode: string): string {
+  if (approvalMode !== "yolo") return "";
   if (!hasNonEmptyEnvValue(env, "PAPERCLIP_API_URL") || !hasNonEmptyEnvValue(env, "PAPERCLIP_API_KEY")) return "";
   return [
     "Paperclip API access note:",
@@ -145,6 +146,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const command = asString(config.command, "gemini");
   const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
   const sandbox = asBoolean(config.sandbox, false);
+  const approvalMode = asString(config.approvalMode, asBoolean(config.yolo, false) ? "yolo" : "default").trim();
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -255,36 +257,55 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
-  const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
+  const resolvedInstructionsFilePath = instructionsFilePath
+    ? path.resolve(cwd, instructionsFilePath)
+    : "";
+  const instructionsPathRelativeToCwd = resolvedInstructionsFilePath
+    ? path.relative(cwd, resolvedInstructionsFilePath)
+    : "";
+  const isInstructionsPathWithinCwd =
+    instructionsPathRelativeToCwd.length === 0 ||
+    (!path.isAbsolute(instructionsPathRelativeToCwd) &&
+      instructionsPathRelativeToCwd !== ".." &&
+      !instructionsPathRelativeToCwd.startsWith(`..${path.sep}`));
+  if (instructionsFilePath && !isInstructionsPathWithinCwd) {
+    await onLog(
+      "stdout",
+      `[paperclip] Warning: instructionsFilePath must stay within cwd "${cwd}"; ignoring "${resolvedInstructionsFilePath}".\n`,
+    );
+  }
+  const effectiveInstructionsFilePath =
+    instructionsFilePath && isInstructionsPathWithinCwd ? resolvedInstructionsFilePath : "";
+  const instructionsDir = effectiveInstructionsFilePath ? `${path.dirname(effectiveInstructionsFilePath)}/` : "";
   let instructionsPrefix = "";
-  if (instructionsFilePath) {
+  if (effectiveInstructionsFilePath) {
     try {
-      const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
+      const instructionsContents = await fs.readFile(effectiveInstructionsFilePath, "utf8");
       instructionsPrefix =
         `${instructionsContents}\n\n` +
-        `The above agent instructions were loaded from ${instructionsFilePath}. ` +
+        `The above agent instructions were loaded from ${effectiveInstructionsFilePath}. ` +
         `Resolve any relative file references from ${instructionsDir}.\n\n`;
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       await onLog(
         "stdout",
-        `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
+        `[paperclip] Warning: could not read agent instructions file "${effectiveInstructionsFilePath}": ${reason}\n`,
       );
     }
   }
   const commandNotes = (() => {
     const notes: string[] = ["Prompt is passed to Gemini via --prompt for non-interactive execution."];
-    notes.push("Added --approval-mode yolo for unattended execution.");
+    if (approvalMode !== "default") notes.push(`Added --approval-mode ${approvalMode}.`);
     if (!instructionsFilePath) return notes;
     if (instructionsPrefix.length > 0) {
       notes.push(
-        `Loaded agent instructions from ${instructionsFilePath}`,
+        `Loaded agent instructions from ${effectiveInstructionsFilePath}`,
         `Prepended instructions + path directive to prompt (relative references from ${instructionsDir}).`,
       );
       return notes;
     }
     notes.push(
-      `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
+      `Configured instructionsFilePath ${effectiveInstructionsFilePath || resolvedInstructionsFilePath}, but file could not be read; continuing without injected instructions.`,
     );
     return notes;
   })();
@@ -308,7 +329,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const paperclipEnvNote = renderPaperclipEnvNote(env);
-  const apiAccessNote = renderApiAccessNote(env);
+  const apiAccessNote = renderApiAccessNote(env, approvalMode);
   const prompt = joinPromptSections([
     instructionsPrefix,
     renderedBootstrapPrompt,
@@ -332,7 +353,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const args = ["--output-format", "stream-json"];
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
-    args.push("--approval-mode", "yolo");
+    if (approvalMode !== "default") args.push("--approval-mode", approvalMode);
     if (sandbox) {
       args.push("--sandbox");
     } else {

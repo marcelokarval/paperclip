@@ -1181,4 +1181,46 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       childIssueIds: [childA, childB],
     });
   });
+
+  it("does not include ancestors from a different company", async () => {
+    const companyAId = randomUUID();
+    const companyBId = randomUUID();
+    const issueBId = randomUUID();
+    const issueAId = randomUUID();
+
+    await db.insert(companies).values([
+      {
+        id: companyAId,
+        name: "Paperclip A",
+        issuePrefix: `A${companyAId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: companyBId,
+        name: "Paperclip B",
+        issuePrefix: `B${companyBId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+
+    await db.insert(issues).values([
+      {
+        id: issueBId,
+        companyId: companyBId,
+        title: "Foreign parent",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: issueAId,
+        companyId: companyAId,
+        parentId: issueBId,
+        title: "Local issue with foreign parent link",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    await expect(svc.getAncestors(issueAId)).resolves.toEqual([]);
+  });
 });

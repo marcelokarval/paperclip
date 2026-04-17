@@ -1,5 +1,9 @@
 import type { Db } from "@paperclipai/db";
-import { pluginLogs, agentTaskSessions as agentTaskSessionsTable } from "@paperclipai/db";
+import {
+  pluginLogs,
+  pluginCompanySettings,
+  agentTaskSessions as agentTaskSessionsTable,
+} from "@paperclipai/db";
 import { eq, and, like, desc } from "drizzle-orm";
 import type {
   HostServices,
@@ -489,12 +493,22 @@ export function buildHostServices(
     return rows.slice(offset, offset + limit);
   };
 
-  /**
-   * Plugins are instance-wide in the current runtime. Company IDs are still
-   * required for company-scoped data access, but there is no per-company
-   * availability gate to enforce here.
-   */
-  const ensurePluginAvailableForCompany = async (_companyId: string) => {};
+  const isPluginAvailableForCompany = async (companyId: string): Promise<boolean> => {
+    const row = await db.query.pluginCompanySettings.findFirst({
+      where: and(
+        eq(pluginCompanySettings.pluginId, pluginId),
+        eq(pluginCompanySettings.companyId, companyId),
+      ),
+      columns: { enabled: true },
+    });
+    // No override row means enabled by default.
+    return row?.enabled !== false;
+  };
+
+  const ensurePluginAvailableForCompany = async (companyId: string) => {
+    if (await isPluginAvailableForCompany(companyId)) return;
+    throw new Error(`Plugin is not available for company ${companyId}`);
+  };
 
   const inCompany = <T extends { companyId: string | null | undefined }>(
     record: T | null | undefined,
@@ -688,7 +702,14 @@ export function buildHostServices(
 
     companies: {
       async list(params) {
-        return applyWindow((await companies.list()) as Company[], params);
+        const rows = (await companies.list()) as Company[];
+        const allowed: Company[] = [];
+        for (const row of rows) {
+          if (await isPluginAvailableForCompany(row.id)) {
+            allowed.push(row);
+          }
+        }
+        return applyWindow(allowed, params);
       },
       async get(params) {
         await ensurePluginAvailableForCompany(params.companyId);

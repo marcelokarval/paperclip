@@ -14,7 +14,7 @@ import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { projectService, logActivity, secretService, workspaceOperationService } from "../services/index.js";
 import { conflict } from "../errors.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
   listConfiguredRuntimeServiceEntries,
@@ -58,6 +58,26 @@ export function projectRoutes(db: Db) {
     return resolved.project?.id ?? rawId;
   }
 
+  function requiresWorkspaceCommandAdmin(input: unknown): boolean {
+    if (!input || typeof input !== "object") return false;
+    const policy = input as {
+      executionWorkspacePolicy?: {
+        workspaceStrategy?: {
+          provisionCommand?: unknown;
+          teardownCommand?: unknown;
+        } | null;
+      } | null;
+    };
+    const strategy = policy.executionWorkspacePolicy?.workspaceStrategy;
+    if (!strategy) return false;
+
+    const hasProvisionCommand =
+      typeof strategy.provisionCommand === "string" && strategy.provisionCommand.trim().length > 0;
+    const hasTeardownCommand =
+      typeof strategy.teardownCommand === "string" && strategy.teardownCommand.trim().length > 0;
+    return hasProvisionCommand || hasTeardownCommand;
+  }
+
   router.param("id", async (req, _res, next, rawId) => {
     try {
       req.params.id = await normalizeProjectReference(req, rawId);
@@ -88,6 +108,9 @@ export function projectRoutes(db: Db) {
   router.post("/companies/:companyId/projects", validate(createProjectSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if (requiresWorkspaceCommandAdmin(req.body)) {
+      assertInstanceAdmin(req);
+    }
     type CreateProjectPayload = Parameters<typeof svc.create>[1] & {
       workspace?: Parameters<typeof svc.createWorkspace>[1];
     };
@@ -143,6 +166,9 @@ export function projectRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    if (requiresWorkspaceCommandAdmin(req.body)) {
+      assertInstanceAdmin(req);
+    }
     const body = { ...req.body };
     if (typeof body.archivedAt === "string") {
       body.archivedAt = new Date(body.archivedAt);
@@ -283,6 +309,7 @@ export function projectRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, project.companyId);
+    assertBoard(req);
 
     const workspace = project.workspaces.find((entry) => entry.id === workspaceId) ?? null;
     if (!workspace) {

@@ -2,7 +2,9 @@ import express, { Router, type Request as ExpressRequest } from "express";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { pluginCompanySettings, plugins } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
@@ -71,6 +73,29 @@ const VITE_DEV_STATIC_PATHS = new Set([
   "/favicon.svg",
   "/site.webmanifest",
 ]);
+
+function deriveTrustedBoardOrigins(opts: {
+  serverPort: number;
+  allowedHostnames: string[];
+  bindHost: string;
+}): string[] {
+  const trustedOrigins = new Set<string>([
+    `http://localhost:${opts.serverPort}`,
+    `http://127.0.0.1:${opts.serverPort}`,
+  ]);
+
+  const addHostnameOrigins = (hostname: string) => {
+    const normalized = hostname.trim().toLowerCase();
+    if (!normalized || normalized === "0.0.0.0" || normalized === "::") return;
+    trustedOrigins.add(`http://${normalized}`);
+    trustedOrigins.add(`https://${normalized}`);
+  };
+
+  addHostnameOrigins(opts.bindHost);
+  for (const hostname of opts.allowedHostnames) addHostnameOrigins(hostname);
+
+  return Array.from(trustedOrigins);
+}
 
 export function resolveViteHmrPort(serverPort: number): number {
   if (serverPort <= 55_535) {
@@ -166,7 +191,13 @@ export async function createApp(
 
   // Mount API routes
   const api = Router();
-  api.use(boardMutationGuard());
+  api.use(boardMutationGuard({
+    trustedOrigins: deriveTrustedBoardOrigins({
+      serverPort: opts.serverPort,
+      allowedHostnames: opts.allowedHostnames,
+      bindHost: opts.bindHost,
+    }),
+  }));
   api.use(
     "/health",
     healthRoutes(db, {
@@ -199,7 +230,23 @@ export async function createApp(
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = createPluginWorkerManager();
   const pluginRegistry = pluginRegistryService(db);
-  const eventBus = createPluginEventBus();
+  const eventBus = createPluginEventBus({
+    isPluginAvailableForCompany: async (pluginKey, companyId) => {
+      const plugin = await db.query.plugins.findFirst({
+        where: eq(plugins.pluginKey, pluginKey),
+        columns: { id: true },
+      });
+      if (!plugin) return false;
+      const companySetting = await db.query.pluginCompanySettings.findFirst({
+        where: and(
+          eq(pluginCompanySettings.pluginId, plugin.id),
+          eq(pluginCompanySettings.companyId, companyId),
+        ),
+        columns: { enabled: true },
+      });
+      return companySetting?.enabled !== false;
+    },
+  });
   setPluginEventBus(eventBus);
   const jobStore = pluginJobStore(db);
   const lifecycle = pluginLifecycleManager(db, { workerManager });

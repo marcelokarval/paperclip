@@ -93,7 +93,7 @@ const DEFAULT_CLIENT_VERSION = "paperclip";
 const DEFAULT_ROLE = "operator";
 
 const SENSITIVE_LOG_KEY_PATTERN =
-  /(^|[_-])(auth|authorization|token|secret|password|api[_-]?key|private[_-]?key)([_-]|$)|^x-openclaw-(auth|token)$/i;
+  /(^|[_-])(auth|authorization|token|secret|password|api[_-]?key|private[_-]?key)([_-]|$)|^x[-_]?openclaw[-_]?(auth|token)$/i;
 
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 
@@ -246,7 +246,17 @@ function resolveAuthToken(config: Record<string, unknown>, headers: Record<strin
 }
 
 function isSensitiveLogKey(key: string): boolean {
-  return SENSITIVE_LOG_KEY_PATTERN.test(key.trim());
+  const trimmed = key.trim();
+  if (SENSITIVE_LOG_KEY_PATTERN.test(trimmed)) return true;
+
+  const canonicalKey = trimmed
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_|_$/g, "")
+    .toLowerCase();
+
+  return SENSITIVE_LOG_KEY_PATTERN.test(canonicalKey);
 }
 
 function sha256Prefix(value: string): string {

@@ -48,7 +48,7 @@ import {
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
 import { notFound, unprocessable } from "../errors.js";
-import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
+import { assertAllowedGitHubHostname, ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import type { StorageService } from "../storage/types.js";
 import { accessService } from "./access.js";
 import { agentService } from "./agents.js";
@@ -591,7 +591,7 @@ const RUNTIME_DEFAULT_RULES: Array<{ path: string[]; value: unknown }> = [
 
 const ADAPTER_DEFAULT_RULES_BY_TYPE: Record<string, Array<{ path: string[]; value: unknown }>> = {
   codex_local: [
-    { path: ["timeoutSec"], value: 0 },
+    { path: ["timeoutSec"], value: 1800 },
     { path: ["graceSec"], value: 15 },
   ],
   gemini_local: [
@@ -607,7 +607,7 @@ const ADAPTER_DEFAULT_RULES_BY_TYPE: Record<string, Array<{ path: string[]; valu
     { path: ["graceSec"], value: 15 },
   ],
   claude_local: [
-    { path: ["timeoutSec"], value: 0 },
+    { path: ["timeoutSec"], value: 1800 },
     { path: ["graceSec"], value: 15 },
     { path: ["maxTurnsPerRun"], value: 1000 },
   ],
@@ -1601,6 +1601,14 @@ function normalizePortableConfig(
     next[key] = entry;
   }
 
+  return next;
+}
+
+function sanitizeImportedAdapterOverrideConfig(value: unknown): Record<string, unknown> {
+  const next = normalizePortableConfig(value);
+  delete next.cwd;
+  delete next.command;
+  delete next.args;
   return next;
 }
 
@@ -2692,7 +2700,7 @@ export function parseGitHubSourceUrl(rawUrl: string) {
   if (url.protocol !== "https:") {
     throw unprocessable("GitHub source URL must use HTTPS");
   }
-  const hostname = url.hostname;
+  const hostname = assertAllowedGitHubHostname(url.hostname);
   const parts = url.pathname.split("/").filter(Boolean);
   if (parts.length < 2) {
     throw unprocessable("Invalid GitHub URL");
@@ -3163,7 +3171,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             defaultRules: RUNTIME_DEFAULT_RULES,
           },
         ) as Record<string, unknown>;
-        const portablePermissions = pruneDefaultLikeValue(agent.permissions ?? {}, { dropFalseBooleans: true }) as Record<string, unknown>;
+        const portablePermissions = pruneDefaultLikeValue(agent.permissions ?? {}, { dropFalseBooleans: false }) as Record<string, unknown>;
         const agentEnvInputs = dedupeEnvInputs(
           envInputs
             .slice(envInputsStart)
@@ -4051,7 +4059,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         const adapterOverride = input.adapterOverrides?.[planAgent.slug];
         const effectiveAdapterType = adapterOverride?.adapterType ?? manifestAgent.adapterType;
         const baseAdapterConfig = adapterOverride?.adapterConfig
-          ? { ...adapterOverride.adapterConfig }
+          ? sanitizeImportedAdapterOverrideConfig(adapterOverride.adapterConfig)
           : { ...manifestAgent.adapterConfig } as Record<string, unknown>;
 
         const desiredSkills = (manifestAgent.skills ?? []).map((skillRef) => desiredSkillRefMap.get(skillRef) ?? skillRef);
@@ -4235,6 +4243,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         if (!projectId) continue;
 
         for (const workspace of manifestProject.workspaces) {
+          if (workspace.setupCommand) {
+            warnings.push(`Project ${planProject.slug} workspace ${workspace.key} setupCommand was omitted during import for security.`);
+          }
+          if (workspace.cleanupCommand) {
+            warnings.push(`Project ${planProject.slug} workspace ${workspace.key} cleanupCommand was omitted during import for security.`);
+          }
           const createdWorkspace = await projects.createWorkspace(projectId, {
             name: workspace.name,
             sourceType: workspace.sourceType ?? undefined,
@@ -4242,8 +4256,6 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             repoRef: workspace.repoRef ?? undefined,
             defaultRef: workspace.defaultRef ?? undefined,
             visibility: workspace.visibility ?? undefined,
-            setupCommand: workspace.setupCommand ?? undefined,
-            cleanupCommand: workspace.cleanupCommand ?? undefined,
             metadata: workspace.metadata ?? undefined,
             isPrimary: workspace.isPrimary,
           });

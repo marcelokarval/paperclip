@@ -320,6 +320,39 @@ describe("ensureServerWorkspaceLinksCurrent", () => {
     await ensureServerWorkspaceLinksCurrent(path.join(repoRoot, "server"));
     expect(await fs.realpath(path.join(serverNodeModulesScopeDir, "db"))).toBe(await fs.realpath(stalePackageDir));
   });
+
+  it("ignores invalid workspace dependency names that would escape server/node_modules", async () => {
+    const repoRoot = await makeTempDir("paperclip-runtime-links-invalid-package-name-");
+    const maliciousPackageDir = path.join(repoRoot, "packages", "evilpkg");
+    const escapedTargetPath = path.join(repoRoot, "poc-target");
+
+    await fs.mkdir(path.join(repoRoot, "server"), { recursive: true });
+    await fs.mkdir(maliciousPackageDir, { recursive: true });
+    await fs.writeFile(path.join(repoRoot, ".git"), "gitdir: /tmp/paperclip-main/.git/worktrees/runtime-links-invalid\n", "utf8");
+    await fs.writeFile(path.join(repoRoot, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n  - server\n", "utf8");
+    await fs.writeFile(
+      path.join(repoRoot, "server", "package.json"),
+      JSON.stringify({
+        name: "@paperclipai/server",
+        dependencies: {
+          "evil/../../../../poc-target": "workspace:*",
+        },
+      }),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(maliciousPackageDir, "package.json"),
+      JSON.stringify({ name: "evil/../../../../poc-target" }),
+      "utf8",
+    );
+    await fs.writeFile(escapedTargetPath, "sentinel", "utf8");
+
+    await ensureServerWorkspaceLinksCurrent(path.join(repoRoot, "server"));
+
+    await expect(fs.readFile(escapedTargetPath, "utf8")).resolves.toBe("sentinel");
+    const escapedTargetStat = await fs.lstat(escapedTargetPath);
+    expect(escapedTargetStat.isFile()).toBe(true);
+  });
 });
 
 describe("realizeExecutionWorkspace", () => {
@@ -651,6 +684,47 @@ describe("realizeExecutionWorkspace", () => {
 
     expect(realized.branchName).toBe("release/PAP-992.hotfix-april-1");
     expect(path.basename(realized.cwd)).toBe("PAP-992.hotfix-april-1");
+  });
+
+  it("normalizes branch templates so traversal segments cannot escape the worktree parent directory", async () => {
+    const repoRoot = await createTempRepo();
+    const expectedParent = path.join(repoRoot, ".paperclip", "worktrees");
+
+    const realized = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "release/../../../../tmp/escape-repo",
+        },
+      },
+      issue: {
+        id: "issue-template-traversal",
+        identifier: "PAP-993",
+        title: "Traversal attempt",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(realized.branchName).toBe("release/tmp/escape-repo");
+    expect(path.relative(expectedParent, realized.cwd).startsWith("..")).toBe(false);
+    expect(path.relative(expectedParent, realized.cwd)).not.toBe("");
+    expect(path.relative(expectedParent, realized.cwd)).not.toMatch(/^\.{2}(\/|\\|$)/);
+    expect(path.relative(expectedParent, realized.cwd)).toBe(
+      path.join("release", "tmp", "escape-repo"),
+    );
+    expect(realized.cwd.startsWith(expectedParent)).toBe(true);
   });
 
   it("runs a configured provision command inside the derived worktree", async () => {

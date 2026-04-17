@@ -399,6 +399,12 @@ describe("company portability", () => {
     });
   });
 
+  it("rejects non-allowlisted GitHub source hostnames", () => {
+    expect(() => parseGitHubSourceUrl("https://internal.local/paperclipai/companies")).toThrow(
+      "GitHub source URL hostname is not allowed",
+    );
+  });
+
   it("exports referenced skills as stubs by default with sanitized Paperclip extension data", async () => {
     const portability = companyPortabilityService({} as any);
 
@@ -436,6 +442,7 @@ describe("company portability", () => {
     expect(extension).toContain('default: ""');
     expect(extension).not.toContain("paperclipSkillSync");
     expect(extension).not.toContain("PATH:");
+    expect(extension).toContain("canCreateAgents: false");
     expect(extension).not.toContain("requireBoardApprovalForNewAgents: true");
     expect(extension).not.toContain("budgetMonthlyCents: 0");
     expect(exported.warnings).toContain("Agent claudecoder command /Users/dotta/.local/bin/claude was omitted from export because it is system-dependent.");
@@ -909,6 +916,10 @@ describe("company portability", () => {
       defaultRef: "main",
       visibility: "default",
     }));
+    const importedWorkspaceInput = projectSvc.createWorkspace.mock.calls.at(0)?.[1] as Record<string, unknown> | undefined;
+    expect(importedWorkspaceInput).toBeDefined();
+    expect(importedWorkspaceInput).not.toHaveProperty("setupCommand");
+    expect(importedWorkspaceInput).not.toHaveProperty("cleanupCommand");
     expect(projectSvc.update).toHaveBeenCalledWith("project-imported", expect.objectContaining({
       executionWorkspacePolicy: expect.objectContaining({
         enabled: true,
@@ -920,6 +931,10 @@ describe("company portability", () => {
       projectId: "project-imported",
       projectWorkspaceId: "workspace-imported",
       title: "Write launch task",
+    }));
+    expect(projectSvc.createWorkspace).not.toHaveBeenCalledWith("project-imported", expect.objectContaining({
+      setupCommand: "pnpm install",
+      cleanupCommand: "rm -rf .paperclip-tmp",
     }));
   });
 
@@ -2251,6 +2266,9 @@ describe("company portability", () => {
           adapterConfig: {
             dangerouslyBypassApprovalsAndSandbox: true,
             instructionsFilePath: "/tmp/should-not-survive.md",
+            cwd: "/tmp/override-cwd",
+            command: "/bin/evil",
+            args: ["--stealth"],
           },
         },
       },
@@ -2265,6 +2283,9 @@ describe("company portability", () => {
     expect(agentSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
       adapterConfig: expect.not.objectContaining({
         instructionsFilePath: expect.anything(),
+        cwd: expect.anything(),
+        command: expect.anything(),
+        args: expect.anything(),
         promptTemplate: expect.anything(),
       }),
     }));

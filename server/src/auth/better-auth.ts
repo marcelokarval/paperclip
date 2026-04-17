@@ -45,10 +45,15 @@ function headersFromExpressRequest(req: Request): Headers {
 export function deriveAuthTrustedOrigins(config: Config): string[] {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
   const trustedOrigins = new Set<string>();
+  let allowedHostnameProtocol: "http" | "https" = "https";
 
   if (baseUrl) {
     try {
-      trustedOrigins.add(new URL(baseUrl).origin);
+      const parsedBaseUrl = new URL(baseUrl);
+      trustedOrigins.add(parsedBaseUrl.origin);
+      if (parsedBaseUrl.protocol === "http:") {
+        allowedHostnameProtocol = "http";
+      }
     } catch {
       // Better Auth will surface invalid base URL separately.
     }
@@ -57,8 +62,7 @@ export function deriveAuthTrustedOrigins(config: Config): string[] {
     for (const hostname of config.allowedHostnames) {
       const trimmed = hostname.trim().toLowerCase();
       if (!trimmed) continue;
-      trustedOrigins.add(`https://${trimmed}`);
-      trustedOrigins.add(`http://${trimmed}`);
+      trustedOrigins.add(`${allowedHostnameProtocol}://${trimmed}`);
     }
   }
 

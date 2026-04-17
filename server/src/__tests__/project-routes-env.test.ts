@@ -20,6 +20,8 @@ const mockSecretService = vi.hoisted(() => ({
 const mockWorkspaceOperationService = vi.hoisted(() => ({}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
+const mockStartRuntimeServicesForWorkspaceControl = vi.hoisted(() => vi.fn());
+const mockStopRuntimeServicesForProjectWorkspace = vi.hoisted(() => vi.fn());
 
 vi.mock("../telemetry.js", () => ({
   getTelemetryClient: mockGetTelemetryClient,
@@ -33,8 +35,8 @@ vi.mock("../services/index.js", () => ({
 }));
 
 vi.mock("../services/workspace-runtime.js", () => ({
-  startRuntimeServicesForWorkspaceControl: vi.fn(),
-  stopRuntimeServicesForProjectWorkspace: vi.fn(),
+  startRuntimeServicesForWorkspaceControl: mockStartRuntimeServicesForWorkspaceControl,
+  stopRuntimeServicesForProjectWorkspace: mockStopRuntimeServicesForProjectWorkspace,
 }));
 
 function registerModuleMocks() {
@@ -50,12 +52,12 @@ function registerModuleMocks() {
   }));
 
   vi.doMock("../services/workspace-runtime.js", () => ({
-    startRuntimeServicesForWorkspaceControl: vi.fn(),
-    stopRuntimeServicesForProjectWorkspace: vi.fn(),
+    startRuntimeServicesForWorkspaceControl: mockStartRuntimeServicesForWorkspaceControl,
+    stopRuntimeServicesForProjectWorkspace: mockStopRuntimeServicesForProjectWorkspace,
   }));
 }
 
-async function createApp() {
+async function createApp(actorOverrides: Partial<Record<string, unknown>> = {}) {
   const [{ projectRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/projects.js")>("../routes/projects.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -69,6 +71,7 @@ async function createApp() {
       companyIds: ["company-1"],
       source: "local_implicit",
       isInstanceAdmin: false,
+      ...actorOverrides,
     };
     next();
   });
@@ -128,6 +131,8 @@ describe("project env routes", () => {
     mockProjectService.createWorkspace.mockResolvedValue(null);
     mockProjectService.listWorkspaces.mockResolvedValue([]);
     mockSecretService.normalizeEnvBindingsForPersistence.mockImplementation(async (_companyId, env) => env);
+    mockStartRuntimeServicesForWorkspaceControl.mockResolvedValue([]);
+    mockStopRuntimeServicesForProjectWorkspace.mockResolvedValue(undefined);
   });
 
   it("normalizes env bindings on create and logs only env keys", async () => {
@@ -192,6 +197,161 @@ describe("project env routes", () => {
           changedKeys: ["env"],
           envKeys: ["PLAIN_KEY"],
         },
+      }),
+    );
+  });
+
+  it("rejects runtime service controls for agent actors", async () => {
+    mockProjectService.getById.mockResolvedValue(buildProject({
+      workspaces: [
+        {
+          id: "workspace-1",
+          name: "Workspace 1",
+          isPrimary: true,
+          cwd: "/tmp/workspace-1",
+          repoUrl: null,
+          repoRef: null,
+          defaultRef: null,
+          runtimeConfig: { workspaceRuntime: { services: [{ name: "web", command: "pnpm dev" }] } },
+          runtimeServices: [],
+        },
+      ],
+    }));
+
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "api_key",
+    });
+    const res = await request(app)
+      .post("/api/projects/project-1/workspaces/workspace-1/runtime-services/start")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "Board access required" });
+    expect(mockStartRuntimeServicesForWorkspaceControl).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-admin project creation that sets workspace provision commands", async () => {
+    const app = await createApp({
+      source: "token",
+      isInstanceAdmin: false,
+    });
+    const res = await request(app)
+      .post("/api/companies/company-1/projects")
+      .send({
+        name: "Project",
+        executionWorkspacePolicy: {
+          enabled: true,
+          workspaceStrategy: {
+            provisionCommand: "bash ./scripts/provision.sh",
+          },
+        },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockProjectService.create).not.toHaveBeenCalled();
+  });
+
+  it("allows instance-admin project creation that sets workspace provision commands", async () => {
+    const createdProject = buildProject({
+      executionWorkspacePolicy: {
+        enabled: true,
+        workspaceStrategy: {
+          provisionCommand: "bash ./scripts/provision.sh",
+        },
+      },
+    });
+    mockProjectService.create.mockResolvedValue(createdProject);
+
+    const app = await createApp({
+      source: "token",
+      isInstanceAdmin: true,
+    });
+    const res = await request(app)
+      .post("/api/companies/company-1/projects")
+      .send({
+        name: "Project",
+        executionWorkspacePolicy: {
+          enabled: true,
+          workspaceStrategy: {
+            provisionCommand: "bash ./scripts/provision.sh",
+          },
+        },
+      });
+
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    expect(mockProjectService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        executionWorkspacePolicy: expect.objectContaining({
+          workspaceStrategy: expect.objectContaining({
+            provisionCommand: "bash ./scripts/provision.sh",
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("rejects non-admin project updates that set workspace provision commands", async () => {
+    mockProjectService.getById.mockResolvedValue(buildProject());
+
+    const app = await createApp({
+      source: "token",
+      isInstanceAdmin: false,
+    });
+    const res = await request(app)
+      .patch("/api/projects/project-1")
+      .send({
+        executionWorkspacePolicy: {
+          enabled: true,
+          workspaceStrategy: {
+            provisionCommand: "bash ./scripts/provision.sh",
+          },
+        },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockProjectService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows instance-admin project updates that set workspace provision commands", async () => {
+    const updatedProject = buildProject({
+      executionWorkspacePolicy: {
+        enabled: true,
+        workspaceStrategy: {
+          provisionCommand: "bash ./scripts/provision.sh",
+        },
+      },
+    });
+    mockProjectService.getById.mockResolvedValue(buildProject());
+    mockProjectService.update.mockResolvedValue(updatedProject);
+
+    const app = await createApp({
+      source: "token",
+      isInstanceAdmin: true,
+    });
+    const res = await request(app)
+      .patch("/api/projects/project-1")
+      .send({
+        executionWorkspacePolicy: {
+          enabled: true,
+          workspaceStrategy: {
+            provisionCommand: "bash ./scripts/provision.sh",
+          },
+        },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockProjectService.update).toHaveBeenCalledWith(
+      "project-1",
+      expect.objectContaining({
+        executionWorkspacePolicy: expect.objectContaining({
+          workspaceStrategy: expect.objectContaining({
+            provisionCommand: "bash ./scripts/provision.sh",
+          }),
+        }),
       }),
     );
   });

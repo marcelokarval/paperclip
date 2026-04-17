@@ -55,7 +55,13 @@ export interface IssueLabel {
 }
 
 export interface IssueAssigneeAdapterOverrides {
-  adapterConfig?: Record<string, unknown>;
+  adapterConfig?: {
+    model?: string;
+    modelReasoningEffort?: string;
+    effort?: string;
+    variant?: string;
+    chrome?: boolean;
+  };
   useProjectWorkspace?: boolean;
 }
 
