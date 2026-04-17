@@ -216,6 +216,29 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
     expect(res.body.allowedJoinTypes).toBe("agent");
   });
 
+  it("rejects invite test-resolution probes to private network hosts", async () => {
+    const db = createDbStub();
+    const app = await createApp(
+      {
+        type: "board",
+        userId: "user-1",
+        companyIds: ["company-1"],
+        source: "session",
+        isInstanceAdmin: false,
+      },
+      db,
+    );
+
+    const res = await request(app).get(
+      "/api/invites/pcp_invite_test/test-resolution?url=http://127.0.0.1:3100/api/health",
+    );
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain(
+      "url must not target loopback or private network hosts",
+    );
+  });
+
   it("allows board callers with invite permission", async () => {
     const db = createDbStub();
     mockAccessService.canUser.mockResolvedValue(true);
