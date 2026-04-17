@@ -29,3 +29,5 @@
 ## Shell & Command Reliability
 1. **[2026-04-14] Prefer parallel read-only inspection for repo discovery**
    Do instead: use `rg`, `sed -n`, and grouped read commands to map structure before summarizing behavior.
+2. **[2026-04-17] `pnpm patch-commit` may need escalated permissions**
+   Do instead: if a dependency patch write fails with pnpm store `EROFS`, rerun `pnpm patch-commit` with escalation instead of hand-assembling a loose hotfix.
