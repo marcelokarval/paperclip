@@ -9,6 +9,7 @@ import {
   findClosestAutocompleteAnchor,
   findMentionMatch,
   isSameAutocompleteSession,
+  isSafeMarkdownLinkUrl,
   MarkdownEditor,
   placeCaretAfterMentionAnchor,
   shouldAcceptAutocompleteKey,
@@ -196,6 +197,22 @@ describe("MarkdownEditor", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it("rejects markdown links with obfuscated disallowed schemes", () => {
+    expect(isSafeMarkdownLinkUrl("javascript:alert(1)")).toBe(false);
+    expect(isSafeMarkdownLinkUrl("java\nscript:alert(1)")).toBe(false);
+    expect(isSafeMarkdownLinkUrl("java\u0000script:alert(1)")).toBe(false);
+    expect(isSafeMarkdownLinkUrl("vbscript:msgbox(1)")).toBe(false);
+    expect(isSafeMarkdownLinkUrl("data:text/html,<script>alert(1)</script>")).toBe(false);
+  });
+
+  it("accepts allowed markdown link schemes and relative links", () => {
+    expect(isSafeMarkdownLinkUrl("/docs/getting-started")).toBe(true);
+    expect(isSafeMarkdownLinkUrl("https://paperclip.ai")).toBe(true);
+    expect(isSafeMarkdownLinkUrl("agent://ceo-agent-id")).toBe(true);
+    expect(isSafeMarkdownLinkUrl("project://launch-plan?c=00ff00")).toBe(true);
+    expect(isSafeMarkdownLinkUrl("skill://company-creator")).toBe(true);
   });
 
   it("keeps the external value when the unfocused editor emits an empty mount reset", async () => {

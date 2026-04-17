@@ -106,6 +106,9 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+const DISALLOWED_MARKDOWN_LINK_SCHEMES = new Set(["javascript", "data", "vbscript"]);
+const MARKDOWN_LINK_PROTOCOL_OBFUSCATION_RE = /[\u0000-\u0020\u007f]+/g;
+
 function hasMeaningfulEditorContent(node: Node | null): boolean {
   if (!node) return false;
   if (node.nodeType === Node.TEXT_NODE) {
@@ -148,10 +151,17 @@ function isRichEditorDomEmpty(
   return false;
 }
 
-function isSafeMarkdownLinkUrl(url: string): boolean {
+export function isSafeMarkdownLinkUrl(url: string): boolean {
   const trimmed = url.trim();
   if (!trimmed) return true;
-  return !/^(javascript|data|vbscript):/i.test(trimmed);
+  const protocolSeparator = trimmed.indexOf(":");
+  if (protocolSeparator <= 0) return true;
+  const rawScheme = trimmed.slice(0, protocolSeparator);
+  const normalizedScheme = rawScheme
+    .replace(MARKDOWN_LINK_PROTOCOL_OBFUSCATION_RE, "")
+    .toLowerCase();
+  if (!normalizedScheme) return true;
+  return !DISALLOWED_MARKDOWN_LINK_SCHEMES.has(normalizedScheme);
 }
 
 /* ---- Mention detection helpers ---- */
