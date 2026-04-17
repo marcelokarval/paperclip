@@ -6,7 +6,7 @@ import {
 } from "../routes/access.js";
 
 describe("canReplayOpenClawGatewayInviteAccept", () => {
-  it("allows replay only for openclaw_gateway agent joins in pending state", () => {
+  it("does not allow replay for accepted invite tokens", () => {
     expect(
       canReplayOpenClawGatewayInviteAccept({
         requestType: "agent",
@@ -17,7 +17,7 @@ describe("canReplayOpenClawGatewayInviteAccept", () => {
           status: "pending_approval",
         },
       }),
-    ).toBe(true);
+    ).toBe(false);
 
     expect(
       canReplayOpenClawGatewayInviteAccept({

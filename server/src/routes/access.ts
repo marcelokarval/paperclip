@@ -537,22 +537,8 @@ export function canReplayOpenClawGatewayInviteAccept(input: {
     "requestType" | "adapterType" | "status"
   > | null;
 }): boolean {
-  if (
-    input.requestType !== "agent" ||
-    input.adapterType !== "openclaw_gateway"
-  ) {
-    return false;
-  }
-  if (!input.existingJoinRequest) {
-    return false;
-  }
-  if (
-    input.existingJoinRequest.requestType !== "agent" ||
-    input.existingJoinRequest.adapterType !== "openclaw_gateway"
-  ) {
-    return false;
-  }
-  return input.existingJoinRequest.status === "pending_approval";
+  void input;
+  return false;
 }
 
 function summarizeSecretForLog(
@@ -2201,6 +2187,9 @@ export function accessRoutes(
         });
         return;
       }
+      if (inviteAlreadyAccepted) {
+        throw notFound("Invite not found");
+      }
 
       const requestType = req.body.requestType as "human" | "agent";
       const companyId = invite.companyId;
@@ -2225,38 +2214,11 @@ export function accessRoutes(
         throw unauthorized("Authenticated user is required");
       }
       if (requestType === "agent" && !req.body.agentName) {
-        if (
-          !inviteAlreadyAccepted ||
-          !existingJoinRequestForInvite?.agentName
-        ) {
-          throw badRequest("agentName is required for agent join requests");
-        }
+        throw badRequest("agentName is required for agent join requests");
       }
 
       const adapterType = req.body.adapterType ?? null;
-      if (
-        inviteAlreadyAccepted &&
-        !canReplayOpenClawGatewayInviteAccept({
-          requestType,
-          adapterType,
-          existingJoinRequest: existingJoinRequestForInvite
-        })
-      ) {
-        throw notFound("Invite not found");
-      }
-      const replayJoinRequestId = inviteAlreadyAccepted
-        ? existingJoinRequestForInvite?.id ?? null
-        : null;
-      if (inviteAlreadyAccepted && !replayJoinRequestId) {
-        throw conflict("Join request not found");
-      }
-
-      const replayMergedDefaults = inviteAlreadyAccepted
-        ? mergeJoinDefaultsPayloadForReplay(
-            existingJoinRequestForInvite?.agentDefaultsPayload ?? null,
-            req.body.agentDefaultsPayload ?? null
-          )
-        : req.body.agentDefaultsPayload ?? null;
+      const replayMergedDefaults = req.body.agentDefaultsPayload ?? null;
 
       const gatewayDefaultsPayload =
         requestType === "agent"
@@ -2305,10 +2267,7 @@ export function accessRoutes(
         );
       }
 
-      const claimSecret =
-        requestType === "agent" && !inviteAlreadyAccepted
-          ? createClaimSecret()
-          : null;
+      const claimSecret = requestType === "agent" ? createClaimSecret() : null;
       const claimSecretHash = claimSecret ? hashToken(claimSecret) : null;
       const claimSecretExpiresAt = claimSecret
         ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
@@ -2316,114 +2275,45 @@ export function accessRoutes(
 
       const actorEmail =
         requestType === "human" ? await resolveActorEmail(db, req) : null;
-      const created = !inviteAlreadyAccepted
-        ? await db.transaction(async (tx) => {
-            await tx
-              .update(invites)
-              .set({ acceptedAt: new Date(), updatedAt: new Date() })
-              .where(
-                and(
-                  eq(invites.id, invite.id),
-                  isNull(invites.acceptedAt),
-                  isNull(invites.revokedAt)
-                )
-              );
+      const created = await db.transaction(async (tx) => {
+        await tx
+          .update(invites)
+          .set({ acceptedAt: new Date(), updatedAt: new Date() })
+          .where(
+            and(
+              eq(invites.id, invite.id),
+              isNull(invites.acceptedAt),
+              isNull(invites.revokedAt)
+            )
+          );
 
-            const row = await tx
-              .insert(joinRequests)
-              .values({
-                inviteId: invite.id,
-                companyId,
-                requestType,
-                status: "pending_approval",
-                requestIp: requestIp(req),
-                requestingUserId:
-                  requestType === "human"
-                    ? req.actor.userId ?? "local-board"
-                    : null,
-                requestEmailSnapshot:
-                  requestType === "human" ? actorEmail : null,
-                agentName: requestType === "agent" ? req.body.agentName : null,
-                adapterType: requestType === "agent" ? adapterType : null,
-                capabilities:
-                  requestType === "agent"
-                    ? req.body.capabilities ?? null
-                    : null,
-                agentDefaultsPayload:
-                  requestType === "agent" ? joinDefaults.normalized : null,
-                claimSecretHash,
-                claimSecretExpiresAt
-              })
-              .returning()
-              .then((rows) => rows[0]);
-            return row;
+        const row = await tx
+          .insert(joinRequests)
+          .values({
+            inviteId: invite.id,
+            companyId,
+            requestType,
+            status: "pending_approval",
+            requestIp: requestIp(req),
+            requestingUserId:
+              requestType === "human" ? req.actor.userId ?? "local-board" : null,
+            requestEmailSnapshot: requestType === "human" ? actorEmail : null,
+            agentName: requestType === "agent" ? req.body.agentName : null,
+            adapterType: requestType === "agent" ? adapterType : null,
+            capabilities:
+              requestType === "agent" ? req.body.capabilities ?? null : null,
+            agentDefaultsPayload:
+              requestType === "agent" ? joinDefaults.normalized : null,
+            claimSecretHash,
+            claimSecretExpiresAt
           })
-        : await db
-            .update(joinRequests)
-            .set({
-              requestIp: requestIp(req),
-              agentName:
-                requestType === "agent"
-                  ? req.body.agentName ??
-                    existingJoinRequestForInvite?.agentName ??
-                    null
-                  : null,
-              capabilities:
-                requestType === "agent"
-                  ? req.body.capabilities ??
-                    existingJoinRequestForInvite?.capabilities ??
-                    null
-                  : null,
-              adapterType: requestType === "agent" ? adapterType : null,
-              agentDefaultsPayload:
-                requestType === "agent" ? joinDefaults.normalized : null,
-              updatedAt: new Date()
-            })
-            .where(eq(joinRequests.id, replayJoinRequestId as string))
-            .returning()
-            .then((rows) => rows[0]);
+          .returning()
+          .then((rows) => rows[0]);
+        return row;
+      });
 
       if (!created) {
         throw conflict("Join request not found");
-      }
-
-      if (
-        inviteAlreadyAccepted &&
-        requestType === "agent" &&
-        adapterType === "openclaw_gateway" &&
-        created.status === "approved" &&
-        created.createdAgentId
-      ) {
-        const existingAgent = await agents.getById(created.createdAgentId);
-        if (!existingAgent) {
-          throw conflict("Approved join request agent not found");
-        }
-        const existingAdapterConfig = isPlainObject(existingAgent.adapterConfig)
-          ? (existingAgent.adapterConfig as Record<string, unknown>)
-          : {};
-        const nextAdapterConfig = {
-          ...existingAdapterConfig,
-          ...(joinDefaults.normalized ?? {})
-        };
-        const updatedAgent = await agents.update(created.createdAgentId, {
-          adapterType,
-          adapterConfig: nextAdapterConfig
-        });
-        if (!updatedAgent) {
-          throw conflict("Approved join request agent not found");
-        }
-        await logActivity(db, {
-          companyId,
-          actorType: req.actor.type === "agent" ? "agent" : "user",
-          actorId:
-            req.actor.type === "agent"
-              ? req.actor.agentId ?? "invite-agent"
-              : req.actor.userId ?? "board",
-          action: "agent.updated_from_join_replay",
-          entityType: "agent",
-          entityId: updatedAgent.id,
-          details: { inviteId: invite.id, joinRequestId: created.id }
-        });
       }
 
       if (requestType === "agent" && adapterType === "openclaw_gateway") {
