@@ -35,6 +35,9 @@ describe("errorHandler", () => {
     expect(res.json).toHaveBeenCalledWith({ error: "Internal server error" });
     expect(res.err).toBe(err);
     expect(res.__errorContext?.error?.message).toBe("boom");
+    expect(res.__errorContext?.reqBody).toBeUndefined();
+    expect(res.__errorContext?.reqParams).toBeUndefined();
+    expect(res.__errorContext?.reqQuery).toBeUndefined();
   });
 
   it("attaches HttpError instances for 500 responses", () => {
@@ -49,5 +52,8 @@ describe("errorHandler", () => {
     expect(res.json).toHaveBeenCalledWith({ error: "db exploded" });
     expect(res.err).toBe(err);
     expect(res.__errorContext?.error?.message).toBe("db exploded");
+    expect(res.__errorContext?.reqBody).toBeUndefined();
+    expect(res.__errorContext?.reqParams).toBeUndefined();
+    expect(res.__errorContext?.reqQuery).toBeUndefined();
   });
 });
