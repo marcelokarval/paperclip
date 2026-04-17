@@ -568,12 +568,43 @@ const PAPERCLIP_LOGO_SVG = `<g>
 // GitHub recommended social media preview dimensions
 const TARGET_W = 1280;
 const TARGET_H = 640;
+const MAX_ORG_CHART_NODES = 2_000;
+const MAX_ORG_CHART_DEPTH = 150;
 
 export interface OrgChartOverlay {
   /** Company name displayed top-left */
   companyName?: string;
   /** Summary stats displayed bottom-right, e.g. "Agents: 5, Skills: 8" */
   stats?: string;
+}
+
+function assertOrgChartTraversalLimits(orgTree: OrgNode[]): number {
+  const seen = new Set<OrgNode>();
+  const stack = orgTree.map((node) => ({ node, depth: 1 }));
+  let nodeCount = 0;
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) continue;
+    if (seen.has(current.node)) continue;
+    seen.add(current.node);
+
+    if (current.depth > MAX_ORG_CHART_DEPTH) {
+      throw new Error(`Org chart depth exceeds limit (${MAX_ORG_CHART_DEPTH})`);
+    }
+
+    nodeCount += 1;
+    if (nodeCount > MAX_ORG_CHART_NODES) {
+      throw new Error(`Org chart node count exceeds limit (${MAX_ORG_CHART_NODES})`);
+    }
+
+    const reports = current.node.reports ?? [];
+    for (let i = reports.length - 1; i >= 0; i -= 1) {
+      stack.push({ node: reports[i], depth: current.depth + 1 });
+    }
+  }
+
+  return nodeCount;
 }
 
 /** Count total nodes in a tree. */
@@ -702,9 +733,9 @@ function smartCollapseTree(roots: OrgNode[]): OrgNode[] {
 
 export function renderOrgChartSvg(orgTree: OrgNode[], style: OrgChartStyle = "warmth", overlay?: OrgChartOverlay): string {
   const theme = THEMES[style] || THEMES.warmth;
+  const totalNodes = assertOrgChartTraversalLimits(orgTree);
 
   // Auto-collapse large orgs to keep the chart readable
-  const totalNodes = countNodes(orgTree);
   const effectiveTree = totalNodes > COLLAPSE_THRESHOLD ? smartCollapseTree(orgTree) : orgTree;
 
   let root: OrgNode;
