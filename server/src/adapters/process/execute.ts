@@ -31,7 +31,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     resolvedCommand,
   });
 
-  const timeoutSec = asNumber(config.timeoutSec, 0);
+  const timeoutSec = asNumber(config.timeoutSec, 120);
   const graceSec = asNumber(config.graceSec, 15);
 
   if (onMeta) {

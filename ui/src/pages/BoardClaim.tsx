@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useParams, useSearchParams } from "@/lib/router";
+import { Link } from "@/lib/router";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
@@ -8,14 +8,7 @@ import { Button } from "@/components/ui/button";
 
 export function BoardClaimPage() {
   const queryClient = useQueryClient();
-  const params = useParams();
-  const [searchParams] = useSearchParams();
-  const token = (params.token ?? "").trim();
-  const code = (searchParams.get("code") ?? "").trim();
-  const currentPath = useMemo(
-    () => `/board-claim/${encodeURIComponent(token)}${code ? `?code=${encodeURIComponent(code)}` : ""}`,
-    [token, code],
-  );
+  const currentPath = useMemo(() => "/board-claim", []);
 
   const sessionQuery = useQuery({
     queryKey: queryKeys.auth.session,
@@ -23,14 +16,13 @@ export function BoardClaimPage() {
     retry: false,
   });
   const statusQuery = useQuery({
-    queryKey: ["board-claim", token, code],
-    queryFn: () => accessApi.getBoardClaimStatus(token, code),
-    enabled: token.length > 0 && code.length > 0,
+    queryKey: ["board-claim"],
+    queryFn: () => accessApi.getBoardClaimStatus(),
     retry: false,
   });
 
   const claimMutation = useMutation({
-    mutationFn: () => accessApi.claimBoard(token, code),
+    mutationFn: () => accessApi.claimBoard(),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
       await queryClient.invalidateQueries({ queryKey: queryKeys.health });
@@ -39,10 +31,6 @@ export function BoardClaimPage() {
       await statusQuery.refetch();
     },
   });
-
-  if (!token || !code) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-destructive">Invalid board claim URL.</div>;
-  }
 
   if (statusQuery.isLoading || sessionQuery.isLoading) {
     return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading claim challenge...</div>;

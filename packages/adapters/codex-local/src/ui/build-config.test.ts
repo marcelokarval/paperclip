@@ -36,6 +36,18 @@ function makeValues(overrides: Partial<CreateConfigValues> = {}): CreateConfigVa
 }
 
 describe("buildCodexLocalConfig", () => {
+  it("defaults bypass approvals/sandbox to false when omitted", () => {
+    const config = buildCodexLocalConfig(
+      makeValues({
+        dangerouslyBypassSandbox: undefined as unknown as boolean,
+      }),
+    );
+
+    expect(config).toMatchObject({
+      dangerouslyBypassApprovalsAndSandbox: false,
+    });
+  });
+
   it("persists the fastMode toggle into adapter config", () => {
     const config = buildCodexLocalConfig(
       makeValues({

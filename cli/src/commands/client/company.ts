@@ -952,12 +952,25 @@ export async function resolveInlineSourceFromPath(inputPath: string): Promise<{
   };
 }
 
+export function resolvePathWithinBase(baseDir: string, candidatePath: string): string {
+  const normalized = candidatePath.replace(/\\/g, "/").trim();
+  if (!normalized) {
+    throw new Error("File path cannot be empty.");
+  }
+  const resolvedBase = path.resolve(baseDir);
+  const resolvedTarget = path.resolve(resolvedBase, normalized);
+  const relative = path.relative(resolvedBase, resolvedTarget);
+  if (!relative.startsWith("..") && !path.isAbsolute(relative)) {
+    return resolvedTarget;
+  }
+  throw new Error(`Refusing to write path outside export directory: ${candidatePath}`);
+}
+
 async function writeExportToFolder(outDir: string, exported: CompanyPortabilityExportResult): Promise<void> {
   const root = path.resolve(outDir);
   await mkdir(root, { recursive: true });
   for (const [relativePath, content] of Object.entries(exported.files)) {
-    const normalized = relativePath.replace(/\\/g, "/");
-    const filePath = path.join(root, normalized);
+    const filePath = resolvePathWithinBase(root, relativePath);
     await mkdir(path.dirname(filePath), { recursive: true });
     const writeValue = portableFileEntryToWriteValue(content);
     if (typeof writeValue === "string") {

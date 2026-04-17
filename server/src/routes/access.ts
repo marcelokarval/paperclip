@@ -4,7 +4,9 @@ import {
   randomBytes,
   timingSafeEqual
 } from "node:crypto";
+import { lookup as dnsLookup } from "node:dns/promises";
 import fs from "node:fs";
+import { isIP } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
@@ -232,6 +234,58 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 function isLoopbackHost(hostname: string): boolean {
   const value = hostname.trim().toLowerCase();
   return value === "localhost" || value === "127.0.0.1" || value === "::1";
+}
+
+function isPrivateOrReservedIpAddress(ip: string): boolean {
+  const lower = ip.toLowerCase();
+  const v4MappedMatch = lower.match(
+    /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/
+  );
+  if (v4MappedMatch && v4MappedMatch[1]) {
+    return isPrivateOrReservedIpAddress(v4MappedMatch[1]);
+  }
+
+  if (ip.startsWith("10.")) return true;
+  if (ip.startsWith("172.")) {
+    const second = Number.parseInt(ip.split(".")[1] ?? "", 10);
+    if (Number.isFinite(second) && second >= 16 && second <= 31) return true;
+  }
+  if (ip.startsWith("192.168.")) return true;
+  if (ip.startsWith("127.")) return true;
+  if (ip.startsWith("169.254.")) return true;
+  if (ip === "0.0.0.0") return true;
+
+  if (lower === "::1") return true;
+  if (lower.startsWith("fc") || lower.startsWith("fd")) return true;
+  if (lower.startsWith("fe80")) return true;
+  if (lower === "::") return true;
+
+  return false;
+}
+
+async function assertSafeInviteResolutionTarget(url: URL) {
+  const hostname = url.hostname.trim().replace(/^\[|\]$/g, "");
+  if (!hostname) throw badRequest("url hostname is required");
+  if (isLoopbackHost(hostname)) {
+    throw badRequest("url must not target loopback or private network hosts");
+  }
+
+  if (isIP(hostname) !== 0 && isPrivateOrReservedIpAddress(hostname)) {
+    throw badRequest("url must not target loopback or private network hosts");
+  }
+
+  let resolved: Array<{ address: string; family: number }>;
+  try {
+    resolved = await dnsLookup(hostname, { all: true, verbatim: true });
+  } catch {
+    throw badRequest("url hostname could not be resolved");
+  }
+  if (resolved.length === 0) {
+    throw badRequest("url hostname could not be resolved");
+  }
+  if (resolved.some((entry) => isPrivateOrReservedIpAddress(entry.address))) {
+    throw badRequest("url must not target loopback or private network hosts");
+  }
 }
 
 function normalizeHostname(value: string | null | undefined): string | null {
@@ -1590,23 +1644,14 @@ export function accessRoutes(
     if (!allowed) throw forbidden("Instance admin required");
   }
 
-  router.get("/board-claim/:token", async (req, res) => {
-    const token = (req.params.token as string).trim();
-    const code =
-      typeof req.query.code === "string" ? req.query.code.trim() : undefined;
-    if (!token) throw notFound("Board claim challenge not found");
-    const challenge = inspectBoardClaimChallenge(token, code);
+  router.get("/board-claim", async (_req, res) => {
+    const challenge = inspectBoardClaimChallenge();
     if (challenge.status === "invalid")
       throw notFound("Board claim challenge not found");
     res.json(challenge);
   });
 
-  router.post("/board-claim/:token/claim", async (req, res) => {
-    const token = (req.params.token as string).trim();
-    const code =
-      typeof req.body?.code === "string" ? req.body.code.trim() : undefined;
-    if (!token) throw notFound("Board claim challenge not found");
-    if (!code) throw badRequest("Claim code is required");
+  router.post("/board-claim/claim", async (req, res) => {
     if (
       req.actor.type !== "board" ||
       req.actor.source !== "session" ||
@@ -1616,8 +1661,6 @@ export function accessRoutes(
     }
 
     const claimed = await claimBoardOwnership(db, {
-      token,
-      code,
       userId: req.actor.userId
     });
 
@@ -2127,6 +2170,7 @@ export function accessRoutes(
     if (target.protocol !== "http:" && target.protocol !== "https:") {
       throw badRequest("url must use http or https");
     }
+    await assertSafeInviteResolutionTarget(target);
 
     const parsedTimeoutMs =
       typeof req.query.timeoutMs === "string"

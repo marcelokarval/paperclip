@@ -5,10 +5,12 @@ import { describe, expect, it } from "vitest";
 import {
   defaultClientContext,
   readContext,
+  resolveContextPath,
   setCurrentProfile,
   upsertProfile,
   writeContext,
 } from "../client/context.js";
+import { resolveDefaultContextPath } from "../config/home.js";
 
 function createTempContextPath(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-cli-context-"));
@@ -66,5 +68,26 @@ describe("client context store", () => {
     const context = readContext(contextPath);
     expect(context.currentProfile).toBe("x");
     expect(context.profiles.x).toEqual({});
+  });
+
+  it("does not auto-discover context from current working directory ancestry", () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-cli-workspace-"));
+    const projectDir = path.join(workspaceDir, "nested", "project");
+    fs.mkdirSync(path.join(workspaceDir, ".paperclip"), { recursive: true });
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(workspaceDir, ".paperclip", "context.json"),
+      JSON.stringify(defaultClientContext()),
+      "utf-8",
+    );
+
+    const originalCwd = process.cwd();
+    try {
+      process.chdir(projectDir);
+      delete process.env.PAPERCLIP_CONTEXT;
+      expect(resolveContextPath()).toBe(resolveDefaultContextPath());
+    } finally {
+      process.chdir(originalCwd);
+    }
   });
 });

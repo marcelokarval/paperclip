@@ -591,7 +591,7 @@ const RUNTIME_DEFAULT_RULES: Array<{ path: string[]; value: unknown }> = [
 
 const ADAPTER_DEFAULT_RULES_BY_TYPE: Record<string, Array<{ path: string[]; value: unknown }>> = {
   codex_local: [
-    { path: ["timeoutSec"], value: 0 },
+    { path: ["timeoutSec"], value: 1800 },
     { path: ["graceSec"], value: 15 },
   ],
   gemini_local: [
@@ -607,7 +607,7 @@ const ADAPTER_DEFAULT_RULES_BY_TYPE: Record<string, Array<{ path: string[]; valu
     { path: ["graceSec"], value: 15 },
   ],
   claude_local: [
-    { path: ["timeoutSec"], value: 0 },
+    { path: ["timeoutSec"], value: 1800 },
     { path: ["graceSec"], value: 15 },
     { path: ["maxTurnsPerRun"], value: 1000 },
   ],
@@ -3171,7 +3171,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             defaultRules: RUNTIME_DEFAULT_RULES,
           },
         ) as Record<string, unknown>;
-        const portablePermissions = pruneDefaultLikeValue(agent.permissions ?? {}, { dropFalseBooleans: true }) as Record<string, unknown>;
+        const portablePermissions = pruneDefaultLikeValue(agent.permissions ?? {}, { dropFalseBooleans: false }) as Record<string, unknown>;
         const agentEnvInputs = dedupeEnvInputs(
           envInputs
             .slice(envInputsStart)
