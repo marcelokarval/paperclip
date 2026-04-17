@@ -60,7 +60,7 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp() {
+async function createApp(actor?: Record<string, unknown>) {
   const [{ errorHandler }, { issueRoutes }] = await Promise.all([
     import("../middleware/index.js"),
     import("../routes/issues.js"),
@@ -68,7 +68,7 @@ async function createApp() {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
+    (req as any).actor = actor ?? {
       type: "board",
       userId: "local-board",
       companyIds: ["company-1"],
@@ -145,5 +145,63 @@ describe("issue execution policy routes", () => {
     expect(updatePatch.assigneeUserId).toBeUndefined();
     expect(updatePatch.executionState).toBeUndefined();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("requires tasks:assign when requester picks next-stage assignee during approval", async () => {
+    const reviewStageId = "11111111-1111-4111-8111-111111111111";
+    const approvalStageId = "22222222-2222-4222-8222-222222222222";
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: reviewStageId,
+          type: "review",
+          participants: [{ type: "user", userId: "local-board" }],
+        },
+        {
+          id: approvalStageId,
+          type: "approval",
+          participants: [{ type: "user", userId: "approver-2" }],
+        },
+      ],
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+      createdByUserId: "local-board",
+      identifier: "PAP-1000",
+      title: "Execution policy approval",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: reviewStageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "user", userId: "local-board" },
+        returnAssignee: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const res = await request(
+      await createApp({
+        type: "board",
+        userId: "local-board",
+        companyIds: ["company-1"],
+        source: "session",
+        isInstanceAdmin: false,
+      }),
+    )
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "done", comment: "approved", assigneeUserId: "approver-2" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("tasks:assign");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 });
