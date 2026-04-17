@@ -174,22 +174,6 @@ export function agentRoutes(db: Db) {
     };
   }
 
-  async function applyDefaultAgentTaskAssignGrant(
-    companyId: string,
-    agentId: string,
-    grantedByUserId: string | null,
-  ) {
-    await access.ensureMembership(companyId, "agent", agentId, "member", "active");
-    await access.setPrincipalPermission(
-      companyId,
-      "agent",
-      agentId,
-      "tasks:assign",
-      true,
-      grantedByUserId,
-    );
-  }
-
   async function assertCanCreateAgentsForCompany(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") {
@@ -1450,12 +1434,6 @@ export function agentRoutes(db: Db) {
       trackAgentCreated(telemetryClient, { agentRole: agent.role, agentId: agent.id });
     }
 
-    await applyDefaultAgentTaskAssignGrant(
-      companyId,
-      agent.id,
-      actor.actorType === "user" ? actor.actorId : null,
-    );
-
     if (approval) {
       await logActivity(db, {
         companyId,
@@ -1537,12 +1515,6 @@ export function agentRoutes(db: Db) {
     if (telemetryClient) {
       trackAgentCreated(telemetryClient, { agentRole: agent.role, agentId: agent.id });
     }
-
-    await applyDefaultAgentTaskAssignGrant(
-      companyId,
-      agent.id,
-      req.actor.type === "board" ? (req.actor.userId ?? null) : null,
-    );
 
     if (agent.budgetMonthlyCents > 0) {
       await budgets.upsertPolicy(

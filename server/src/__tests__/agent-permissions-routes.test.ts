@@ -219,7 +219,7 @@ describe("agent permission routes", () => {
     mockLogActivity.mockResolvedValue(undefined);
   });
 
-  it("grants tasks:assign by default when board creates a new agent", async () => {
+  it("does not grant tasks:assign by default when board creates a new agent", async () => {
     const app = await createApp({
       type: "board",
       userId: "board-user",
@@ -238,14 +238,8 @@ describe("agent permission routes", () => {
       });
 
     expect([200, 201]).toContain(res.status);
-    expect(mockAccessService.ensureMembership).toHaveBeenCalledWith(
-      companyId,
-      "agent",
-      agentId,
-      "member",
-      "active",
-    );
-    expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(
+    expect(mockAccessService.ensureMembership).not.toHaveBeenCalled();
+    expect(mockAccessService.setPrincipalPermission).not.toHaveBeenCalledWith(
       companyId,
       "agent",
       agentId,
