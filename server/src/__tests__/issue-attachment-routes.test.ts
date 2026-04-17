@@ -214,4 +214,21 @@ describe("issue attachment routes", () => {
       'inline; filename="preview.png"',
     ]).toContain(res.headers["content-disposition"]);
   });
+
+  it("applies svg CSP for parameterized svg content types", async () => {
+    const storage = createStorageService();
+    mockIssueService.getAttachmentById.mockResolvedValue(
+      makeAttachment("image/svg+xml; charset=utf-8", "diagram.svg"),
+    );
+
+    const app = await createApp(storage);
+    const res = await request(app).get("/api/attachments/attachment-1/content");
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toContain("image/svg+xml");
+    expect(res.headers["content-security-policy"]).toBe(
+      "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'",
+    );
+    expect(res.headers["content-disposition"]).toBe('inline; filename="diagram.svg"');
+  });
 });
