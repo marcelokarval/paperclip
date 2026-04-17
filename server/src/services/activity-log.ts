@@ -69,7 +69,11 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     },
   });
 
-  if (_pluginEventBus && PLUGIN_EVENT_SET.has(input.action)) {
+  // Only forward domain events produced by trusted human/agent actors.
+  // Plugins can write arbitrary activity messages through host services;
+  // excluding system-authored entries prevents plugin-originated spoofing
+  // of core event types (e.g. "issue.created").
+  if (_pluginEventBus && input.actorType !== "system" && PLUGIN_EVENT_SET.has(input.action)) {
     const event: PluginEvent = {
       eventId: randomUUID(),
       eventType: input.action as PluginEventType,
