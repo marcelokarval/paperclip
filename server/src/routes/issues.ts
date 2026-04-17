@@ -1400,6 +1400,8 @@ export function issueRoutes(
     } = req.body;
     const requestedAssigneeAgentId =
       normalizedAssigneeAgentId === undefined ? existing.assigneeAgentId : normalizedAssigneeAgentId;
+    const requestedAssigneePreferenceProvided =
+      req.body.assigneeAgentId !== undefined || req.body.assigneeUserId !== undefined;
     const effectiveReopenRequested =
       reopenRequested ||
       (!!commentBody &&
@@ -1509,7 +1511,10 @@ export function issueRoutes(
       !!existing.createdByUserId &&
       nextAssigneeUserId === existing.createdByUserId;
 
-    if (assigneeWillChange && !transition.workflowControlledAssignment) {
+    if (
+      assigneeWillChange &&
+      (!transition.workflowControlledAssignment || requestedAssigneePreferenceProvided)
+    ) {
       if (!isAgentReturningIssueToCreator) {
         await assertCanAssignTasks(req, existing.companyId);
       }
