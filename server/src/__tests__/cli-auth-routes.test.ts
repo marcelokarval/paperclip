@@ -126,6 +126,28 @@ describe("cli auth routes", () => {
     expect(res.body.approvalUrl).toContain("/cli-auth/challenge-1?token=pcp_cli_auth_secret");
   });
 
+  it("requires board authentication for available skills", async () => {
+    const app = await createApp({ type: "none", source: "none" });
+    const res = await request(app).get("/api/skills/available");
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBe("Board authentication required");
+  });
+
+  it("allows signed-in board users to read available skills", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [],
+    });
+    const res = await request(app).get("/api/skills/available");
+
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.skills)).toBe(true);
+  });
+
   it("marks challenge status as requiring sign-in for anonymous viewers", async () => {
     mockBoardAuthService.describeCliAuthChallenge.mockResolvedValue({
       id: "challenge-1",
