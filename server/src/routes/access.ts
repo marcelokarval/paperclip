@@ -1952,7 +1952,13 @@ export function accessRoutes(
     return company?.name ?? null;
   }
 
-  router.get("/skills/available", (_req, res) => {
+  router.get("/skills/available", (req, res) => {
+    if (
+      req.actor.type !== "board" ||
+      (!req.actor.userId && !isLocalImplicit(req))
+    ) {
+      throw unauthorized("Board authentication required");
+    }
     res.json({ skills: listAvailableSkills() });
   });
 
