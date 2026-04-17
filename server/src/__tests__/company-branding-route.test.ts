@@ -205,3 +205,57 @@ describe("PATCH /api/companies/:companyId/branding", () => {
     expect(mockCompanyService.update).not.toHaveBeenCalled();
   });
 });
+
+describe("GET /api/companies/:companyId", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../routes/companies.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    vi.resetAllMocks();
+  });
+
+  it("rejects non-CEO agent callers", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      role: "engineer",
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app).get("/api/companies/company-1");
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Only CEO agents");
+    expect(mockCompanyService.getById).not.toHaveBeenCalled();
+  });
+
+  it("allows CEO agent callers to read company details", async () => {
+    const company = createCompany();
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      role: "ceo",
+    });
+    mockCompanyService.getById.mockResolvedValue(company);
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app).get("/api/companies/company-1");
+
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe(company.id);
+    expect(res.body.budgetMonthlyCents).toBe(company.budgetMonthlyCents);
+  });
+});
