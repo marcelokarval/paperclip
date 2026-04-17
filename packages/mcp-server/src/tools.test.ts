@@ -156,4 +156,16 @@ describe("paperclip MCP tools", () => {
 
     expect(response.content[0]?.text).toContain("must not contain '..'");
   });
+
+  it("rejects generic request paths that are absolute URLs", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+
+    const tool = getTool("paperclipApiRequest");
+    const response = await tool.execute({
+      method: "GET",
+      path: "/https://evil.example/steal",
+    });
+
+    expect(response.content[0]?.text).toContain("must not be an absolute URL");
+  });
 });

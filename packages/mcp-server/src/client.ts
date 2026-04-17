@@ -27,6 +27,24 @@ export interface JsonRequestOptions {
   includeRunId?: boolean;
 }
 
+function isAbsoluteUrlPath(path: string): boolean {
+  return /^\/[a-zA-Z][a-zA-Z0-9+.-]*:/.test(path) || path.startsWith("//");
+}
+
+function isDotDotSegment(value: string): boolean {
+  if (value === "..") return true;
+  try {
+    return decodeURIComponent(value) === "..";
+  } catch {
+    return false;
+  }
+}
+
+function hasDotDotPathSegment(path: string): boolean {
+  const pathname = path.split(/[?#]/, 1)[0] ?? "";
+  return pathname.split("/").some((segment) => isDotDotSegment(segment));
+}
+
 function isWriteMethod(method: string): boolean {
   return !["GET", "HEAD"].includes(method.toUpperCase());
 }
@@ -79,8 +97,18 @@ export class PaperclipApiClient {
     if (!path.startsWith("/")) {
       throw new Error(`API path must start with "/": ${path}`);
     }
+    if (isAbsoluteUrlPath(path)) {
+      throw new Error(`API path must be relative to /api and must not be an absolute URL: ${path}`);
+    }
+    if (hasDotDotPathSegment(path)) {
+      throw new Error(`API path must not include ".." segments: ${path}`);
+    }
 
-    const url = new URL(path.slice(1), `${this.config.apiUrl}/`);
+    const baseUrl = new URL(`${this.config.apiUrl}/`);
+    const url = new URL(path.slice(1), baseUrl);
+    if (url.origin !== baseUrl.origin || !url.pathname.startsWith(baseUrl.pathname)) {
+      throw new Error(`API path escaped configured /api base path: ${path}`);
+    }
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.config.apiKey}`,
       Accept: "application/json",
