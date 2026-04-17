@@ -2,6 +2,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
+import { lookup as dnsLookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
@@ -83,6 +85,7 @@ const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
+const MANAGED_WORKSPACE_ALLOWED_REPO_URL_PROTOCOLS = new Set(["http:", "https:"]);
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
@@ -223,6 +226,53 @@ function deriveRepoNameFromRepoUrl(repoUrl: string | null): string | null {
   }
 }
 
+function isPrivateRepoCloneIp(ip: string): boolean {
+  const lower = ip.toLowerCase();
+  const v4MappedMatch = lower.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (v4MappedMatch && v4MappedMatch[1]) return isPrivateRepoCloneIp(v4MappedMatch[1]);
+
+  if (ip.startsWith("10.")) return true;
+  if (ip.startsWith("172.")) {
+    const second = Number.parseInt(ip.split(".")[1] ?? "", 10);
+    if (second >= 16 && second <= 31) return true;
+  }
+  if (ip.startsWith("192.168.")) return true;
+  if (ip.startsWith("127.")) return true;
+  if (ip.startsWith("169.254.")) return true;
+  if (ip === "0.0.0.0") return true;
+  if (lower === "::1" || lower === "::") return true;
+  if (lower.startsWith("fc") || lower.startsWith("fd")) return true;
+  if (lower.startsWith("fe80")) return true;
+  return false;
+}
+
+async function assertSafeManagedWorkspaceRepoUrl(repoUrl: string): Promise<void> {
+  const parsed = new URL(repoUrl);
+  if (!MANAGED_WORKSPACE_ALLOWED_REPO_URL_PROTOCOLS.has(parsed.protocol)) {
+    throw new Error(`Managed workspace repoUrl must use http:// or https:// (received "${parsed.protocol}")`);
+  }
+
+  const hostname = parsed.hostname.trim().toLowerCase();
+  if (!hostname || hostname === "localhost") {
+    throw new Error(`Managed workspace repoUrl hostname "${parsed.hostname}" is not allowed`);
+  }
+
+  if (isIP(hostname) !== 0) {
+    if (isPrivateRepoCloneIp(hostname)) {
+      throw new Error(`Managed workspace repoUrl hostname "${parsed.hostname}" resolves to a private IP range`);
+    }
+    return;
+  }
+
+  const dnsResults = await dnsLookup(hostname, { all: true });
+  if (dnsResults.length === 0) {
+    throw new Error(`Managed workspace repoUrl hostname "${parsed.hostname}" could not be resolved`);
+  }
+  if (dnsResults.every((entry) => isPrivateRepoCloneIp(entry.address))) {
+    throw new Error(`Managed workspace repoUrl hostname "${parsed.hostname}" resolves only to private IP ranges`);
+  }
+}
+
 async function ensureManagedProjectWorkspace(input: {
   companyId: string;
   projectId: string;
@@ -242,6 +292,7 @@ async function ensureManagedProjectWorkspace(input: {
     }
     return { cwd, warning: null };
   }
+  await assertSafeManagedWorkspaceRepoUrl(input.repoUrl);
 
   const gitDirExists = await fs
     .stat(path.resolve(cwd, ".git"))

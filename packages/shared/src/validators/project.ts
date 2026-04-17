@@ -36,12 +36,27 @@ export const projectWorkspaceRuntimeConfigSchema = z.object({
 
 const projectWorkspaceSourceTypeSchema = z.enum(["local_path", "git_repo", "remote_managed", "non_git_path"]);
 const projectWorkspaceVisibilitySchema = z.enum(["default", "advanced"]);
+const ALLOWED_PROJECT_WORKSPACE_REPO_URL_PROTOCOLS = new Set(["http:", "https:"]);
+
+function projectWorkspaceRepoUrlSchema() {
+  return z
+    .string()
+    .url()
+    .refine((value) => {
+      try {
+        const parsed = new URL(value);
+        return ALLOWED_PROJECT_WORKSPACE_REPO_URL_PROTOCOLS.has(parsed.protocol);
+      } catch {
+        return false;
+      }
+    }, "repoUrl must use http:// or https://");
+}
 
 const projectWorkspaceFields = {
   name: z.string().min(1).optional(),
   sourceType: projectWorkspaceSourceTypeSchema.optional(),
   cwd: z.string().min(1).optional().nullable(),
-  repoUrl: z.string().url().optional().nullable(),
+  repoUrl: projectWorkspaceRepoUrlSchema().optional().nullable(),
   repoRef: z.string().optional().nullable(),
   defaultRef: z.string().optional().nullable(),
   visibility: projectWorkspaceVisibilitySchema.optional(),
