@@ -276,6 +276,13 @@ export function routineRoutes(db: Db) {
       res.status(404).json({ error: "Routine not found" });
       return;
     }
+    if (
+      req.actor.type === "agent" &&
+      req.body.assigneeAgentId !== undefined &&
+      req.body.assigneeAgentId !== req.actor.agentId
+    ) {
+      throw forbidden("Agents can only assign routine runs to themselves");
+    }
     await assertBoardCanAssignTasks(req, routine.companyId);
     if (req.actor.type !== "board") {
       const hasWorkspaceOverride =
