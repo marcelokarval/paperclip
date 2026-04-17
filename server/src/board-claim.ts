@@ -1,4 +1,3 @@
-import { randomBytes } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
@@ -10,8 +9,6 @@ const CLAIM_TTL_MS = 1000 * 60 * 60 * 24;
 type ChallengeStatus = "available" | "claimed" | "expired" | "invalid";
 
 type ClaimChallenge = {
-  token: string;
-  code: string;
   createdAt: Date;
   expiresAt: Date;
   claimedAt: Date | null;
@@ -22,8 +19,6 @@ let activeChallenge: ClaimChallenge | null = null;
 
 function createChallenge(now = new Date()): ClaimChallenge {
   return {
-    token: randomBytes(24).toString("hex"),
-    code: randomBytes(12).toString("hex"),
     createdAt: now,
     expiresAt: new Date(now.getTime() + CLAIM_TTL_MS),
     claimedAt: null,
@@ -31,10 +26,8 @@ function createChallenge(now = new Date()): ClaimChallenge {
   };
 }
 
-function getChallengeStatus(token: string, code: string | undefined): ChallengeStatus {
+function getChallengeStatus(): ChallengeStatus {
   if (!activeChallenge) return "invalid";
-  if (activeChallenge.token !== token) return "invalid";
-  if (activeChallenge.code !== (code ?? "")) return "invalid";
   if (activeChallenge.claimedAt) return "claimed";
   if (activeChallenge.expiresAt.getTime() <= Date.now()) return "expired";
   return "available";
@@ -69,11 +62,11 @@ export function getBoardClaimWarningUrl(host: string, port: number): string | nu
   if (!activeChallenge) return null;
   if (activeChallenge.claimedAt || activeChallenge.expiresAt.getTime() <= Date.now()) return null;
   const visibleHost = host === "0.0.0.0" ? "localhost" : host;
-  return `http://${visibleHost}:${port}/board-claim/${activeChallenge.token}?code=${activeChallenge.code}`;
+  return `http://${visibleHost}:${port}/board-claim`;
 }
 
-export function inspectBoardClaimChallenge(token: string, code: string | undefined) {
-  const status = getChallengeStatus(token, code);
+export function inspectBoardClaimChallenge() {
+  const status = getChallengeStatus();
   return {
     status,
     requiresSignIn: true,
@@ -84,9 +77,9 @@ export function inspectBoardClaimChallenge(token: string, code: string | undefin
 
 export async function claimBoardOwnership(
   db: Db,
-  opts: { token: string; code: string | undefined; userId: string },
+  opts: { userId: string },
 ): Promise<{ status: ChallengeStatus; claimedByUserId?: string }> {
-  const status = getChallengeStatus(opts.token, opts.code);
+  const status = getChallengeStatus();
   if (status !== "available") return { status };
 
   await db.transaction(async (tx) => {
@@ -140,7 +133,7 @@ export async function claimBoardOwnership(
     }
   });
 
-  if (activeChallenge && activeChallenge.token === opts.token) {
+  if (activeChallenge) {
     activeChallenge.claimedAt = new Date();
     activeChallenge.claimedByUserId = opts.userId;
   }

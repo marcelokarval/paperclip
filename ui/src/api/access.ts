@@ -141,11 +141,9 @@ export const accessApi = {
       { claimSecret },
     ),
 
-  getBoardClaimStatus: (token: string, code: string) =>
-    api.get<BoardClaimStatus>(`/board-claim/${token}?code=${encodeURIComponent(code)}`),
+  getBoardClaimStatus: () => api.get<BoardClaimStatus>("/board-claim"),
 
-  claimBoard: (token: string, code: string) =>
-    api.post<{ claimed: true; userId: string }>(`/board-claim/${token}/claim`, { code }),
+  claimBoard: () => api.post<{ claimed: true; userId: string }>("/board-claim/claim", {}),
 
   getCliAuthChallenge: (id: string, token: string) =>
     api.get<CliAuthChallengeStatus>(`/cli-auth/challenges/${id}?token=${encodeURIComponent(token)}`),
