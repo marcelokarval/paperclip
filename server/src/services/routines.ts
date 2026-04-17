@@ -1314,7 +1314,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       if (!trigger.enabled || routine.status !== "active") throw conflict("Routine trigger is not active");
 
       if (trigger.signingMode === "none") {
-        // No authentication — the publicId in the URL acts as a shared secret.
+        throw unauthorized();
       } else if (trigger.signingMode === "github_hmac") {
         const secretValue = await resolveTriggerSecret(trigger, routine.companyId);
         const rawBody = input.rawBody ?? Buffer.from(JSON.stringify(input.payload ?? {}));
