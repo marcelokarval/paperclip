@@ -51,6 +51,14 @@ export function routineRoutes(db: Db) {
     return routine;
   }
 
+  function hasRoutineExecutionWorkspaceOverride(body: unknown) {
+    if (typeof body !== "object" || body === null || Array.isArray(body)) return false;
+    const record = body as Record<string, unknown>;
+    return Object.prototype.hasOwnProperty.call(record, "executionWorkspaceId") ||
+      Object.prototype.hasOwnProperty.call(record, "executionWorkspacePreference") ||
+      Object.prototype.hasOwnProperty.call(record, "executionWorkspaceSettings");
+  }
+
   router.get("/companies/:companyId/routines", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -270,30 +278,26 @@ export function routineRoutes(db: Db) {
     },
   );
 
-  router.post("/routines/:id/run", validate(runRoutineSchema), async (req, res) => {
+  router.post("/routines/:id/run", async (req, res) => {
     const routine = await assertCanManageExistingRoutine(req, req.params.id as string);
     if (!routine) {
       res.status(404).json({ error: "Routine not found" });
       return;
     }
+    if (req.actor.type !== "board" && hasRoutineExecutionWorkspaceOverride(req.body)) {
+      throw forbidden("Only board actors can override execution workspace settings on routine runs");
+    }
+    const body = runRoutineSchema.parse(req.body);
+    req.body = body;
     if (
       req.actor.type === "agent" &&
-      req.body.assigneeAgentId !== undefined &&
-      req.body.assigneeAgentId !== req.actor.agentId
+      body.assigneeAgentId !== undefined &&
+      body.assigneeAgentId !== req.actor.agentId
     ) {
       throw forbidden("Agents can only assign routine runs to themselves");
     }
     await assertBoardCanAssignTasks(req, routine.companyId);
-    if (req.actor.type !== "board") {
-      const hasWorkspaceOverride =
-        req.body.executionWorkspaceId !== undefined ||
-        req.body.executionWorkspacePreference !== undefined ||
-        req.body.executionWorkspaceSettings !== undefined;
-      if (hasWorkspaceOverride) {
-        throw forbidden("Only board actors can override execution workspace settings on routine runs");
-      }
-    }
-    const run = await svc.runRoutine(routine.id, req.body);
+    const run = await svc.runRoutine(routine.id, body);
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: routine.companyId,

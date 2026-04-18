@@ -111,6 +111,21 @@ describe("company skill import source parsing", () => {
       .toThrowError("Skill source URL host is not allowed.");
   });
 
+  it("allows configured GitHub Enterprise remote skill import hosts", () => {
+    const previous = process.env.PAPERCLIP_ALLOWED_GITHUB_HOSTS;
+    process.env.PAPERCLIP_ALLOWED_GITHUB_HOSTS = "ghe.example.com";
+    try {
+      const parsed = parseSkillImportSourceInput("https://ghe.example.com/acme/private-skill");
+      expect(parsed.resolvedSource).toBe("https://ghe.example.com/acme/private-skill");
+    } finally {
+      if (previous !== undefined) {
+        process.env.PAPERCLIP_ALLOWED_GITHUB_HOSTS = previous;
+      } else {
+        delete process.env.PAPERCLIP_ALLOWED_GITHUB_HOSTS;
+      }
+    }
+  });
+
   it("allows raw.githubusercontent.com remote skill URLs", () => {
     const parsed = parseSkillImportSourceInput(
       "https://raw.githubusercontent.com/paperclipai/paperclip/master/skills/paperclip/SKILL.md",

@@ -114,6 +114,13 @@ describe("normalizeContentType", () => {
   });
 });
 
+describe("default attachment allowlist", () => {
+  it("allows zip archives as downloadable issue attachments", () => {
+    expect(matchesContentType("application/zip", [...DEFAULT_ALLOWED_TYPES])).toBe(true);
+    expect(matchesContentType("application/x-zip-compressed", [...DEFAULT_ALLOWED_TYPES])).toBe(true);
+  });
+});
+
 describe("isInlineAttachmentContentType", () => {
   it("allows the configured inline-safe types", () => {
     for (const contentType of ["image/png", "image/svg+xml", "application/pdf", "text/plain"]) {

@@ -563,11 +563,19 @@ function extractCommandTokens(raw: string) {
 
 function isAllowedSkillImportHostname(hostname: string) {
   const normalized = hostname.trim().toLowerCase();
-  return normalized === "github.com"
-    || normalized === "www.github.com"
-    || normalized === "gist.github.com"
+  if (
+    normalized === "gist.github.com"
     || normalized === "raw.githubusercontent.com"
-    || normalized.endsWith(".githubusercontent.com");
+    || normalized.endsWith(".githubusercontent.com")
+  ) {
+    return true;
+  }
+  try {
+    assertAllowedGitHubHostname(normalized);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function assertAllowedRemoteSkillImportSource(source: string) {

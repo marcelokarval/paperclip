@@ -54,7 +54,14 @@ async function createApp(actor: Record<string, unknown>) {
 }
 
 describe("company skill mutation permissions", () => {
+  const originalAllowedGitHubHosts = process.env.PAPERCLIP_ALLOWED_GITHUB_HOSTS;
+
   beforeEach(() => {
+    if (originalAllowedGitHubHosts !== undefined) {
+      process.env.PAPERCLIP_ALLOWED_GITHUB_HOSTS = originalAllowedGitHubHosts;
+    } else {
+      delete process.env.PAPERCLIP_ALLOWED_GITHUB_HOSTS;
+    }
     vi.resetModules();
     vi.doUnmock("../routes/company-skills.js");
     vi.doUnmock("../routes/authz.js");
@@ -229,6 +236,7 @@ describe("company skill mutation permissions", () => {
   });
 
   it("does not expose a skill reference for non-public skill imports", async () => {
+    process.env.PAPERCLIP_ALLOWED_GITHUB_HOSTS = "ghe.example.com";
     mockCompanySkillService.importFromSource.mockResolvedValue({
       imported: [
         {
