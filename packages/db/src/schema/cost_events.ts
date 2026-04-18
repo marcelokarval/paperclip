@@ -11,11 +11,11 @@ export const costEvents = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id),
-    agentId: uuid("agent_id").notNull().references(() => agents.id),
+    agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
     issueId: uuid("issue_id").references(() => issues.id),
     projectId: uuid("project_id").references(() => projects.id),
     goalId: uuid("goal_id").references(() => goals.id),
-    heartbeatRunId: uuid("heartbeat_run_id").references(() => heartbeatRuns.id),
+    heartbeatRunId: uuid("heartbeat_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     billingCode: text("billing_code"),
     provider: text("provider").notNull(),
     biller: text("biller").notNull().default("unknown"),

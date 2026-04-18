@@ -6,6 +6,7 @@ import {
   agents,
   companies,
   companySkills,
+  costEvents,
   createDb,
   heartbeatRuns,
   issueComments,
@@ -39,6 +40,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(costEvents);
     await db.delete(activityLog);
     await db.delete(issueReadStates);
     await db.delete(issueComments);
@@ -137,6 +139,19 @@ describeEmbeddedPostgres("cleanup removal services", () => {
       createdByRunId: runId,
     });
 
+    const costEventId = randomUUID();
+    await db.insert(costEvents).values({
+      id: costEventId,
+      companyId,
+      agentId,
+      heartbeatRunId: runId,
+      issueId,
+      provider: "openai",
+      model: "gpt-5",
+      costCents: 42,
+      occurredAt: new Date("2026-04-17T12:00:00.000Z"),
+    });
+
     const removed = await agentService(db).remove(agentId);
 
     expect(removed?.id).toBe(agentId);
@@ -144,6 +159,13 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))).resolves.toHaveLength(0);
     await expect(db.select().from(issueComments).where(eq(issueComments.issueId, issueId))).resolves.toHaveLength(0);
     await expect(db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).resolves.toHaveLength(0);
+    await expect(db.select().from(costEvents).where(eq(costEvents.id, costEventId))).resolves.toMatchObject([
+      {
+        id: costEventId,
+        agentId: null,
+        heartbeatRunId: null,
+      },
+    ]);
   });
 
   it("removes issue read states and activity rows before deleting the company", async () => {
