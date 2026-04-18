@@ -159,7 +159,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
             sql<number>`coalesce(sum(case when ${costEvents.billingType} in (${sql.join(SUBSCRIPTION_BILLING_TYPES.map((value) => sql`${value}`), sql`, `)}) then ${costEvents.outputTokens} else 0 end), 0)::int`,
         })
         .from(costEvents)
-        .leftJoin(agents, sql`${costEvents.agentId} = ${agents.id}`)
+        .leftJoin(agents, eq(costEvents.agentId, agents.id))
         .where(and(...conditions))
         .groupBy(costEvents.agentId, agents.name, agents.status)
         .orderBy(desc(sql`coalesce(sum(${costEvents.costCents}), 0)::int`));
@@ -301,7 +301,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
         })
         .from(costEvents)
-        .leftJoin(agents, sql`${costEvents.agentId} = ${agents.id}`)
+        .leftJoin(agents, eq(costEvents.agentId, agents.id))
         .where(and(...conditions))
         .groupBy(
           costEvents.agentId,
