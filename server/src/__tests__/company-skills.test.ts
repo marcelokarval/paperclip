@@ -1,16 +1,32 @@
+import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
-import { afterEach, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { companies, companySkills, createDb } from "@paperclipai/db";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
 import {
   discoverProjectWorkspaceSkillDirectories,
   findMissingLocalSkillIds,
   normalizeGitHubSkillDirectory,
   parseSkillImportSourceInput,
   readLocalSkillImportFromDirectory,
+  companySkillService,
 } from "../services/company-skills.js";
 
 const cleanupDirs = new Set<string>();
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+if (!embeddedPostgresSupport.supported) {
+  console.warn(
+    `Skipping embedded Postgres company skills tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
+  );
+}
 
 afterEach(async () => {
   await Promise.all(Array.from(cleanupDirs, (dir) => fs.rm(dir, { recursive: true, force: true })));
@@ -221,6 +237,68 @@ describe("project workspace skill discovery", () => {
         },
       ],
     });
+  });
+});
+
+describeEmbeddedPostgres("companySkillService.list", () => {
+  let db!: ReturnType<typeof createDb>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-skills-");
+    db = createDb(tempDb.connectionString);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(companySkills);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("survives concurrent createLocalSkill calls with the same key", async () => {
+    const originalPaperclipHome = process.env.PAPERCLIP_HOME;
+    process.env.PAPERCLIP_HOME = await makeTempDir("paperclip-company-skills-home-");
+    const companyId = randomUUID();
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      const parallelism = 16;
+      const request = { name: "Race", slug: "race", description: null, markdown: null };
+      const results = await Promise.all(
+        Array.from({ length: parallelism }, () =>
+          companySkillService(db).createLocalSkill(companyId, request),
+        ),
+      );
+
+      for (const result of results) {
+        expect(result.key).toBe(`company/${companyId}/race`);
+      }
+
+      const rows = await db
+        .select()
+        .from(companySkills)
+        .where(eq(companySkills.companyId, companyId));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.key).toBe(`company/${companyId}/race`);
+
+      if (typeof rows[0]?.sourceLocator === "string") {
+        cleanupDirs.add(path.dirname(rows[0].sourceLocator));
+      }
+    } finally {
+      if (originalPaperclipHome === undefined) {
+        delete process.env.PAPERCLIP_HOME;
+      } else {
+        process.env.PAPERCLIP_HOME = originalPaperclipHome;
+      }
+    }
   });
 });
 
