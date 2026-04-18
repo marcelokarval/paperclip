@@ -228,7 +228,11 @@ export function agentService(db: Db) {
         ),
       )
       .groupBy(costEvents.agentId);
-    return new Map(rows.map((row) => [row.agentId, Number(row.spentMonthlyCents ?? 0)]));
+    return new Map(
+      rows
+        .filter((row): row is typeof row & { agentId: string } => typeof row.agentId === "string")
+        .map((row) => [row.agentId, Number(row.spentMonthlyCents ?? 0)]),
+    );
   }
 
   async function hydrateAgentSpend<T extends { id: string; companyId: string; spentMonthlyCents: number }>(rows: T[]) {
