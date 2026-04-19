@@ -50,7 +50,7 @@ import { conflict, forbidden, HttpError, notFound, unauthorized } from "../error
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
-  isAllowedContentType,
+  isAllowedIssueAttachmentContentType,
   isInlineAttachmentContentType,
   MAX_ATTACHMENT_BYTES,
   normalizeContentType,
@@ -2697,7 +2697,7 @@ export function issueRoutes(
       return;
     }
     const contentType = normalizeContentType(file.mimetype);
-    if (!isAllowedContentType(contentType)) {
+    if (!isAllowedIssueAttachmentContentType(contentType)) {
       res.status(422).json({ error: `Unsupported attachment type: ${contentType || "unknown"}` });
       return;
     }

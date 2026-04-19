@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   createRoutineSchema,
   createRoutineTriggerSchema,
+  RUN_ROUTINE_EXECUTION_WORKSPACE_OVERRIDE_KEYS,
   rotateRoutineTriggerSecretSchema,
   runRoutineSchema,
   updateRoutineSchema,
@@ -54,9 +55,9 @@ export function routineRoutes(db: Db) {
   function hasRoutineExecutionWorkspaceOverride(body: unknown) {
     if (typeof body !== "object" || body === null || Array.isArray(body)) return false;
     const record = body as Record<string, unknown>;
-    return Object.prototype.hasOwnProperty.call(record, "executionWorkspaceId") ||
-      Object.prototype.hasOwnProperty.call(record, "executionWorkspacePreference") ||
-      Object.prototype.hasOwnProperty.call(record, "executionWorkspaceSettings");
+    return RUN_ROUTINE_EXECUTION_WORKSPACE_OVERRIDE_KEYS.some((key) =>
+      Object.prototype.hasOwnProperty.call(record, key)
+    );
   }
 
   router.get("/companies/:companyId/routines", async (req, res) => {

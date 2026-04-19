@@ -163,6 +163,21 @@ describe("POST /api/companies/:companyId/assets/images", () => {
       body: expect.any(Buffer),
     });
   });
+
+  it("does not inherit issue-only zip attachment support", async () => {
+    const zip = createStorageService("application/zip");
+    const app = await createApp(zip);
+
+    const res = await request(app)
+      .post("/api/companies/company-1/assets/images")
+      .field("namespace", "issues/drafts")
+      .attach("file", Buffer.from("zip"), { filename: "bundle.zip", contentType: "application/zip" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe("Unsupported file type: application/zip");
+    expect(createAssetMock).not.toHaveBeenCalled();
+    expect(zip.__calls.putFileInputs).toEqual([]);
+  });
 });
 
 describe("POST /api/companies/:companyId/logo", () => {
