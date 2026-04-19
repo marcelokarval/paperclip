@@ -50,7 +50,7 @@ import { conflict, forbidden, HttpError, notFound, unauthorized } from "../error
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
-  isAllowedContentType,
+  isAllowedIssueAttachmentContentType,
   isInlineAttachmentContentType,
   MAX_ATTACHMENT_BYTES,
   normalizeContentType,
@@ -1505,6 +1505,21 @@ export function issueRoutes(
       updateFields.assigneeUserId === undefined ? existing.assigneeUserId : (updateFields.assigneeUserId as string | null);
     const assigneeWillChange =
       nextAssigneeAgentId !== existing.assigneeAgentId || nextAssigneeUserId !== existing.assigneeUserId;
+    const requestedWorkflowAssigneeSurvived =
+      transition.workflowControlledAssignment &&
+      requestedAssigneePreferenceProvided &&
+      (
+        (
+          normalizedAssigneeAgentId !== undefined &&
+          normalizedAssigneeAgentId === nextAssigneeAgentId &&
+          nextAssigneeUserId === null
+        ) ||
+        (
+          req.body.assigneeUserId !== undefined &&
+          req.body.assigneeUserId === nextAssigneeUserId &&
+          nextAssigneeAgentId === null
+        )
+      );
     const isAgentReturningIssueToCreator =
       req.actor.type === "agent" &&
       !!req.actor.agentId &&
@@ -1516,7 +1531,7 @@ export function issueRoutes(
 
     if (
       assigneeWillChange &&
-      (!transition.workflowControlledAssignment || requestedAssigneePreferenceProvided)
+      (!transition.workflowControlledAssignment || requestedWorkflowAssigneeSurvived)
     ) {
       if (!isAgentReturningIssueToCreator) {
         await assertCanAssignTasks(req, existing.companyId);
@@ -2682,7 +2697,7 @@ export function issueRoutes(
       return;
     }
     const contentType = normalizeContentType(file.mimetype);
-    if (!isAllowedContentType(contentType)) {
+    if (!isAllowedIssueAttachmentContentType(contentType)) {
       res.status(422).json({ error: `Unsupported attachment type: ${contentType || "unknown"}` });
       return;
     }

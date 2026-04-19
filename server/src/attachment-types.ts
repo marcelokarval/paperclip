@@ -29,6 +29,11 @@ export const DEFAULT_ALLOWED_TYPES: readonly string[] = [
   "text/html",
 ];
 
+const ISSUE_ATTACHMENT_DOWNLOAD_TYPES: readonly string[] = [
+  "application/zip",
+  "application/x-zip-compressed",
+];
+
 export const DEFAULT_ATTACHMENT_CONTENT_TYPE = "application/octet-stream";
 export const SVG_CONTENT_TYPE = "image/svg+xml";
 export const INLINE_ATTACHMENT_TYPES: readonly string[] = [
@@ -92,6 +97,13 @@ const allowedPatterns: string[] = parseAllowedTypes(
 /** Convenience wrapper using the process-level allowed list. */
 export function isAllowedContentType(contentType: string): boolean {
   return matchesContentType(contentType, allowedPatterns);
+}
+
+export function isAllowedIssueAttachmentContentType(contentType: string): boolean {
+  return matchesContentType(contentType, [
+    ...allowedPatterns,
+    ...ISSUE_ATTACHMENT_DOWNLOAD_TYPES,
+  ]);
 }
 
 export const MAX_ATTACHMENT_BYTES =

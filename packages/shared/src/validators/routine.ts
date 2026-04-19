@@ -115,5 +115,11 @@ export const runRoutineSchema = z.object({
 
 export type RunRoutine = z.infer<typeof runRoutineSchema>;
 
+export const RUN_ROUTINE_EXECUTION_WORKSPACE_OVERRIDE_KEYS = [
+  "executionWorkspaceId",
+  "executionWorkspacePreference",
+  "executionWorkspaceSettings",
+] as const satisfies readonly (keyof RunRoutine)[];
+
 export const rotateRoutineTriggerSecretSchema = z.object({});
 export type RotateRoutineTriggerSecret = z.infer<typeof rotateRoutineTriggerSecretSchema>;

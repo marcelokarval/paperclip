@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   DEFAULT_ALLOWED_TYPES,
   INLINE_ATTACHMENT_TYPES,
+  isAllowedIssueAttachmentContentType,
   isInlineAttachmentContentType,
   matchesContentType,
   normalizeContentType,
@@ -111,6 +112,18 @@ describe("normalizeContentType", () => {
   it("falls back to octet-stream when the type is missing", () => {
     expect(normalizeContentType(undefined)).toBe("application/octet-stream");
     expect(normalizeContentType("")).toBe("application/octet-stream");
+  });
+});
+
+describe("default attachment allowlist", () => {
+  it("keeps zip archives out of the generic allowlist", () => {
+    expect(matchesContentType("application/zip", [...DEFAULT_ALLOWED_TYPES])).toBe(false);
+    expect(matchesContentType("application/x-zip-compressed", [...DEFAULT_ALLOWED_TYPES])).toBe(false);
+  });
+
+  it("allows zip archives only through the issue attachment download allowlist", () => {
+    expect(isAllowedIssueAttachmentContentType("application/zip")).toBe(true);
+    expect(isAllowedIssueAttachmentContentType("application/x-zip-compressed")).toBe(true);
   });
 });
 
