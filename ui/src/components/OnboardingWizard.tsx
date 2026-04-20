@@ -96,6 +96,18 @@ export function buildCompanySetupCreatePayload(
   return payload;
 }
 
+export function canEnterOnboardingStep(
+  step: Step,
+  state: {
+    companyId: string | null;
+    agentId: string | null;
+  }
+): boolean {
+  if (step === 1) return true;
+  if (step === 2) return Boolean(state.companyId);
+  return Boolean(state.companyId && state.agentId);
+}
+
 export function OnboardingWizard() {
   const { onboardingOpen, onboardingOptions, closeOnboarding } = useDialog();
   const { companies, setSelectedCompanyId, loading: companiesLoading } = useCompany();
@@ -687,22 +699,39 @@ export function OnboardingWizard() {
                     { step: 3 as Step, label: "Task", icon: ListTodo },
                     { step: 4 as Step, label: "Launch", icon: Rocket }
                   ] as const
-                ).map(({ step: s, label, icon: Icon }) => (
-                  <button
-                    key={s}
-                    type="button"
-                    onClick={() => setStep(s)}
-                    className={cn(
-                      "flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 -mb-px transition-colors cursor-pointer",
-                      s === step
-                        ? "border-foreground text-foreground"
-                        : "border-transparent text-muted-foreground hover:text-foreground/70 hover:border-border"
-                    )}
-                  >
-                    <Icon className="h-3.5 w-3.5" />
-                    {label}
-                  </button>
-                ))}
+                ).map(({ step: s, label, icon: Icon }) => {
+                  const isCurrentStep = s === step;
+                  const canEnterStep =
+                    isCurrentStep ||
+                    canEnterOnboardingStep(s, {
+                      companyId: createdCompanyId,
+                      agentId: createdAgentId,
+                    });
+
+                  return (
+                    <button
+                      key={s}
+                      type="button"
+                      disabled={!canEnterStep}
+                      onClick={() => {
+                        if (!canEnterStep) return;
+                        setStep(s);
+                      }}
+                      className={cn(
+                        "flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 -mb-px transition-colors",
+                        isCurrentStep
+                          ? "border-foreground text-foreground"
+                          : "border-transparent text-muted-foreground hover:text-foreground/70 hover:border-border",
+                        canEnterStep
+                          ? "cursor-pointer"
+                          : "cursor-not-allowed opacity-45 hover:border-transparent hover:text-muted-foreground"
+                      )}
+                    >
+                      <Icon className="h-3.5 w-3.5" />
+                      {label}
+                    </button>
+                  );
+                })}
               </div>
 
               {/* Step content */}
