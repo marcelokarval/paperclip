@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildCompanySetupCreatePayload,
   canEnterOnboardingStep,
+  findResumableOnboardingCompany,
 } from "./OnboardingWizard";
 
 describe("OnboardingWizard issue prefix setup", () => {
@@ -26,5 +27,18 @@ describe("OnboardingWizard issue prefix setup", () => {
     expect(canEnterOnboardingStep(2, { companyId: "company-1", agentId: null })).toBe(true);
     expect(canEnterOnboardingStep(3, { companyId: "company-1", agentId: null })).toBe(false);
     expect(canEnterOnboardingStep(4, { companyId: "company-1", agentId: "agent-1" })).toBe(true);
+  });
+
+  it("finds an existing company so interrupted setup can continue", () => {
+    const companies = [
+      { id: "company-1", name: "Prop4You", issuePrefix: "P4Y" },
+      { id: "company-2", name: "Paperclip", issuePrefix: "PAP" },
+      { id: "company-3", name: "Prop4You", issuePrefix: "PRO" },
+    ];
+
+    expect(findResumableOnboardingCompany(companies, "prop4you", "")?.id).toBe("company-1");
+    expect(findResumableOnboardingCompany(companies, "Different", "p4y")?.id).toBe("company-1");
+    expect(findResumableOnboardingCompany(companies, "Prop4You", "NEW")).toBeNull();
+    expect(findResumableOnboardingCompany(companies, "Unknown", "UNK")).toBeNull();
   });
 });

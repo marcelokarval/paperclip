@@ -1,10 +1,12 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
+import type { Company } from "@paperclipai/shared";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { companiesApi } from "../api/companies";
+import { ApiError } from "../api/client";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
 import { issuesApi } from "../api/issues";
@@ -57,12 +59,14 @@ import {
 
 type Step = 1 | 2 | 3 | 4;
 type AdapterType = string;
+type OnboardingCompanyCandidate = Pick<Company, "id" | "name" | "issuePrefix">;
 
 const DEFAULT_TASK_DESCRIPTION = `You are the CEO. You set the direction for the company.
 
 - hire a founding engineer
 - write a hiring plan
 - break the roadmap into concrete tasks and start delegating work`;
+const ADAPTER_ENVIRONMENT_TEST_TIMEOUT_MS = 75_000;
 
 function deriveSuggestedIssuePrefix(companyName: string) {
   const letters = companyName.toUpperCase().replace(/[^A-Z]/g, "");
@@ -108,6 +112,52 @@ export function canEnterOnboardingStep(
   return Boolean(state.companyId && state.agentId);
 }
 
+export function findResumableOnboardingCompany(
+  companies: OnboardingCompanyCandidate[],
+  companyName: string,
+  issuePrefix: string
+): OnboardingCompanyCandidate | null {
+  const normalizedName = companyName.trim().toLowerCase();
+  const explicitIssuePrefix =
+    normalizeIssuePrefixInput(issuePrefix).trim() || null;
+
+  if (explicitIssuePrefix) {
+    return (
+      companies.find((company) => company.issuePrefix === explicitIssuePrefix) ??
+      null
+    );
+  }
+
+  if (normalizedName) {
+    const byName = companies.find(
+      (company) => company.name.trim().toLowerCase() === normalizedName
+    );
+    if (byName) return byName;
+  }
+
+  return null;
+}
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timeout);
+        resolve(value);
+      },
+      (err) => {
+        window.clearTimeout(timeout);
+        reject(err);
+      }
+    );
+  });
+}
+
 export function OnboardingWizard() {
   const { onboardingOpen, onboardingOptions, closeOnboarding } = useDialog();
   const { companies, setSelectedCompanyId, loading: companiesLoading } = useCompany();
@@ -140,6 +190,7 @@ export function OnboardingWizard() {
   const [step, setStep] = useState<Step>(initialStep);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [modelOpen, setModelOpen] = useState(false);
   const [modelSearch, setModelSearch] = useState("");
 
@@ -171,9 +222,11 @@ export function OnboardingWizard() {
   const [taskDescription, setTaskDescription] = useState(
     DEFAULT_TASK_DESCRIPTION
   );
+  const [createStarterTask, setCreateStarterTask] = useState(false);
 
   // Auto-grow textarea for task description
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const adapterEnvRequestIdRef = useRef(0);
   const autoResizeTextarea = useCallback(() => {
     const el = textareaRef.current;
     if (!el) return;
@@ -194,6 +247,10 @@ export function OnboardingWizard() {
   const [createdAgentId, setCreatedAgentId] = useState<string | null>(null);
   const [createdProjectId, setCreatedProjectId] = useState<string | null>(null);
   const [createdIssueRef, setCreatedIssueRef] = useState<string | null>(null);
+  const createdCompany = createdCompanyId
+    ? companies.find((company) => company.id === createdCompanyId) ?? null
+    : null;
+  const companyDisplayName = createdCompany?.name ?? companyName;
 
   useEffect(() => {
     setRouteDismissed(false);
@@ -212,6 +269,7 @@ export function OnboardingWizard() {
     setCreatedProjectId(null);
     setCreatedAgentId(null);
     setCreatedIssueRef(null);
+    setNotice(null);
   }, [
     effectiveOnboardingOpen,
     effectiveOnboardingOptions.companyId,
@@ -335,6 +393,7 @@ export function OnboardingWizard() {
     setStep(1);
     setLoading(false);
     setError(null);
+    setNotice(null);
     setCompanyName("");
     setIssuePrefix("");
     setCompanyGoal("");
@@ -351,6 +410,7 @@ export function OnboardingWizard() {
     setUnsetAnthropicLoading(false);
     setTaskTitle("Hire your first engineer and create a hiring plan");
     setTaskDescription(DEFAULT_TASK_DESCRIPTION);
+    setCreateStarterTask(false);
     setCreatedCompanyId(null);
     setCreatedCompanyPrefix(null);
     setCreatedCompanyGoalId(null);
@@ -406,32 +466,60 @@ export function OnboardingWizard() {
       );
       return null;
     }
+    const requestId = adapterEnvRequestIdRef.current + 1;
+    adapterEnvRequestIdRef.current = requestId;
     setAdapterEnvLoading(true);
     setAdapterEnvError(null);
     try {
-      const result = await agentsApi.testEnvironment(
-        createdCompanyId,
-        adapterType,
-        {
+      const result = await withTimeout(
+        agentsApi.testEnvironment(createdCompanyId, adapterType, {
           adapterConfig: adapterConfigOverride ?? buildAdapterConfig()
-        }
+        }),
+        ADAPTER_ENVIRONMENT_TEST_TIMEOUT_MS,
+        "Adapter environment test timed out. Check the local CLI login/session in a terminal and retry."
       );
-      setAdapterEnvResult(result);
+      if (adapterEnvRequestIdRef.current === requestId) {
+        setAdapterEnvResult(result);
+      }
       return result;
     } catch (err) {
-      setAdapterEnvError(
-        err instanceof Error ? err.message : "Adapter environment test failed"
-      );
+      if (adapterEnvRequestIdRef.current === requestId) {
+        setAdapterEnvError(
+          err instanceof Error ? err.message : "Adapter environment test failed"
+        );
+      }
       return null;
     } finally {
-      setAdapterEnvLoading(false);
+      if (adapterEnvRequestIdRef.current === requestId) {
+        setAdapterEnvLoading(false);
+      }
     }
+  }
+
+  function continueWithExistingCompany(company: OnboardingCompanyCandidate) {
+    setCreatedCompanyId(company.id);
+    setCreatedCompanyPrefix(company.issuePrefix);
+    setSelectedCompanyId(company.id);
+    setNotice(`Continuing setup for existing company ${company.name}.`);
+    setStep(2);
   }
 
   async function handleStep1Next() {
     if (issuePrefixError) return;
+    const resumableCompany = findResumableOnboardingCompany(
+      companies,
+      companyName,
+      issuePrefix
+    );
+    if (resumableCompany) {
+      setError(null);
+      continueWithExistingCompany(resumableCompany);
+      return;
+    }
+
     setLoading(true);
     setError(null);
+    setNotice(null);
     try {
       const company = await companiesApi.create(
         buildCompanySetupCreatePayload(companyName, issuePrefix)
@@ -461,6 +549,19 @@ export function OnboardingWizard() {
 
       setStep(2);
     } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        const latestCompanies = await companiesApi.list().catch(() => companies);
+        queryClient.setQueryData(queryKeys.companies.all, latestCompanies);
+        const existing = findResumableOnboardingCompany(
+          latestCompanies,
+          companyName,
+          issuePrefix
+        );
+        if (existing) {
+          continueWithExistingCompany(existing);
+          return;
+        }
+      }
       setError(err instanceof Error ? err.message : "Failed to create company");
     } finally {
       setLoading(false);
@@ -580,6 +681,7 @@ export function OnboardingWizard() {
 
   async function handleStep3Next() {
     if (!createdCompanyId || !createdAgentId) return;
+    if (createStarterTask && !taskTitle.trim()) return;
     setError(null);
     setStep(4);
   }
@@ -589,6 +691,16 @@ export function OnboardingWizard() {
     setLoading(true);
     setError(null);
     try {
+      if (!createStarterTask) {
+        setSelectedCompanyId(createdCompanyId);
+        const agentId = createdAgentId;
+        const prefix = createdCompanyPrefix ?? createdCompany?.issuePrefix ?? null;
+        reset();
+        closeOnboarding();
+        navigate(prefix ? `/${prefix}/agents/${agentId}` : `/agents/${agentId}`);
+        return;
+      }
+
       let goalId = createdCompanyGoalId;
       if (!goalId) {
         const goals = await goalsApi.list(createdCompanyId);
@@ -650,7 +762,7 @@ export function OnboardingWizard() {
         handleStep1Next();
       }
       else if (step === 2 && agentName.trim()) handleStep2Next();
-      else if (step === 3 && taskTitle.trim()) handleStep3Next();
+      else if (step === 3 && (!createStarterTask || taskTitle.trim())) handleStep3Next();
       else if (step === 4) handleLaunch();
     }
   }
@@ -1206,13 +1318,39 @@ export function OnboardingWizard() {
                       <ListTodo className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div>
-                      <h3 className="font-medium">Give it something to do</h3>
+                      <h3 className="font-medium">Choose the first action</h3>
                       <p className="text-xs text-muted-foreground">
-                        Give your agent a small task to start with — a bug fix,
-                        a research question, writing a script.
+                        Start cold by default, or create one starter task and
+                        wake the agent now.
                       </p>
                     </div>
                   </div>
+                  <label className="flex items-start gap-3 rounded-md border border-border p-3 text-sm">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={createStarterTask}
+                      onChange={(e) => setCreateStarterTask(e.target.checked)}
+                    />
+                    <span>
+                      <span className="block font-medium">
+                        Create a starter task and wake the agent
+                      </span>
+                      <span className="block text-xs text-muted-foreground">
+                        Leave this off to finish setup with a CEO agent and no
+                        initial issue or run.
+                      </span>
+                    </span>
+                  </label>
+                  {!createStarterTask && (
+                    <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                      Cold start selected. You can assign the first issue from
+                      the board after setup, including imported GitHub or Linear
+                      issues.
+                    </div>
+                  )}
+                  {createStarterTask && (
+                    <>
                   <div>
                     <label className="text-xs text-muted-foreground mb-1 block">
                       Task title
@@ -1237,6 +1375,8 @@ export function OnboardingWizard() {
                       onChange={(e) => setTaskDescription(e.target.value)}
                     />
                   </div>
+                    </>
+                  )}
                 </div>
               )}
 
@@ -1249,8 +1389,9 @@ export function OnboardingWizard() {
                     <div>
                       <h3 className="font-medium">Ready to launch</h3>
                       <p className="text-xs text-muted-foreground">
-                        Everything is set up. Launching now will create the
-                        starter task, wake the agent, and open the issue.
+                        {createStarterTask
+                          ? "Everything is set up. Launching now will create the starter task, wake the agent, and open the issue."
+                          : "Everything is set up. Finishing now will create the agent without a starter task or automatic wakeup."}
                       </p>
                     </div>
                   </div>
@@ -1259,7 +1400,7 @@ export function OnboardingWizard() {
                       <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium truncate">
-                          {companyName}
+                          {companyDisplayName}
                         </p>
                         <p className="text-xs text-muted-foreground">Company</p>
                       </div>
@@ -1277,17 +1418,38 @@ export function OnboardingWizard() {
                       </div>
                       <Check className="h-4 w-4 text-green-500 shrink-0" />
                     </div>
-                    <div className="flex items-center gap-3 px-3 py-2.5">
-                      <ListTodo className="h-4 w-4 text-muted-foreground shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium truncate">
-                          {taskTitle}
-                        </p>
-                        <p className="text-xs text-muted-foreground">Task</p>
+                    {createStarterTask ? (
+                      <div className="flex items-center gap-3 px-3 py-2.5">
+                        <ListTodo className="h-4 w-4 text-muted-foreground shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate">
+                            {taskTitle}
+                          </p>
+                          <p className="text-xs text-muted-foreground">Task</p>
+                        </div>
+                        <Check className="h-4 w-4 text-green-500 shrink-0" />
                       </div>
-                      <Check className="h-4 w-4 text-green-500 shrink-0" />
-                    </div>
+                    ) : (
+                      <div className="flex items-center gap-3 px-3 py-2.5">
+                        <ListTodo className="h-4 w-4 text-muted-foreground shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate">
+                            No starter task
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            Agent will not be woken automatically
+                          </p>
+                        </div>
+                        <Check className="h-4 w-4 text-green-500 shrink-0" />
+                      </div>
+                    )}
                   </div>
+                </div>
+              )}
+
+              {notice && (
+                <div className="mt-3 rounded-md border border-border/70 bg-muted/20 px-2.5 py-2 text-xs text-muted-foreground">
+                  {notice}
                 </div>
               )}
 
@@ -1349,7 +1511,7 @@ export function OnboardingWizard() {
                   {step === 3 && (
                     <Button
                       size="sm"
-                      disabled={!taskTitle.trim() || loading}
+                      disabled={(createStarterTask && !taskTitle.trim()) || loading}
                       onClick={handleStep3Next}
                     >
                       {loading ? (
@@ -1367,7 +1529,11 @@ export function OnboardingWizard() {
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? "Creating..." : "Create & Open Issue"}
+                      {loading
+                        ? "Creating..."
+                        : createStarterTask
+                          ? "Create & Open Issue"
+                          : "Finish Setup"}
                     </Button>
                   )}
                 </div>
