@@ -11,7 +11,9 @@
    Do instead: distinguish clearly between repo/document analysis and commands/tests actually run.
 2. **[2026-04-15] Separate installed runtime from the remediation fork**
    Do instead: when analyzing incidents, treat `~/.paperclip/` and packaged `.npm/_npx/.../@paperclipai/*` code as the case the user actually ran, and treat this fork checkout (for example `/path/to/your-fork/paperclip`) as the patch/backport workspace.
-3. **[2026-04-15] Check upstream merged fixes before re-diagnosing a bug locally**
+3. **[2026-04-20] Isolate runtime proof with `PAPERCLIP_HOME`**
+   Do instead: when running this clone for UI/runtime validation, set `PAPERCLIP_HOME=/tmp/...` unless intentionally testing the user's installed `~/.paperclip` instance.
+4. **[2026-04-15] Check upstream merged fixes before re-diagnosing a bug locally**
    Do instead: inspect official `paperclipai/paperclip` merged PRs/commits for the affected workflow first, then state explicitly whether the fix exists upstream, in this fork, and in the installed runtime.
 
 ## Repo Workflow Guardrails
