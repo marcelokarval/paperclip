@@ -267,6 +267,17 @@ export function CompanySettings() {
             />
           </Field>
           <Field
+            label="Issue prefix"
+            hint="Set during company creation. Existing issue identifiers keep this value."
+          >
+            <input
+              className="w-full rounded-md border border-border bg-muted/30 px-2.5 py-1.5 font-mono text-sm tracking-[0.14em] text-muted-foreground outline-none"
+              type="text"
+              value={selectedCompany.issuePrefix}
+              readOnly
+            />
+          </Field>
+          <Field
             label="Description"
             hint="Optional description shown in the company profile."
           >

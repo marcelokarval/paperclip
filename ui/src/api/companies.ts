@@ -21,6 +21,7 @@ export const companiesApi = {
     name: string;
     description?: string | null;
     budgetMonthlyCents?: number;
+    issuePrefix?: string | null;
   }) =>
     api.post<Company>("/companies", data),
   update: (

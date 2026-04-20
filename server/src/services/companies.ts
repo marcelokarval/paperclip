@@ -28,7 +28,7 @@ import {
   companyMemberships,
   companySkills,
 } from "@paperclipai/db";
-import { notFound, unprocessable } from "../errors.js";
+import { conflict, notFound, unprocessable } from "../errors.js";
 
 export function companyService(db: Db) {
   const ISSUE_PREFIX_FALLBACK = "CMP";
@@ -115,6 +115,18 @@ export function companyService(db: Db) {
     return normalized.slice(0, 3) || ISSUE_PREFIX_FALLBACK;
   }
 
+  function normalizeExplicitIssuePrefix(value: unknown) {
+    if (typeof value !== "string") return null;
+    const normalized = value.trim().toUpperCase();
+    if (!normalized) return null;
+    if (!/^[A-Z][A-Z0-9]{1,9}$/.test(normalized)) {
+      throw unprocessable(
+        "Issue prefix must be 2-10 uppercase letters or digits and start with a letter",
+      );
+    }
+    return normalized;
+  }
+
   function suffixForAttempt(attempt: number) {
     if (attempt <= 1) return "";
     return "A".repeat(attempt - 1);
@@ -134,6 +146,22 @@ export function companyService(db: Db) {
   }
 
   async function createCompanyWithUniquePrefix(data: typeof companies.$inferInsert) {
+    const explicitIssuePrefix = normalizeExplicitIssuePrefix(data.issuePrefix);
+    if (explicitIssuePrefix) {
+      try {
+        const rows = await db
+          .insert(companies)
+          .values({ ...data, issuePrefix: explicitIssuePrefix })
+          .returning();
+        return rows[0];
+      } catch (error) {
+        if (isIssuePrefixConflict(error)) {
+          throw conflict(`Issue prefix "${explicitIssuePrefix}" is already in use`);
+        }
+        throw error;
+      }
+    }
+
     const base = deriveIssuePrefixBase(data.name);
     let suffix = 1;
     while (suffix < 10000) {

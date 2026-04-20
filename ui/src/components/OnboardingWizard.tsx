@@ -64,6 +64,38 @@ const DEFAULT_TASK_DESCRIPTION = `You are the CEO. You set the direction for the
 - write a hiring plan
 - break the roadmap into concrete tasks and start delegating work`;
 
+function deriveSuggestedIssuePrefix(companyName: string) {
+  const letters = companyName.toUpperCase().replace(/[^A-Z]/g, "");
+  return letters.slice(0, 3) || "CMP";
+}
+
+function normalizeIssuePrefixInput(value: string) {
+  return value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10);
+}
+
+function isValidIssuePrefix(value: string) {
+  return /^[A-Z][A-Z0-9]{1,9}$/.test(value);
+}
+
+export function buildCompanySetupCreatePayload(
+  companyName: string,
+  issuePrefix: string
+): {
+  name: string;
+  issuePrefix?: string;
+} {
+  const explicitIssuePrefix =
+    normalizeIssuePrefixInput(issuePrefix).trim() || null;
+  const payload: {
+    name: string;
+    issuePrefix?: string;
+  } = { name: companyName.trim() };
+  if (explicitIssuePrefix) {
+    payload.issuePrefix = explicitIssuePrefix;
+  }
+  return payload;
+}
+
 export function OnboardingWizard() {
   const { onboardingOpen, onboardingOptions, closeOnboarding } = useDialog();
   const { companies, setSelectedCompanyId, loading: companiesLoading } = useCompany();
@@ -101,6 +133,7 @@ export function OnboardingWizard() {
 
   // Step 1
   const [companyName, setCompanyName] = useState("");
+  const [issuePrefix, setIssuePrefix] = useState("");
   const [companyGoal, setCompanyGoal] = useState("");
 
   // Step 2
@@ -276,12 +309,22 @@ export function OnboardingWizard() {
         entries: [...entries].sort((a, b) => a.id.localeCompare(b.id))
       }));
   }, [filteredModels, adapterType]);
+  const suggestedIssuePrefix = useMemo(
+    () => deriveSuggestedIssuePrefix(companyName),
+    [companyName]
+  );
+  const explicitIssuePrefix = issuePrefix.trim() || null;
+  const issuePrefixError =
+    explicitIssuePrefix && !isValidIssuePrefix(explicitIssuePrefix)
+      ? "Use 2-10 uppercase letters or digits, starting with a letter."
+      : null;
 
   function reset() {
     setStep(1);
     setLoading(false);
     setError(null);
     setCompanyName("");
+    setIssuePrefix("");
     setCompanyGoal("");
     setAgentName("CEO");
     setAdapterType("claude_local");
@@ -374,10 +417,13 @@ export function OnboardingWizard() {
   }
 
   async function handleStep1Next() {
+    if (issuePrefixError) return;
     setLoading(true);
     setError(null);
     try {
-      const company = await companiesApi.create({ name: companyName.trim() });
+      const company = await companiesApi.create(
+        buildCompanySetupCreatePayload(companyName, issuePrefix)
+      );
       setCreatedCompanyId(company.id);
       setCreatedCompanyPrefix(company.issuePrefix);
       setSelectedCompanyId(company.id);
@@ -588,7 +634,9 @@ export function OnboardingWizard() {
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
-      if (step === 1 && companyName.trim()) handleStep1Next();
+      if (step === 1 && companyName.trim() && !issuePrefixError) {
+        handleStep1Next();
+      }
       else if (step === 2 && agentName.trim()) handleStep2Next();
       else if (step === 3 && taskTitle.trim()) handleStep3Next();
       else if (step === 4) handleLaunch();
@@ -689,6 +737,46 @@ export function OnboardingWizard() {
                       onChange={(e) => setCompanyName(e.target.value)}
                       autoFocus
                     />
+                  </div>
+                  <div className="group">
+                    <label
+                      className={cn(
+                        "text-xs mb-1 block transition-colors",
+                        issuePrefix.trim()
+                          ? "text-foreground"
+                          : "text-muted-foreground group-focus-within:text-foreground"
+                      )}
+                    >
+                      Issue prefix (optional)
+                    </label>
+                    <input
+                      aria-label="Issue prefix"
+                      className={cn(
+                        "w-full rounded-md border bg-transparent px-3 py-2 text-sm uppercase tracking-[0.18em] outline-none focus:ring-1 placeholder:normal-case placeholder:tracking-normal placeholder:text-muted-foreground/50",
+                        issuePrefixError
+                          ? "border-destructive focus:ring-destructive"
+                          : "border-border focus:ring-ring"
+                      )}
+                      placeholder={`Default: ${suggestedIssuePrefix}`}
+                      value={issuePrefix}
+                      onChange={(e) =>
+                        setIssuePrefix(normalizeIssuePrefixInput(e.target.value))
+                      }
+                    />
+                    <div className="mt-1.5 flex items-center justify-between gap-3 text-[11px]">
+                      <p
+                        className={
+                          issuePrefixError
+                            ? "text-destructive"
+                            : "text-muted-foreground"
+                        }
+                      >
+                        {issuePrefixError ??
+                          (explicitIssuePrefix
+                            ? `First issue will be ${explicitIssuePrefix}-1.`
+                            : `Leave blank to use the standard ${suggestedIssuePrefix} default.`)}
+                      </p>
+                    </div>
                   </div>
                   <div className="group">
                     <label
@@ -1200,7 +1288,9 @@ export function OnboardingWizard() {
                   {step === 1 && (
                     <Button
                       size="sm"
-                      disabled={!companyName.trim() || loading}
+                      disabled={
+                        !companyName.trim() || Boolean(issuePrefixError) || loading
+                      }
                       onClick={handleStep1Next}
                     >
                       {loading ? (
