@@ -1,4 +1,7 @@
 import express from "express";
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -354,5 +357,124 @@ describe("project env routes", () => {
         }),
       }),
     );
+  });
+
+  it("refreshes repository baseline without replacing existing workspace metadata", async () => {
+    const repoRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-baseline-route-"));
+    await mkdir(path.join(repoRoot, "doc"), { recursive: true });
+    await writeFile(path.join(repoRoot, "README.md"), "# Route baseline\n", "utf8");
+    await writeFile(path.join(repoRoot, "AGENTS.md"), "# Agent instructions\n", "utf8");
+    await writeFile(path.join(repoRoot, "doc", "PRODUCT.md"), "# Product context\n", "utf8");
+    await writeFile(
+      path.join(repoRoot, "package.json"),
+      JSON.stringify({
+        scripts: { test: "vitest" },
+        dependencies: { express: "^5.0.0" },
+        devDependencies: { typescript: "^5.0.0" },
+      }),
+      "utf8",
+    );
+    const workspace = {
+      id: "workspace-1",
+      name: "Workspace 1",
+      isPrimary: true,
+      cwd: repoRoot,
+      repoUrl: "https://github.com/example/repo",
+      repoRef: "main",
+      defaultRef: "main",
+      metadata: {
+        workspaceRuntime: { commands: [{ id: "web" }] },
+      },
+    };
+    mockProjectService.getById.mockResolvedValue(buildProject({
+      workspaces: [workspace],
+    }));
+    mockProjectService.updateWorkspace.mockImplementation(async (_projectId, _workspaceId, data) => ({
+      ...workspace,
+      ...data,
+    }));
+
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/projects/project-1/workspaces/workspace-1/repository-baseline")
+      .send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.baseline).toMatchObject({
+      status: "ready",
+      source: "scan",
+      repository: {
+        cwd: repoRoot,
+        repoUrl: "https://github.com/example/repo",
+        repoRef: "main",
+        defaultRef: "main",
+      },
+      constraints: {
+        repositoryWritesAllowed: false,
+        backlogGenerationAllowed: false,
+        childIssuesAllowed: false,
+        agentWakeupAllowed: false,
+      },
+    });
+    expect(res.body.baseline.documentationFiles).toEqual(expect.arrayContaining([
+      "README.md",
+      "AGENTS.md",
+      "doc/PRODUCT.md",
+      "package.json",
+    ]));
+    expect(mockProjectService.updateWorkspace).toHaveBeenCalledWith(
+      "project-1",
+      "workspace-1",
+      {
+        metadata: expect.objectContaining({
+          workspaceRuntime: { commands: [{ id: "web" }] },
+          repositoryDocumentationBaseline: expect.objectContaining({
+            source: "scan",
+            documentationFiles: expect.arrayContaining(["AGENTS.md", "doc/PRODUCT.md"]),
+          }),
+        }),
+      },
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "project.workspace_repository_baseline_refreshed",
+        details: expect.objectContaining({
+          workspaceId: "workspace-1",
+          status: "ready",
+        }),
+      }),
+    );
+  });
+
+  it("rejects agent actors for repository baseline refresh", async () => {
+    mockProjectService.getById.mockResolvedValue(buildProject({
+      workspaces: [
+        {
+          id: "workspace-1",
+          name: "Workspace 1",
+          isPrimary: true,
+          cwd: "/tmp/workspace-1",
+          repoUrl: null,
+          repoRef: null,
+          defaultRef: null,
+          metadata: {},
+        },
+      ],
+    }));
+
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "api_key",
+    });
+    const res = await request(app)
+      .post("/api/projects/project-1/workspaces/workspace-1/repository-baseline")
+      .send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body).toEqual({ error: "Board access required" });
+    expect(mockProjectService.updateWorkspace).not.toHaveBeenCalled();
   });
 });
