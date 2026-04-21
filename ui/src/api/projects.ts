@@ -33,6 +33,11 @@ export const projectsApi = {
       projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}`),
       data,
     ),
+  refreshRepositoryBaseline: (projectId: string, workspaceId: string, companyId?: string) =>
+    api.post<{ baseline: Record<string, unknown>; workspace: ProjectWorkspace }>(
+      projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}/repository-baseline`),
+      {},
+    ),
   controlWorkspaceRuntimeServices: (
     projectId: string,
     workspaceId: string,

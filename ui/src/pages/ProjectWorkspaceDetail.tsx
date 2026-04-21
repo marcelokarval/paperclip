@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { isUuidLike, type ProjectWorkspace } from "@paperclipai/shared";
-import { ArrowLeft, Check, ExternalLink, Loader2, Sparkles } from "lucide-react";
+import { ArrowLeft, Check, ExternalLink, FileSearch, Loader2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { ChoosePathButton } from "../components/PathInstructionsModal";
@@ -242,6 +242,7 @@ export function ProjectWorkspaceDetail() {
   const [form, setForm] = useState<WorkspaceFormState | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [runtimeActionMessage, setRuntimeActionMessage] = useState<string | null>(null);
+  const [baselineActionMessage, setBaselineActionMessage] = useState<string | null>(null);
   const routeProjectRef = projectId ?? "";
   const routeWorkspaceId = workspaceId ?? "";
 
@@ -324,6 +325,20 @@ export function ProjectWorkspaceDetail() {
     },
     onError: (error) => {
       setErrorMessage(error instanceof Error ? error.message : "Failed to update workspace.");
+    },
+  });
+
+  const refreshRepositoryBaseline = useMutation({
+    mutationFn: () => projectsApi.refreshRepositoryBaseline(project!.id, routeWorkspaceId, lookupCompanyId),
+    onSuccess: (result) => {
+      invalidateProject();
+      setErrorMessage(null);
+      const status = typeof result.baseline.status === "string" ? result.baseline.status : "updated";
+      setBaselineActionMessage(`Repository baseline ${status}.`);
+    },
+    onError: (error) => {
+      setBaselineActionMessage(null);
+      setErrorMessage(error instanceof Error ? error.message : "Failed to refresh repository baseline.");
     },
   });
 
@@ -583,16 +598,33 @@ export function ProjectWorkspaceDetail() {
               </details>
 
               <div className="rounded-2xl border border-border bg-muted/20 p-4">
-                <div className="space-y-1">
-                  <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
-                    Repository documentation baseline
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                      Repository documentation baseline
+                    </div>
+                    <h2 className="text-lg font-semibold">Paperclip-owned repo context</h2>
+                    <p className="text-sm text-muted-foreground">
+                      Store read-only repository context for future delegation. This section is documentation state only:
+                      it does not create issues, split work, wake agents, import tickets, open PRs, or write to the repository.
+                    </p>
                   </div>
-                  <h2 className="text-lg font-semibold">Paperclip-owned repo context</h2>
-                  <p className="text-sm text-muted-foreground">
-                    Store read-only repository context for future delegation. This section is documentation state only:
-                    it does not create issues, split work, wake agents, import tickets, open PRs, or write to the repository.
-                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="w-full sm:w-auto"
+                    disabled={refreshRepositoryBaseline.isPending}
+                    onClick={() => refreshRepositoryBaseline.mutate()}
+                  >
+                    {refreshRepositoryBaseline.isPending
+                      ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      : <FileSearch className="mr-2 h-4 w-4" />}
+                    Refresh baseline
+                  </Button>
                 </div>
+                {baselineActionMessage ? (
+                  <p className="mt-3 text-sm text-muted-foreground">{baselineActionMessage}</p>
+                ) : null}
 
                 <div className="mt-4 grid gap-4">
                   <Field label="Baseline status">

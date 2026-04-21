@@ -22,6 +22,10 @@ import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForProjectWorkspace,
 } from "../services/workspace-runtime.js";
+import {
+  buildRepositoryDocumentationBaseline,
+  writeRepositoryDocumentationBaselineToMetadata,
+} from "../services/repository-baseline.js";
 import { getTelemetryClient } from "../telemetry.js";
 
 export function projectRoutes(db: Db) {
@@ -293,6 +297,60 @@ export function projectRoutes(db: Db) {
       res.json(workspace);
     },
   );
+
+  router.post("/projects/:id/workspaces/:workspaceId/repository-baseline", async (req, res) => {
+    const id = req.params.id as string;
+    const workspaceId = req.params.workspaceId as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    assertBoard(req);
+
+    const currentWorkspace = existing.workspaces.find((workspace) => workspace.id === workspaceId) ?? null;
+    if (!currentWorkspace) {
+      res.status(404).json({ error: "Project workspace not found" });
+      return;
+    }
+
+    const baseline = await buildRepositoryDocumentationBaseline({
+      cwd: currentWorkspace.cwd,
+      repoUrl: currentWorkspace.repoUrl,
+      repoRef: currentWorkspace.repoRef,
+      defaultRef: currentWorkspace.defaultRef,
+    });
+    const workspace = await svc.updateWorkspace(id, workspaceId, {
+      metadata: writeRepositoryDocumentationBaselineToMetadata({
+        metadata: currentWorkspace.metadata,
+        baseline,
+      }),
+    });
+    if (!workspace) {
+      res.status(422).json({ error: "Invalid project workspace payload" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "project.workspace_repository_baseline_refreshed",
+      entityType: "project",
+      entityId: id,
+      details: {
+        workspaceId: workspace.id,
+        status: baseline.status,
+        documentationFileCount: baseline.documentationFiles.length,
+        stack: baseline.stack,
+      },
+    });
+
+    res.json({ baseline, workspace });
+  });
 
   async function handleProjectWorkspaceRuntimeCommand(req: Request, res: Response) {
     const id = req.params.id as string;

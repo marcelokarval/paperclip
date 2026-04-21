@@ -42,6 +42,8 @@ Implementation status:
 - Project Intake source selection has landed in the project creation modal.
 - Repository Documentation Baseline now has a manual persistence surface on the project workspace detail page.
 - The baseline is stored inside `project_workspaces.metadata.repositoryDocumentationBaseline`.
+- A read-only baseline refresh action has landed on the project workspace detail page.
+- `POST /api/projects/:id/workspaces/:workspaceId/repository-baseline` scans only allowlisted docs and stack files, then stores the result in Paperclip-owned workspace metadata.
 - No runner, issue creation, child issue creation, repo write, GitHub/Linear import, PR creation, or agent wakeup has been implemented.
 
 ## 2. Product Boundary
@@ -321,8 +323,7 @@ Recommended V1 storage:
 - `project_workspaces.repo_url`: GitHub URL when available.
 - `project_workspaces.repo_ref`: selected branch/ref when known.
 - `project_workspaces.default_ref`: default branch when known.
-- `project_workspaces.metadata.repositoryBaseline`: baseline metadata.
-- `project_workspaces.metadata.documentationMap`: detected docs and agent instruction files.
+- `project_workspaces.metadata.repositoryDocumentationBaseline`: baseline metadata, detected docs, guardrails, stack hints, and gaps.
 
 Do not add a new table until there is a clear lifecycle need for multiple historical baseline runs.
 
