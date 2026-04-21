@@ -79,6 +79,7 @@ import { formatIssueActivityAction } from "@/lib/activity-format";
 import { buildIssuePropertiesPanelKey } from "../lib/issue-properties-panel-key";
 import { shouldRenderRichSubIssuesSection } from "../lib/issue-detail-subissues";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
+import { readRepositoryDocumentationBaseline } from "../lib/repository-documentation-baseline";
 import {
   Activity as ActivityIcon,
   Archive,
@@ -87,6 +88,7 @@ import {
   ChevronRight,
   Copy,
   EyeOff,
+  FileSearch,
   Hexagon,
   MessageSquare,
   MoreHorizontal,
@@ -95,6 +97,7 @@ import {
   Plus,
   Repeat,
   SlidersHorizontal,
+  TicketPlus,
   Trash2,
 } from "lucide-react";
 import {
@@ -119,6 +122,48 @@ type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 const ISSUE_COMMENT_PAGE_SIZE = 50;
+
+function formatBaselineList(values: readonly string[] | null | undefined, emptyLabel: string) {
+  const normalized = (values ?? []).map((value) => value.trim()).filter(Boolean);
+  if (normalized.length === 0) return `- ${emptyLabel}`;
+  return normalized.map((value) => `- ${value}`).join("\n");
+}
+
+function buildBaselineReviewIssueDescription(input: {
+  baselineIssue: Issue;
+  summary: string | null | undefined;
+  stack: readonly string[] | null | undefined;
+  documentationFiles: readonly string[] | null | undefined;
+  guardrails: readonly string[] | null | undefined;
+}) {
+  const baselineRef = input.baselineIssue.identifier ?? input.baselineIssue.id;
+  return [
+    `Review repository baseline ${baselineRef} and propose the next operator decision.`,
+    "",
+    "Scope constraints:",
+    "- This is one analysis issue, not backlog decomposition.",
+    "- Do not create child issues from the baseline.",
+    "- Do not wake agents, assign implementation, open PRs, or write repository files unless the operator explicitly asks.",
+    "- Use the baseline as read-only Paperclip context.",
+    "",
+    "Baseline summary:",
+    input.summary?.trim() || "No baseline summary recorded.",
+    "",
+    "Detected stack signals:",
+    formatBaselineList(input.stack, "No stack signals recorded."),
+    "",
+    "Documentation files to inspect first:",
+    formatBaselineList(input.documentationFiles, "No documentation files recorded."),
+    "",
+    "Baseline guardrails:",
+    formatBaselineList(input.guardrails, "No guardrails recorded."),
+    "",
+    "Expected output:",
+    "- Confirm whether the baseline is sufficient for future agent work.",
+    "- Identify missing context the operator should add before delegation.",
+    "- Recommend the next single operator action, if any.",
+  ].join("\n");
+}
 
 function resolveRunningIssueRun(
   activeRun: ActiveRunForIssue | null | undefined,
@@ -1067,6 +1112,24 @@ export function IssueDetail() {
     [childIssues, issue],
   );
   const showRichSubIssuesSection = shouldRenderRichSubIssuesSection(childIssuesLoading, childIssues.length);
+  const repositoryBaseline = useMemo(() => {
+    if (!issue) return null;
+    const workspaceCandidates = [
+      issue.project?.primaryWorkspace ?? null,
+      ...(issue.project?.workspaces ?? []),
+    ];
+    for (const workspace of workspaceCandidates) {
+      const baseline = readRepositoryDocumentationBaseline(workspace?.metadata);
+      if (
+        baseline?.trackingIssueId === issue.id ||
+        (issue.identifier && baseline?.trackingIssueIdentifier === issue.identifier)
+      ) {
+        return baseline;
+      }
+    }
+    return null;
+  }, [issue]);
+  const isRepositoryBaselineTrackingIssue = Boolean(repositoryBaseline);
   const openNewSubIssue = useCallback(() => {
     if (!issue) return;
     openNewIssue(buildSubIssueDefaultsForViewer(issue, currentUserId));
@@ -1075,6 +1138,24 @@ export function IssueDetail() {
     issue,
     openNewIssue,
   ]);
+  const openBaselineReviewIssue = useCallback(() => {
+    if (!issue || !repositoryBaseline) return;
+    openNewIssue({
+      title: `Review repository baseline for ${issue.project?.name ?? issue.identifier ?? "project"}`,
+      description: buildBaselineReviewIssueDescription({
+        baselineIssue: issue,
+        summary: repositoryBaseline.summary,
+        stack: repositoryBaseline.stack,
+        documentationFiles: repositoryBaseline.documentationFiles,
+        guardrails: repositoryBaseline.guardrails,
+      }),
+      status: "backlog",
+      priority: "medium",
+      ...(issue.projectId ? { projectId: issue.projectId } : {}),
+      ...(issue.projectWorkspaceId ? { projectWorkspaceId: issue.projectWorkspaceId } : {}),
+      ...(issue.goalId ? { goalId: issue.goalId } : {}),
+    });
+  }, [issue, openNewIssue, repositoryBaseline]);
 
   const commentReassignOptions = useMemo(() => {
     const options: Array<{ id: string; label: string; searchText?: string }> = [];
@@ -2342,6 +2423,46 @@ export function IssueDetail() {
         itemClassName="rounded-lg border border-border p-3"
         missingBehavior="placeholder"
       />
+
+      {isRepositoryBaselineTrackingIssue ? (
+        <div className="rounded-xl border border-sky-500/25 bg-sky-500/10 p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+                <FileSearch className="h-4 w-4 text-sky-500" />
+                Baseline operator actions
+              </div>
+              <p className="text-sm text-muted-foreground">
+                This issue is the read-only repository baseline. Keep it as the context artifact; create a separate
+                review issue only when the operator wants an agent or human to analyze next steps.
+              </p>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={openBaselineReviewIssue}
+              >
+                <TicketPlus className="mr-1.5 h-3.5 w-3.5" />
+                Create baseline review issue
+              </Button>
+              {issue.status !== "done" ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={updateIssue.isPending}
+                  onClick={() => updateIssue.mutate({ status: "done" })}
+                >
+                  <Check className="mr-1.5 h-3.5 w-3.5" />
+                  Mark baseline accepted
+                </Button>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {showRichSubIssuesSection ? (
         <div className="space-y-3">
