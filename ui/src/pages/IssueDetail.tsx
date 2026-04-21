@@ -97,7 +97,6 @@ import {
   Plus,
   Repeat,
   SlidersHorizontal,
-  TicketPlus,
   Trash2,
 } from "lucide-react";
 import {
@@ -122,6 +121,7 @@ type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 const ISSUE_COMMENT_PAGE_SIZE = 50;
+const BASELINE_CEO_REVIEW_REQUEST_MARKER = "<!-- paperclip:baseline-ceo-review-request -->";
 
 function formatBaselineList(values: readonly string[] | null | undefined, emptyLabel: string) {
   const normalized = (values ?? []).map((value) => value.trim()).filter(Boolean);
@@ -129,7 +129,7 @@ function formatBaselineList(values: readonly string[] | null | undefined, emptyL
   return normalized.map((value) => `- ${value}`).join("\n");
 }
 
-function buildBaselineReviewIssueDescription(input: {
+function buildBaselineCeoReviewRequestComment(input: {
   baselineIssue: Issue;
   summary: string | null | undefined;
   stack: readonly string[] | null | undefined;
@@ -138,12 +138,13 @@ function buildBaselineReviewIssueDescription(input: {
 }) {
   const baselineRef = input.baselineIssue.identifier ?? input.baselineIssue.id;
   return [
-    `Review repository baseline ${baselineRef} and propose the next operator decision.`,
+    BASELINE_CEO_REVIEW_REQUEST_MARKER,
+    `CEO baseline review request for ${baselineRef}.`,
     "",
     "Scope constraints:",
-    "- This is one analysis issue, not backlog decomposition.",
-    "- Do not create child issues from the baseline.",
-    "- Do not wake agents, assign implementation, open PRs, or write repository files unless the operator explicitly asks.",
+    "- Keep the review in this same baseline issue.",
+    "- Do not create child issues, new issues, backlog decomposition, PRs, or repository writes.",
+    "- Do not wake or assign other agents unless the operator explicitly asks.",
     "- Use the baseline as read-only Paperclip context.",
     "",
     "Baseline summary:",
@@ -1073,6 +1074,13 @@ export function IssueDetail() {
     for (const a of agents ?? []) map.set(a.id, a);
     return map;
   }, [agents]);
+  const baselineReviewAgent = useMemo(
+    () =>
+      (agents ?? []).find((agent) => agent.status !== "terminated" && agent.role === "ceo") ??
+      (agents ?? []).find((agent) => agent.status !== "terminated" && agent.name.trim().toLowerCase() === "ceo") ??
+      null,
+    [agents],
+  );
   const mentionOptions = useMemo<MentionOption[]>(() => {
     const options: MentionOption[] = [];
     const activeAgents = [...(agents ?? [])]
@@ -1130,6 +1138,10 @@ export function IssueDetail() {
     return null;
   }, [issue]);
   const isRepositoryBaselineTrackingIssue = Boolean(repositoryBaseline);
+  const hasBaselineCeoReviewRequest = useMemo(
+    () => comments.some((comment) => comment.body.includes(BASELINE_CEO_REVIEW_REQUEST_MARKER)),
+    [comments],
+  );
   const openNewSubIssue = useCallback(() => {
     if (!issue) return;
     openNewIssue(buildSubIssueDefaultsForViewer(issue, currentUserId));
@@ -1138,24 +1150,6 @@ export function IssueDetail() {
     issue,
     openNewIssue,
   ]);
-  const openBaselineReviewIssue = useCallback(() => {
-    if (!issue || !repositoryBaseline) return;
-    openNewIssue({
-      title: `Review repository baseline for ${issue.project?.name ?? issue.identifier ?? "project"}`,
-      description: buildBaselineReviewIssueDescription({
-        baselineIssue: issue,
-        summary: repositoryBaseline.summary,
-        stack: repositoryBaseline.stack,
-        documentationFiles: repositoryBaseline.documentationFiles,
-        guardrails: repositoryBaseline.guardrails,
-      }),
-      status: "backlog",
-      priority: "medium",
-      ...(issue.projectId ? { projectId: issue.projectId } : {}),
-      ...(issue.projectWorkspaceId ? { projectWorkspaceId: issue.projectWorkspaceId } : {}),
-      ...(issue.goalId ? { goalId: issue.goalId } : {}),
-    });
-  }, [issue, openNewIssue, repositoryBaseline]);
 
   const commentReassignOptions = useMemo(() => {
     const options: Array<{ id: string; label: string; searchText?: string }> = [];
@@ -1587,6 +1581,50 @@ export function IssueDetail() {
       invalidateIssueCollections();
     },
   });
+  const requestBaselineCeoReview = useCallback(() => {
+    if (!issue || !repositoryBaseline) return;
+    if (!baselineReviewAgent) {
+      pushToast({
+        title: "CEO agent not found",
+        body: "Create or activate a CEO agent before requesting a baseline review.",
+        tone: "error",
+      });
+      return;
+    }
+    if (hasBaselineCeoReviewRequest) return;
+
+    addCommentAndReassign.mutate({
+      body: buildBaselineCeoReviewRequestComment({
+        baselineIssue: issue,
+        summary: repositoryBaseline.summary,
+        stack: repositoryBaseline.stack,
+        documentationFiles: repositoryBaseline.documentationFiles,
+        guardrails: repositoryBaseline.guardrails,
+      }),
+      reopen: issue.status === "backlog" || issue.status === "done" || issue.status === "cancelled",
+      reassignment: {
+        assigneeAgentId: baselineReviewAgent.id,
+        assigneeUserId: null,
+      },
+    }, {
+      onSuccess: () => {
+        invalidateIssueRunState();
+        pushToast({
+          title: "CEO review requested",
+          body: `Commented on this issue and assigned it to ${baselineReviewAgent.name}.`,
+          tone: "success",
+        });
+      },
+    });
+  }, [
+    addCommentAndReassign,
+    baselineReviewAgent,
+    hasBaselineCeoReviewRequest,
+    invalidateIssueRunState,
+    issue,
+    pushToast,
+    repositoryBaseline,
+  ]);
 
   const interruptQueuedComment = useMutation({
     mutationFn: (runId: string) => heartbeatsApi.cancel(runId),
@@ -2433,19 +2471,30 @@ export function IssueDetail() {
                 Baseline operator actions
               </div>
               <p className="text-sm text-muted-foreground">
-                This issue is the read-only repository baseline. Keep it as the context artifact; create a separate
-                review issue only when the operator wants an agent or human to analyze next steps.
+                This issue is the read-only repository baseline. Keep the review here; requesting CEO review posts a
+                comment on this issue, assigns it to the CEO, and starts the normal issue workflow without creating a
+                new issue.
               </p>
+              {!baselineReviewAgent ? (
+                <p className="text-xs text-amber-600">
+                  No active CEO agent is available for baseline review.
+                </p>
+              ) : hasBaselineCeoReviewRequest ? (
+                <p className="text-xs text-muted-foreground">
+                  CEO review has already been requested on this baseline issue.
+                </p>
+              ) : null}
             </div>
             <div className="flex flex-col gap-2 sm:flex-row">
               <Button
                 type="button"
                 variant="secondary"
                 size="sm"
-                onClick={openBaselineReviewIssue}
+                disabled={!baselineReviewAgent || hasBaselineCeoReviewRequest || addCommentAndReassign.isPending}
+                onClick={requestBaselineCeoReview}
               >
-                <TicketPlus className="mr-1.5 h-3.5 w-3.5" />
-                Create baseline review issue
+                <MessageSquare className="mr-1.5 h-3.5 w-3.5" />
+                {hasBaselineCeoReviewRequest ? "CEO review requested" : "Ask CEO to review baseline"}
               </Button>
               {issue.status !== "done" ? (
                 <Button
