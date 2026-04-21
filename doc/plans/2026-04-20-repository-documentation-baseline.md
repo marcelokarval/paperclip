@@ -1,9 +1,9 @@
 # 2026-04-20 Repository Documentation Baseline PRD / Pre-SDD
 
-Status: Proposed for discussion
+Status: Partially implemented
 Date: 2026-04-20
 Audience: Product, backend, frontend, onboarding, project/workspace runtime
-Requested scope: Product plan and pre-SDD only. No implementation in this pass.
+Requested scope: Product plan and pre-SDD first; implementation is proceeding in bounded, non-agentic slices.
 
 Related context:
 
@@ -36,6 +36,13 @@ Recommended product direction:
 - Add an optional Repository Documentation Baseline action that creates documentation inside Paperclip, not code changes inside the target repo.
 - If the operator wants an issue, create at most one tracking issue for the baseline run.
 - Do not split repository findings into issues, subtasks, backlog items, assignments, or implementation work by default.
+
+Implementation status:
+
+- Project Intake source selection has landed in the project creation modal.
+- Repository Documentation Baseline now has a manual persistence surface on the project workspace detail page.
+- The baseline is stored inside `project_workspaces.metadata.repositoryDocumentationBaseline`.
+- No runner, issue creation, child issue creation, repo write, GitHub/Linear import, PR creation, or agent wakeup has been implemented.
 
 ## 2. Product Boundary
 

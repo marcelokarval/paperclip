@@ -15,6 +15,12 @@ import {
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
+import {
+  repositoryDocumentationBaselineFormFromMetadata,
+  writeRepositoryDocumentationBaselineMetadata,
+  type RepositoryDocumentationBaselineForm,
+  type RepositoryDocumentationBaselineStatus,
+} from "../lib/repository-documentation-baseline";
 import { projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
 
 type WorkspaceFormState = {
@@ -31,10 +37,12 @@ type WorkspaceFormState = {
   remoteWorkspaceRef: string;
   sharedWorkspaceKey: string;
   runtimeConfig: string;
+  repositoryBaseline: RepositoryDocumentationBaselineForm;
 };
 
 type ProjectWorkspaceSourceType = ProjectWorkspace["sourceType"];
 type ProjectWorkspaceVisibility = ProjectWorkspace["visibility"];
+type StringWorkspaceFormKey = Exclude<keyof WorkspaceFormState, "repositoryBaseline">;
 
 const SOURCE_TYPE_OPTIONS: Array<{ value: ProjectWorkspaceSourceType; label: string; description: string }> = [
   { value: "local_path", label: "Local git checkout", description: "A local path Paperclip can use directly." },
@@ -86,6 +94,7 @@ function formStateFromWorkspace(workspace: ProjectWorkspace): WorkspaceFormState
     remoteWorkspaceRef: readText(workspace.remoteWorkspaceRef),
     sharedWorkspaceKey: readText(workspace.sharedWorkspaceKey),
     runtimeConfig: formatJson(workspace.runtimeConfig?.workspaceRuntime),
+    repositoryBaseline: repositoryDocumentationBaselineFormFromMetadata(workspace.metadata),
   };
 }
 
@@ -115,9 +124,13 @@ function parseRuntimeConfigJson(value: string) {
   }
 }
 
-function buildWorkspacePatch(initialState: WorkspaceFormState, nextState: WorkspaceFormState) {
+function buildWorkspacePatch(
+  initialState: WorkspaceFormState,
+  nextState: WorkspaceFormState,
+  existingMetadata: Record<string, unknown> | null | undefined,
+) {
   const patch: Record<string, unknown> = {};
-  const maybeAssign = (key: keyof WorkspaceFormState, transform?: (value: string) => unknown) => {
+  const maybeAssign = (key: StringWorkspaceFormKey, transform?: (value: string) => unknown) => {
     const initialValue = initialState[key];
     const nextValue = nextState[key];
     if (initialValue === nextValue) return;
@@ -142,6 +155,13 @@ function buildWorkspacePatch(initialState: WorkspaceFormState, nextState: Worksp
     patch.runtimeConfig = {
       workspaceRuntime: parsed.value,
     };
+  }
+  if (JSON.stringify(initialState.repositoryBaseline) !== JSON.stringify(nextState.repositoryBaseline)) {
+    patch.metadata = writeRepositoryDocumentationBaselineMetadata({
+      metadata: existingMetadata,
+      form: nextState.repositoryBaseline,
+      updatedAt: new Date().toISOString(),
+    });
   }
 
   return patch;
@@ -357,7 +377,7 @@ export function ProjectWorkspaceDetail() {
       setErrorMessage(validationError);
       return;
     }
-    const patch = buildWorkspacePatch(initialState, form);
+    const patch = buildWorkspacePatch(initialState, form, workspace.metadata);
     if (Object.keys(patch).length === 0) return;
     updateWorkspace.mutate(patch);
   };
@@ -561,6 +581,129 @@ export function ProjectWorkspaceDetail() {
                   </Field>
                 </div>
               </details>
+
+              <div className="rounded-2xl border border-border bg-muted/20 p-4">
+                <div className="space-y-1">
+                  <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                    Repository documentation baseline
+                  </div>
+                  <h2 className="text-lg font-semibold">Paperclip-owned repo context</h2>
+                  <p className="text-sm text-muted-foreground">
+                    Store read-only repository context for future delegation. This section is documentation state only:
+                    it does not create issues, split work, wake agents, import tickets, open PRs, or write to the repository.
+                  </p>
+                </div>
+
+                <div className="mt-4 grid gap-4">
+                  <Field label="Baseline status">
+                    <select
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
+                      value={form.repositoryBaseline.status}
+                      onChange={(event) =>
+                        setForm((current) =>
+                          current
+                            ? {
+                                ...current,
+                                repositoryBaseline: {
+                                  ...current.repositoryBaseline,
+                                  status: event.target.value as RepositoryDocumentationBaselineStatus,
+                                },
+                              }
+                            : current,
+                        )
+                      }
+                    >
+                      <option value="not_started">Not started</option>
+                      <option value="ready">Ready</option>
+                      <option value="failed">Needs attention</option>
+                    </select>
+                  </Field>
+
+                  <Field label="Summary" hint="High-level repository facts, not implementation tasks.">
+                    <textarea
+                      className="min-h-24 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
+                      value={form.repositoryBaseline.summary}
+                      onChange={(event) =>
+                        setForm((current) =>
+                          current
+                            ? {
+                                ...current,
+                                repositoryBaseline: {
+                                  ...current.repositoryBaseline,
+                                  summary: event.target.value,
+                                },
+                              }
+                            : current,
+                        )
+                      }
+                      placeholder="Stack, repo shape, important docs, and context future agents should read before taking work."
+                    />
+                  </Field>
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <Field label="Stack signals" hint="One item per line, or comma-separated.">
+                      <textarea
+                        className="min-h-28 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
+                        value={form.repositoryBaseline.stack}
+                        onChange={(event) =>
+                          setForm((current) =>
+                            current
+                              ? {
+                                  ...current,
+                                  repositoryBaseline: {
+                                    ...current.repositoryBaseline,
+                                    stack: event.target.value,
+                                  },
+                                }
+                              : current,
+                          )
+                        }
+                        placeholder={"TypeScript\nReact\nExpress\nDrizzle"}
+                      />
+                    </Field>
+                    <Field label="Documentation files" hint="Paperclip context files to inspect first.">
+                      <textarea
+                        className="min-h-28 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
+                        value={form.repositoryBaseline.documentationFiles}
+                        onChange={(event) =>
+                          setForm((current) =>
+                            current
+                              ? {
+                                  ...current,
+                                  repositoryBaseline: {
+                                    ...current.repositoryBaseline,
+                                    documentationFiles: event.target.value,
+                                  },
+                                }
+                              : current,
+                          )
+                        }
+                        placeholder={"AGENTS.md\nCLAUDE.md\nREADME.md\ndoc/PRODUCT.md"}
+                      />
+                    </Field>
+                  </div>
+
+                  <Field label="Guardrails" hint="These are saved with the baseline and should stay conservative.">
+                    <textarea
+                      className="min-h-28 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
+                      value={form.repositoryBaseline.guardrails}
+                      onChange={(event) =>
+                        setForm((current) =>
+                          current
+                            ? {
+                                ...current,
+                                repositoryBaseline: {
+                                  ...current.repositoryBaseline,
+                                  guardrails: event.target.value,
+                                },
+                              }
+                            : current,
+                        )
+                      }
+                    />
+                  </Field>
+                </div>
+              </div>
             </div>
 
             <div className="mt-5 flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-center">
