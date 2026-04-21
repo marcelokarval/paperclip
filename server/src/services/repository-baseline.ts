@@ -1,37 +1,12 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-
-export type RepositoryDocumentationBaselineStatus = "ready" | "failed";
-
-export type RepositoryDocumentationBaselineDoc = {
-  path: string;
-  kind: "readme" | "agent_instructions" | "product" | "architecture" | "development" | "config" | "other";
-  summary: string | null;
-};
-
-export type RepositoryDocumentationBaseline = {
-  status: RepositoryDocumentationBaselineStatus;
-  source: "scan";
-  updatedAt: string;
-  summary: string | null;
-  stack: string[];
-  documentationFiles: string[];
-  guardrails: string[];
-  repository: {
-    cwd: string | null;
-    repoUrl: string | null;
-    repoRef: string | null;
-    defaultRef: string | null;
-  };
-  docs: RepositoryDocumentationBaselineDoc[];
-  gaps: string[];
-  constraints: {
-    repositoryWritesAllowed: false;
-    backlogGenerationAllowed: false;
-    childIssuesAllowed: false;
-    agentWakeupAllowed: false;
-  };
-};
+import {
+  REPOSITORY_DOCUMENTATION_BASELINE_DEFAULT_GUARDRAILS,
+  type RepositoryDocumentationBaseline,
+  type RepositoryDocumentationBaselineDoc,
+  type RepositoryDocumentationBaselineStatus,
+  writeRepositoryDocumentationBaselineToMetadata,
+} from "@paperclipai/shared";
 
 export type RepositoryBaselineWorkspaceInput = {
   cwd: string | null;
@@ -39,12 +14,6 @@ export type RepositoryBaselineWorkspaceInput = {
   repoRef: string | null;
   defaultRef: string | null;
 };
-
-export const REPOSITORY_DOCUMENTATION_BASELINE_GUARDRAILS = [
-  "Documentation only; do not create issues or child issues from this baseline.",
-  "Do not wake agents, assign work, create PRs, or write files to the repository.",
-  "Treat findings as Paperclip-owned context until an operator explicitly converts them into work.",
-];
 
 const MAX_DOC_FILES = 32;
 const MAX_DOC_BYTES = 128 * 1024;
@@ -294,7 +263,7 @@ export async function buildRepositoryDocumentationBaseline(
     summary,
     stack: detectedStack,
     documentationFiles,
-    guardrails: REPOSITORY_DOCUMENTATION_BASELINE_GUARDRAILS,
+    guardrails: REPOSITORY_DOCUMENTATION_BASELINE_DEFAULT_GUARDRAILS,
     repository: {
       cwd: workspace.cwd,
       repoUrl: workspace.repoUrl,
@@ -309,15 +278,5 @@ export async function buildRepositoryDocumentationBaseline(
       childIssuesAllowed: false,
       agentWakeupAllowed: false,
     },
-  };
-}
-
-export function writeRepositoryDocumentationBaselineToMetadata(input: {
-  metadata: Record<string, unknown> | null | undefined;
-  baseline: RepositoryDocumentationBaseline;
-}): Record<string, unknown> {
-  return {
-    ...(input.metadata ?? {}),
-    repositoryDocumentationBaseline: input.baseline,
   };
 }

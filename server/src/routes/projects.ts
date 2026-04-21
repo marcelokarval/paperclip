@@ -3,12 +3,16 @@ import type { Db } from "@paperclipai/db";
 import {
   createProjectSchema,
   createProjectWorkspaceSchema,
+  emptyRepositoryDocumentationBaseline,
   findWorkspaceCommandDefinition,
   isUuidLike,
   matchWorkspaceRuntimeServiceToCommand,
+  readRepositoryDocumentationBaselineFromMetadata,
+  type RefreshRepositoryDocumentationBaselineResponse,
   updateProjectSchema,
   updateProjectWorkspaceSchema,
   workspaceRuntimeControlTargetSchema,
+  writeRepositoryDocumentationBaselineToMetadata,
 } from "@paperclipai/shared";
 import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
@@ -22,10 +26,7 @@ import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForProjectWorkspace,
 } from "../services/workspace-runtime.js";
-import {
-  buildRepositoryDocumentationBaseline,
-  writeRepositoryDocumentationBaselineToMetadata,
-} from "../services/repository-baseline.js";
+import { buildRepositoryDocumentationBaseline } from "../services/repository-baseline.js";
 import { getTelemetryClient } from "../telemetry.js";
 
 export function projectRoutes(db: Db) {
@@ -80,6 +81,25 @@ export function projectRoutes(db: Db) {
     const hasTeardownCommand =
       typeof strategy.teardownCommand === "string" && strategy.teardownCommand.trim().length > 0;
     return hasProvisionCommand || hasTeardownCommand;
+  }
+
+  async function getProjectWorkspaceForRequest(req: Request, res: Response) {
+    const id = req.params.id as string;
+    const workspaceId = req.params.workspaceId as string;
+    const project = await svc.getById(id);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return null;
+    }
+    assertCompanyAccess(req, project.companyId);
+
+    const workspace = project.workspaces.find((entry) => entry.id === workspaceId) ?? null;
+    if (!workspace) {
+      res.status(404).json({ error: "Project workspace not found" });
+      return null;
+    }
+
+    return { project, workspace };
   }
 
   router.param("id", async (req, _res, next, rawId) => {
@@ -298,22 +318,27 @@ export function projectRoutes(db: Db) {
     },
   );
 
+  router.get("/projects/:id/workspaces/:workspaceId/repository-baseline", async (req, res) => {
+    const resolved = await getProjectWorkspaceForRequest(req, res);
+    if (!resolved) return;
+
+    const baseline =
+      readRepositoryDocumentationBaselineFromMetadata(resolved.workspace.metadata)
+      ?? emptyRepositoryDocumentationBaseline();
+    const response: RefreshRepositoryDocumentationBaselineResponse = {
+      baseline,
+      workspace: resolved.workspace,
+    };
+    res.json(response);
+  });
+
   router.post("/projects/:id/workspaces/:workspaceId/repository-baseline", async (req, res) => {
     const id = req.params.id as string;
     const workspaceId = req.params.workspaceId as string;
-    const existing = await svc.getById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Project not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const resolved = await getProjectWorkspaceForRequest(req, res);
+    if (!resolved) return;
     assertBoard(req);
-
-    const currentWorkspace = existing.workspaces.find((workspace) => workspace.id === workspaceId) ?? null;
-    if (!currentWorkspace) {
-      res.status(404).json({ error: "Project workspace not found" });
-      return;
-    }
+    const { project, workspace: currentWorkspace } = resolved;
 
     const baseline = await buildRepositoryDocumentationBaseline({
       cwd: currentWorkspace.cwd,
@@ -334,7 +359,7 @@ export function projectRoutes(db: Db) {
 
     const actor = getActorInfo(req);
     await logActivity(db, {
-      companyId: existing.companyId,
+      companyId: project.companyId,
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
@@ -349,7 +374,8 @@ export function projectRoutes(db: Db) {
       },
     });
 
-    res.json({ baseline, workspace });
+    const response: RefreshRepositoryDocumentationBaselineResponse = { baseline, workspace };
+    res.json(response);
   });
 
   async function handleProjectWorkspaceRuntimeCommand(req: Request, res: Response) {

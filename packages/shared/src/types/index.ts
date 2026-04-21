@@ -62,6 +62,20 @@ export type {
 export type { AssetImage } from "./asset.js";
 export type { Project, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectWorkspace } from "./project.js";
 export type {
+  RefreshRepositoryDocumentationBaselineResponse,
+  RepositoryDocumentationBaseline,
+  RepositoryDocumentationBaselineConstraints,
+  RepositoryDocumentationBaselineDoc,
+  RepositoryDocumentationBaselineDocKind,
+  RepositoryDocumentationBaselineRepository,
+  RepositoryDocumentationBaselineSource,
+  RepositoryDocumentationBaselineStatus,
+} from "./repository-baseline.js";
+export {
+  REPOSITORY_DOCUMENTATION_BASELINE_DEFAULT_GUARDRAILS,
+  REPOSITORY_DOCUMENTATION_BASELINE_METADATA_KEY,
+} from "./repository-baseline.js";
+export type {
   ExecutionWorkspace,
   ExecutionWorkspaceConfig,
   ExecutionWorkspaceCloseAction,

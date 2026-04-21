@@ -44,6 +44,8 @@ Implementation status:
 - The baseline is stored inside `project_workspaces.metadata.repositoryDocumentationBaseline`.
 - A read-only baseline refresh action has landed on the project workspace detail page.
 - `POST /api/projects/:id/workspaces/:workspaceId/repository-baseline` scans only allowlisted docs and stack files, then stores the result in Paperclip-owned workspace metadata.
+- `GET /api/projects/:id/workspaces/:workspaceId/repository-baseline` reads the stored Paperclip-owned baseline without mutating workspace state.
+- The baseline metadata contract now lives in `packages/shared`, and the workspace detail page renders it through a dedicated `RepositoryBaselinePanel` component.
 - No runner, issue creation, child issue creation, repo write, GitHub/Linear import, PR creation, or agent wakeup has been implemented.
 
 ## 2. Product Boundary

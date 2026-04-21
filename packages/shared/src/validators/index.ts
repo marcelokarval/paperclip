@@ -25,6 +25,19 @@ export {
   type UpdateCompanyBranding,
 } from "./company.js";
 export {
+  emptyRepositoryDocumentationBaseline,
+  readRepositoryDocumentationBaselineFromMetadata,
+  repositoryDocumentationBaselineConstraintsSchema,
+  repositoryDocumentationBaselineDocKindSchema,
+  repositoryDocumentationBaselineDocSchema,
+  repositoryDocumentationBaselineRepositorySchema,
+  repositoryDocumentationBaselineSchema,
+  repositoryDocumentationBaselineSourceSchema,
+  repositoryDocumentationBaselineStatusSchema,
+  writeRepositoryDocumentationBaselineToMetadata,
+  type RepositoryDocumentationBaselineInput,
+} from "./repository-baseline.js";
+export {
   feedbackDataSharingPreferenceSchema,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,

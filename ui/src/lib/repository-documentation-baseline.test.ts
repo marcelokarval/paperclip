@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   REPOSITORY_DOCUMENTATION_BASELINE_DEFAULT_GUARDRAILS,
+  readRepositoryDocumentationBaseline,
   repositoryDocumentationBaselineFormFromMetadata,
   splitBaselineLines,
   writeRepositoryDocumentationBaselineMetadata,
@@ -34,6 +35,28 @@ describe("repository documentation baseline metadata", () => {
       stack: "React\nExpress",
       documentationFiles: "AGENTS.md\ndoc/PRODUCT.md",
       guardrails: "No issue splitting.",
+    });
+  });
+
+  it("reads scan metadata with repository gaps from the shared contract", () => {
+    const baseline = readRepositoryDocumentationBaseline({
+      repositoryDocumentationBaseline: {
+        status: "ready",
+        source: "scan",
+        updatedAt: "2026-04-20T12:00:00.000Z",
+        summary: "Repo identity only.",
+        stack: [],
+        documentationFiles: [],
+        guardrails: ["Documentation only"],
+        gaps: ["No local workspace path is configured, so only repository identity was recorded."],
+      },
+    });
+
+    expect(baseline).toMatchObject({
+      status: "ready",
+      source: "scan",
+      summary: "Repo identity only.",
+      gaps: ["No local workspace path is configured, so only repository identity was recorded."],
     });
   });
 

@@ -223,6 +223,14 @@ export type {
   ProjectCodebaseOrigin,
   ProjectGoalRef,
   ProjectWorkspace,
+  RefreshRepositoryDocumentationBaselineResponse,
+  RepositoryDocumentationBaseline,
+  RepositoryDocumentationBaselineConstraints,
+  RepositoryDocumentationBaselineDoc,
+  RepositoryDocumentationBaselineDocKind,
+  RepositoryDocumentationBaselineRepository,
+  RepositoryDocumentationBaselineSource,
+  RepositoryDocumentationBaselineStatus,
   ExecutionWorkspace,
   ExecutionWorkspaceConfig,
   ExecutionWorkspaceCloseAction,
@@ -380,10 +388,29 @@ export type {
 } from "./types/index.js";
 
 export {
+  REPOSITORY_DOCUMENTATION_BASELINE_DEFAULT_GUARDRAILS,
+  REPOSITORY_DOCUMENTATION_BASELINE_METADATA_KEY,
+} from "./types/repository-baseline.js";
+
+export {
   sidebarOrderPreferenceSchema,
   upsertSidebarOrderPreferenceSchema,
   type UpsertSidebarOrderPreference,
 } from "./validators/sidebar-preferences.js";
+
+export {
+  emptyRepositoryDocumentationBaseline,
+  readRepositoryDocumentationBaselineFromMetadata,
+  repositoryDocumentationBaselineConstraintsSchema,
+  repositoryDocumentationBaselineDocKindSchema,
+  repositoryDocumentationBaselineDocSchema,
+  repositoryDocumentationBaselineRepositorySchema,
+  repositoryDocumentationBaselineSchema,
+  repositoryDocumentationBaselineSourceSchema,
+  repositoryDocumentationBaselineStatusSchema,
+  writeRepositoryDocumentationBaselineToMetadata,
+  type RepositoryDocumentationBaselineInput,
+} from "./validators/repository-baseline.js";
 
 export { workspaceRuntimeControlTargetSchema } from "./validators/execution-workspace.js";
 export {

@@ -447,6 +447,53 @@ describe("project env routes", () => {
     );
   });
 
+  it("reads repository baseline from workspace metadata without mutating the workspace", async () => {
+    const workspace = {
+      id: "workspace-1",
+      name: "Workspace 1",
+      isPrimary: true,
+      cwd: null,
+      repoUrl: "https://github.com/example/repo",
+      repoRef: null,
+      defaultRef: "main",
+      metadata: {
+        repositoryDocumentationBaseline: {
+          status: "ready",
+          source: "scan",
+          updatedAt: "2026-04-20T12:00:00.000Z",
+          summary: "Repo identity only.",
+          stack: [],
+          documentationFiles: [],
+          guardrails: ["Documentation only"],
+          gaps: ["No local workspace path is configured, so only repository identity was recorded."],
+        },
+      },
+    };
+    mockProjectService.getById.mockResolvedValue(buildProject({
+      workspaces: [workspace],
+    }));
+
+    const app = await createApp();
+    const res = await request(app)
+      .get("/api/projects/project-1/workspaces/workspace-1/repository-baseline")
+      .send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      baseline: {
+        status: "ready",
+        source: "scan",
+        summary: "Repo identity only.",
+        gaps: ["No local workspace path is configured, so only repository identity was recorded."],
+      },
+      workspace: {
+        id: "workspace-1",
+      },
+    });
+    expect(mockProjectService.updateWorkspace).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it("rejects agent actors for repository baseline refresh", async () => {
     mockProjectService.getById.mockResolvedValue(buildProject({
       workspaces: [

@@ -2,10 +2,8 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import {
-  buildRepositoryDocumentationBaseline,
-  writeRepositoryDocumentationBaselineToMetadata,
-} from "../services/repository-baseline.js";
+import { writeRepositoryDocumentationBaselineToMetadata } from "@paperclipai/shared";
+import { buildRepositoryDocumentationBaseline } from "../services/repository-baseline.js";
 
 async function makeTempRepo() {
   return mkdtemp(path.join(os.tmpdir(), "paperclip-repository-baseline-"));

@@ -2,10 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { isUuidLike, type ProjectWorkspace } from "@paperclipai/shared";
-import { ArrowLeft, Check, ExternalLink, FileSearch, Loader2, Sparkles } from "lucide-react";
+import { ArrowLeft, Check, ExternalLink, Loader2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { ChoosePathButton } from "../components/PathInstructionsModal";
+import { RepositoryBaselinePanel } from "../components/RepositoryBaselinePanel";
 import { projectsApi } from "../api/projects";
 import {
   buildWorkspaceRuntimeControlSections,
@@ -16,10 +17,10 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import {
+  readRepositoryDocumentationBaseline,
   repositoryDocumentationBaselineFormFromMetadata,
   writeRepositoryDocumentationBaselineMetadata,
   type RepositoryDocumentationBaselineForm,
-  type RepositoryDocumentationBaselineStatus,
 } from "../lib/repository-documentation-baseline";
 import { projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
 
@@ -267,6 +268,10 @@ export function ProjectWorkspaceDetail() {
   );
   const canonicalProjectRef = project ? projectRouteRef(project) : routeProjectRef;
   const initialState = useMemo(() => (workspace ? formStateFromWorkspace(workspace) : null), [workspace]);
+  const repositoryBaseline = useMemo(
+    () => readRepositoryDocumentationBaseline(workspace?.metadata),
+    [workspace?.metadata],
+  );
   const isDirty = Boolean(form && initialState && JSON.stringify(form) !== JSON.stringify(initialState));
 
   useEffect(() => {
@@ -597,145 +602,18 @@ export function ProjectWorkspaceDetail() {
                 </div>
               </details>
 
-              <div className="rounded-2xl border border-border bg-muted/20 p-4">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                  <div className="space-y-1">
-                    <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
-                      Repository documentation baseline
-                    </div>
-                    <h2 className="text-lg font-semibold">Paperclip-owned repo context</h2>
-                    <p className="text-sm text-muted-foreground">
-                      Store read-only repository context for future delegation. This section is documentation state only:
-                      it does not create issues, split work, wake agents, import tickets, open PRs, or write to the repository.
-                    </p>
-                  </div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="w-full sm:w-auto"
-                    disabled={refreshRepositoryBaseline.isPending}
-                    onClick={() => refreshRepositoryBaseline.mutate()}
-                  >
-                    {refreshRepositoryBaseline.isPending
-                      ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      : <FileSearch className="mr-2 h-4 w-4" />}
-                    Refresh baseline
-                  </Button>
-                </div>
-                {baselineActionMessage ? (
-                  <p className="mt-3 text-sm text-muted-foreground">{baselineActionMessage}</p>
-                ) : null}
-
-                <div className="mt-4 grid gap-4">
-                  <Field label="Baseline status">
-                    <select
-                      className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
-                      value={form.repositoryBaseline.status}
-                      onChange={(event) =>
-                        setForm((current) =>
-                          current
-                            ? {
-                                ...current,
-                                repositoryBaseline: {
-                                  ...current.repositoryBaseline,
-                                  status: event.target.value as RepositoryDocumentationBaselineStatus,
-                                },
-                              }
-                            : current,
-                        )
-                      }
-                    >
-                      <option value="not_started">Not started</option>
-                      <option value="ready">Ready</option>
-                      <option value="failed">Needs attention</option>
-                    </select>
-                  </Field>
-
-                  <Field label="Summary" hint="High-level repository facts, not implementation tasks.">
-                    <textarea
-                      className="min-h-24 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
-                      value={form.repositoryBaseline.summary}
-                      onChange={(event) =>
-                        setForm((current) =>
-                          current
-                            ? {
-                                ...current,
-                                repositoryBaseline: {
-                                  ...current.repositoryBaseline,
-                                  summary: event.target.value,
-                                },
-                              }
-                            : current,
-                        )
-                      }
-                      placeholder="Stack, repo shape, important docs, and context future agents should read before taking work."
-                    />
-                  </Field>
-
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <Field label="Stack signals" hint="One item per line, or comma-separated.">
-                      <textarea
-                        className="min-h-28 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
-                        value={form.repositoryBaseline.stack}
-                        onChange={(event) =>
-                          setForm((current) =>
-                            current
-                              ? {
-                                  ...current,
-                                  repositoryBaseline: {
-                                    ...current.repositoryBaseline,
-                                    stack: event.target.value,
-                                  },
-                                }
-                              : current,
-                          )
-                        }
-                        placeholder={"TypeScript\nReact\nExpress\nDrizzle"}
-                      />
-                    </Field>
-                    <Field label="Documentation files" hint="Paperclip context files to inspect first.">
-                      <textarea
-                        className="min-h-28 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
-                        value={form.repositoryBaseline.documentationFiles}
-                        onChange={(event) =>
-                          setForm((current) =>
-                            current
-                              ? {
-                                  ...current,
-                                  repositoryBaseline: {
-                                    ...current.repositoryBaseline,
-                                    documentationFiles: event.target.value,
-                                  },
-                                }
-                              : current,
-                          )
-                        }
-                        placeholder={"AGENTS.md\nCLAUDE.md\nREADME.md\ndoc/PRODUCT.md"}
-                      />
-                    </Field>
-                  </div>
-
-                  <Field label="Guardrails" hint="These are saved with the baseline and should stay conservative.">
-                    <textarea
-                      className="min-h-28 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
-                      value={form.repositoryBaseline.guardrails}
-                      onChange={(event) =>
-                        setForm((current) =>
-                          current
-                            ? {
-                                ...current,
-                                repositoryBaseline: {
-                                  ...current.repositoryBaseline,
-                                  guardrails: event.target.value,
-                                },
-                              }
-                            : current,
-                        )
-                      }
-                    />
-                  </Field>
-                </div>
-              </div>
+              <RepositoryBaselinePanel
+                baseline={repositoryBaseline}
+                form={form.repositoryBaseline}
+                isRefreshing={refreshRepositoryBaseline.isPending}
+                actionMessage={baselineActionMessage}
+                onRefresh={() => refreshRepositoryBaseline.mutate()}
+                onChange={(repositoryBaselineForm) =>
+                  setForm((current) =>
+                    current ? { ...current, repositoryBaseline: repositoryBaselineForm } : current
+                  )
+                }
+              />
             </div>
 
             <div className="mt-5 flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-center">

@@ -1,6 +1,7 @@
 import type {
   Project,
   ProjectWorkspace,
+  RefreshRepositoryDocumentationBaselineResponse,
   WorkspaceOperation,
   WorkspaceRuntimeControlTarget,
 } from "@paperclipai/shared";
@@ -33,8 +34,12 @@ export const projectsApi = {
       projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}`),
       data,
     ),
+  getRepositoryBaseline: (projectId: string, workspaceId: string, companyId?: string) =>
+    api.get<RefreshRepositoryDocumentationBaselineResponse>(
+      projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}/repository-baseline`),
+    ),
   refreshRepositoryBaseline: (projectId: string, workspaceId: string, companyId?: string) =>
-    api.post<{ baseline: Record<string, unknown>; workspace: ProjectWorkspace }>(
+    api.post<RefreshRepositoryDocumentationBaselineResponse>(
       projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}/repository-baseline`),
       {},
     ),
