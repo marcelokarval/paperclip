@@ -2,11 +2,13 @@ import type { ProjectWorkspace } from "./project.js";
 import type { Issue } from "./issue.js";
 
 export const REPOSITORY_DOCUMENTATION_BASELINE_METADATA_KEY = "repositoryDocumentationBaseline";
+export const REPOSITORY_BASELINE_CEO_REVIEW_REQUEST_MARKER = "<!-- paperclip:baseline-ceo-review-request -->";
 
 export const REPOSITORY_DOCUMENTATION_BASELINE_DEFAULT_GUARDRAILS = [
   "Documentation only; do not create issues or child issues from this baseline.",
   "Do not wake agents, assign work, create PRs, or write files to the repository.",
   "Treat findings as Paperclip-owned context until an operator explicitly converts them into work.",
+  "When documentation conflicts, treat operator-approved freshness notes and explicitly named canonical docs as newer than older analysis docs.",
 ];
 
 export type RepositoryDocumentationBaselineStatus = "not_started" | "ready" | "failed";

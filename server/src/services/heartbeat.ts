@@ -6,7 +6,12 @@ import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
+import {
+  REPOSITORY_BASELINE_CEO_REVIEW_REQUEST_MARKER,
+  type BillingType,
+  type ExecutionWorkspace,
+  type ExecutionWorkspaceConfig,
+} from "@paperclipai/shared";
 import {
   agents,
   agentRuntimeState,
@@ -2822,6 +2827,81 @@ export function heartbeatService(db: Db) {
     return updated;
   }
 
+  function readWakeCommentIds(context: Record<string, unknown>): string[] {
+    const ids = new Set<string>();
+    for (const key of ["wakeCommentId", "commentId"]) {
+      const value = readNonEmptyString(context[key]);
+      if (value) ids.add(value);
+    }
+    const wakeCommentIds = context[WAKE_COMMENT_IDS_KEY];
+    if (Array.isArray(wakeCommentIds)) {
+      for (const value of wakeCommentIds) {
+        const id = readNonEmptyString(value);
+        if (id) ids.add(id);
+      }
+    }
+    return [...ids];
+  }
+
+  async function isRepositoryBaselineReviewRun(run: typeof heartbeatRuns.$inferSelect): Promise<boolean> {
+    const context = parseObject(run.contextSnapshot);
+    const commentIds = readWakeCommentIds(context);
+    if (commentIds.length === 0) return false;
+
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, run.companyId),
+          inArray(issueComments.id, commentIds),
+        ),
+      );
+    return comments.some((comment) => comment.body.includes(REPOSITORY_BASELINE_CEO_REVIEW_REQUEST_MARKER));
+  }
+
+  async function moveRepositoryBaselineReviewToOperatorReview(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    issueId: string;
+    agent: typeof agents.$inferSelect;
+  }) {
+    if (!(await isRepositoryBaselineReviewRun(input.run))) return;
+
+    const issue = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        identifier: issues.identifier,
+        status: issues.status,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.run.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issue || issue.status !== "in_progress") return;
+
+    const updated = await issuesSvc.update(issue.id, {
+      status: "in_review",
+    });
+    if (!updated) return;
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: input.agent.id,
+      runId: input.run.id,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        status: "in_review",
+        previousStatus: issue.status,
+        source: "heartbeat.repository_baseline_review_completed",
+      },
+    });
+  }
+
   async function reconcileStrandedAssignedIssues() {
     const candidates = await db
       .select()
@@ -3874,6 +3954,13 @@ export function heartbeatService(db: Db) {
               `[paperclip] Failed to post run summary comment: ${err instanceof Error ? err.message : String(err)}\n`,
             );
           }
+        }
+        if (issueId && outcome === "succeeded") {
+          await moveRepositoryBaselineReviewToOperatorReview({
+            run: finalizedRun,
+            issueId,
+            agent,
+          });
         }
         await finalizeIssueCommentPolicy(finalizedRun, agent);
         await releaseIssueExecutionAndPromote(finalizedRun);

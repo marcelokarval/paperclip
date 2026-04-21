@@ -72,6 +72,7 @@ export function projectRoutes(db: Db) {
       "- Do not assign implementation work.",
       "- Do not wake agents.",
       "- Produce or refresh only Paperclip-owned documentation artifacts.",
+      "- When documentation conflicts, prefer operator-approved freshness notes and explicitly named canonical docs over older analysis docs.",
       "",
       "Detected documentation files:",
       docs,
@@ -82,7 +83,7 @@ export function projectRoutes(db: Db) {
       "Documentation gaps:",
       gaps,
       "",
-      "Operator note: agents may use this issue as context only after an explicit operator assignment or wakeup.",
+      "Operator note: agents may use this issue as context only after an explicit operator assignment or wakeup. A CEO review should stay in this issue and move the issue to operator review; accepting the baseline remains an operator action.",
     ].join("\n");
   }
 

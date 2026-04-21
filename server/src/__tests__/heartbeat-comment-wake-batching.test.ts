@@ -7,6 +7,7 @@ import { createServer } from "node:http";
 import { and, asc, eq } from "drizzle-orm";
 import { WebSocketServer } from "ws";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { REPOSITORY_BASELINE_CEO_REVIEW_REQUEST_MARKER } from "@paperclipai/shared";
 import {
   agents,
   agentWakeupRequests,
@@ -938,6 +939,121 @@ describe("heartbeat comment wake batching", () => {
       await gateway.close();
     }
   }, 120_000);
+
+  it("moves repository baseline CEO review runs to operator review instead of leaving them stranded", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const wakeCommentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "CEO",
+        role: "ceo",
+        status: "idle",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          payloadTemplate: {
+            message: "review baseline",
+          },
+          waitTimeoutMs: 2_000,
+        },
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Repository documentation baseline",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+
+      await db.insert(issueComments).values({
+        id: wakeCommentId,
+        companyId,
+        issueId,
+        authorAgentId: null,
+        authorUserId: "local-board",
+        body: `${REPOSITORY_BASELINE_CEO_REVIEW_REQUEST_MARKER}\nCEO baseline review request.`,
+      });
+
+      const run = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId, commentId: wakeCommentId },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_assigned",
+          commentId: wakeCommentId,
+          wakeCommentId,
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "local-board",
+      });
+
+      expect(run).not.toBeNull();
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+      gateway.releaseFirstWait();
+
+      await waitFor(async () => {
+        const rows = await db
+          .select({
+            runStatus: heartbeatRuns.status,
+            issueStatus: issues.status,
+            checkoutRunId: issues.checkoutRunId,
+            executionRunId: issues.executionRunId,
+            agentStatus: agents.status,
+          })
+          .from(heartbeatRuns)
+          .innerJoin(issues, eq(issues.id, issueId))
+          .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+          .where(eq(heartbeatRuns.id, run!.id));
+        const row = rows[0];
+        return (
+          row?.runStatus === "succeeded" &&
+          row.issueStatus === "in_review" &&
+          row.checkoutRunId === null &&
+          row.executionRunId === null &&
+          row.agentStatus === "idle"
+        );
+      }, 20_000);
+
+      const issue = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+
+      expect(issue?.status).toBe("in_review");
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 20_000);
+
   it("treats the automatic run summary as fallback-only when the run already posted a comment", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();

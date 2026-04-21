@@ -102,6 +102,7 @@ import {
 import {
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
+  REPOSITORY_BASELINE_CEO_REVIEW_REQUEST_MARKER,
   type ActivityEvent,
   type Agent,
   type FeedbackVote,
@@ -121,7 +122,6 @@ type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 const ISSUE_COMMENT_PAGE_SIZE = 50;
-const BASELINE_CEO_REVIEW_REQUEST_MARKER = "<!-- paperclip:baseline-ceo-review-request -->";
 
 function formatBaselineList(values: readonly string[] | null | undefined, emptyLabel: string) {
   const normalized = (values ?? []).map((value) => value.trim()).filter(Boolean);
@@ -138,7 +138,7 @@ function buildBaselineCeoReviewRequestComment(input: {
 }) {
   const baselineRef = input.baselineIssue.identifier ?? input.baselineIssue.id;
   return [
-    BASELINE_CEO_REVIEW_REQUEST_MARKER,
+    REPOSITORY_BASELINE_CEO_REVIEW_REQUEST_MARKER,
     `CEO baseline review request for ${baselineRef}.`,
     "",
     "Scope constraints:",
@@ -146,6 +146,7 @@ function buildBaselineCeoReviewRequestComment(input: {
     "- Do not create child issues, new issues, backlog decomposition, PRs, or repository writes.",
     "- Do not wake or assign other agents unless the operator explicitly asks.",
     "- Use the baseline as read-only Paperclip context.",
+    "- When documentation conflicts, prefer operator-approved freshness notes and explicitly named canonical docs over older analysis docs.",
     "",
     "Baseline summary:",
     input.summary?.trim() || "No baseline summary recorded.",
@@ -1139,7 +1140,7 @@ export function IssueDetail() {
   }, [issue]);
   const isRepositoryBaselineTrackingIssue = Boolean(repositoryBaseline);
   const hasBaselineCeoReviewRequest = useMemo(
-    () => comments.some((comment) => comment.body.includes(BASELINE_CEO_REVIEW_REQUEST_MARKER)),
+    () => comments.some((comment) => comment.body.includes(REPOSITORY_BASELINE_CEO_REVIEW_REQUEST_MARKER)),
     [comments],
   );
   const openNewSubIssue = useCallback(() => {
@@ -2473,11 +2474,22 @@ export function IssueDetail() {
               <p className="text-sm text-muted-foreground">
                 This issue is the read-only repository baseline. Keep the review here; requesting CEO review posts a
                 comment on this issue, assigns it to the CEO, and starts the normal issue workflow without creating a
-                new issue.
+                new issue. A successful CEO review moves this issue to operator review; accepting the baseline is a
+                separate manual decision.
               </p>
               {!baselineReviewAgent ? (
                 <p className="text-xs text-amber-600">
                   No active CEO agent is available for baseline review.
+                </p>
+              ) : issue.status === "in_review" ? (
+                <p className="text-xs text-sky-700">
+                  CEO review is ready. Read the latest comments, then mark the baseline accepted only if the operator
+                  agrees with the result.
+                </p>
+              ) : issue.status === "blocked" && hasBaselineCeoReviewRequest ? (
+                <p className="text-xs text-amber-700">
+                  CEO review was requested, but this issue is blocked. If the review comment is sufficient, accept the
+                  baseline manually; otherwise rerun after resolving the runtime problem.
                 </p>
               ) : hasBaselineCeoReviewRequest ? (
                 <p className="text-xs text-muted-foreground">
