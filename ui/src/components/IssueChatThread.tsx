@@ -96,6 +96,7 @@ interface IssueChatMessageContext {
   feedbackTermsUrl: string | null;
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
+  currentUserName?: string | null;
   activeRunIds: ReadonlySet<string>;
   onVote?: (
     commentId: string,
@@ -217,6 +218,7 @@ interface IssueChatThreadProps {
   issueStatus?: string;
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
+  currentUserName?: string | null;
   onVote?: (
     commentId: string,
     vote: FeedbackVoteValue,
@@ -477,12 +479,13 @@ function formatTimelineAssigneeLabel(
   assignee: IssueTimelineAssignee,
   agentMap?: Map<string, Agent>,
   currentUserId?: string | null,
+  currentUserName?: string | null,
 ) {
   if (assignee.agentId) {
     return agentMap?.get(assignee.agentId)?.name ?? assignee.agentId.slice(0, 8);
   }
   if (assignee.userId) {
-    return formatAssigneeUserLabel(assignee.userId, currentUserId) ?? "Board";
+    return formatAssigneeUserLabel(assignee.userId, currentUserId, currentUserName) ?? "Board";
   }
   return "Unassigned";
 }
@@ -1463,7 +1466,7 @@ function IssueChatFeedbackButtons({
 }
 
 function IssueChatSystemMessage() {
-  const { agentMap, currentUserId } = useContext(IssueChatCtx);
+  const { agentMap, currentUserId, currentUserName } = useContext(IssueChatCtx);
   const message = useMessage();
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -1519,11 +1522,11 @@ function IssueChatSystemMessage() {
               Assignee
             </span>
             <span className="text-muted-foreground">
-              {formatTimelineAssigneeLabel(assigneeChange.from, agentMap, currentUserId)}
+              {formatTimelineAssigneeLabel(assigneeChange.from, agentMap, currentUserId, currentUserName)}
             </span>
             <ArrowRight className="h-3 w-3 text-muted-foreground" />
             <span className="font-medium text-foreground">
-              {formatTimelineAssigneeLabel(assigneeChange.to, agentMap, currentUserId)}
+              {formatTimelineAssigneeLabel(assigneeChange.to, agentMap, currentUserId, currentUserName)}
             </span>
           </div>
         ) : null}
@@ -1855,6 +1858,7 @@ export function IssueChatThread({
   issueStatus,
   agentMap,
   currentUserId,
+  currentUserName,
   onVote,
   onAdd,
   onCancelRun,
@@ -1947,6 +1951,7 @@ export function IssueChatThread({
         projectId,
         agentMap,
         currentUserId,
+        currentUserName,
       }),
     [
       comments,
@@ -1961,6 +1966,7 @@ export function IssueChatThread({
       projectId,
       agentMap,
       currentUserId,
+      currentUserName,
     ],
   );
   const stableMessagesRef = useRef<readonly import("@assistant-ui/react").ThreadMessage[]>([]);
@@ -2028,6 +2034,7 @@ export function IssueChatThread({
       feedbackTermsUrl,
       agentMap,
       currentUserId,
+      currentUserName,
       activeRunIds,
       onVote,
       onStopRun,
@@ -2043,6 +2050,7 @@ export function IssueChatThread({
       feedbackTermsUrl,
       agentMap,
       currentUserId,
+      currentUserName,
       activeRunIds,
       onVote,
       onStopRun,

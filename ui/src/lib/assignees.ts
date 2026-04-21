@@ -62,21 +62,28 @@ export function parseAssigneeValue(value: string): AssigneeSelection {
   return { assigneeAgentId: value, assigneeUserId: null };
 }
 
-export function currentUserAssigneeOption(currentUserId: string | null | undefined): AssigneeOption[] {
+export function currentUserAssigneeOption(
+  currentUserId: string | null | undefined,
+  currentUserName?: string | null | undefined,
+): AssigneeOption[] {
   if (!currentUserId) return [];
+  const label = currentUserName?.trim() || "Me";
   return [{
     id: assigneeValueFromSelection({ assigneeUserId: currentUserId }),
-    label: "Me",
-    searchText: currentUserId === "local-board" ? "me board human local-board" : `me human ${currentUserId}`,
+    label,
+    searchText: currentUserId === "local-board"
+      ? `me board human local-board ${label}`
+      : `me human ${currentUserId} ${label}`,
   }];
 }
 
 export function formatAssigneeUserLabel(
   userId: string | null | undefined,
   currentUserId: string | null | undefined,
+  currentUserName?: string | null | undefined,
 ): string | null {
   if (!userId) return null;
-  if (currentUserId && userId === currentUserId) return "You";
+  if (currentUserId && userId === currentUserId) return currentUserName?.trim() || "You";
   if (userId === "local-board") return "Board";
   return userId.slice(0, 5);
 }

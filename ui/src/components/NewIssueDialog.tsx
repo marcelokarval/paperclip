@@ -361,6 +361,7 @@ export function NewIssueDialog() {
     retry: false,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const currentUserName = session?.user?.name ?? null;
   const activeProjects = useMemo(
     () => (projects ?? []).filter((p) => !p.archivedAt),
     [projects],
@@ -868,7 +869,7 @@ export function NewIssueDialog() {
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [newIssueOpen]);
   const assigneeOptions = useMemo<InlineEntityOption[]>(
     () => [
-      ...currentUserAssigneeOption(currentUserId),
+      ...currentUserAssigneeOption(currentUserId, currentUserName),
       ...sortAgentsByRecency(
         (agents ?? []).filter((agent) => agent.status !== "terminated"),
         recentAssigneeIds,
@@ -878,7 +879,7 @@ export function NewIssueDialog() {
         searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
       })),
     ],
-    [agents, currentUserId, recentAssigneeIds],
+    [agents, currentUserId, currentUserName, recentAssigneeIds],
   );
   const projectOptions = useMemo<InlineEntityOption[]>(
     () =>

@@ -203,6 +203,8 @@ export type {
   InstanceGeneralSettings,
   InstanceSettings,
   BackupRetentionPolicy,
+  OperatorProfile,
+  OperatorProfileSource,
   Agent,
   AgentAccessState,
   AgentChainOfCommandEntry,
@@ -455,6 +457,10 @@ export {
   instanceExperimentalSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   type PatchInstanceExperimentalSettings,
+  operatorProfileSchema,
+  operatorProfileSourceSchema,
+  patchOperatorProfileSchema,
+  type PatchOperatorProfile,
 } from "./validators/index.js";
 
 export {

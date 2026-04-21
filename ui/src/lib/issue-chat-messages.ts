@@ -270,11 +270,12 @@ function authorNameForComment(
   comment: IssueChatComment,
   agentMap?: Map<string, Agent>,
   currentUserId?: string | null,
+  currentUserName?: string | null,
 ) {
   if (comment.authorAgentId) {
     return agentMap?.get(comment.authorAgentId)?.name ?? comment.authorAgentId.slice(0, 8);
   }
-  return formatAssigneeUserLabel(comment.authorUserId ?? null, currentUserId) ?? "You";
+  return formatAssigneeUserLabel(comment.authorUserId ?? null, currentUserId, currentUserName) ?? "You";
 }
 
 function formatStatusLabel(status: string) {
@@ -285,12 +286,13 @@ function createCommentMessage(args: {
   comment: IssueChatComment;
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
+  currentUserName?: string | null;
   companyId?: string | null;
   projectId?: string | null;
 }): ThreadMessage {
-  const { comment, agentMap, currentUserId, companyId, projectId } = args;
+  const { comment, agentMap, currentUserId, currentUserName, companyId, projectId } = args;
   const createdAt = toDate(comment.createdAt);
-  const authorName = authorNameForComment(comment, agentMap, currentUserId);
+  const authorName = authorNameForComment(comment, agentMap, currentUserId, currentUserName);
   const custom = {
     kind: "comment",
     commentId: comment.id,
@@ -335,13 +337,14 @@ function createTimelineEventMessage(args: {
   event: IssueTimelineEvent;
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
+  currentUserName?: string | null;
 }) {
-  const { event, agentMap, currentUserId } = args;
+  const { event, agentMap, currentUserId, currentUserName } = args;
   const actorName = event.actorType === "agent"
     ? (agentMap?.get(event.actorId)?.name ?? event.actorId.slice(0, 8))
     : event.actorType === "system"
       ? "System"
-      : (formatAssigneeUserLabel(event.actorId, currentUserId) ?? "Board");
+      : (formatAssigneeUserLabel(event.actorId, currentUserId, currentUserName) ?? "Board");
 
   const lines: string[] = [`${actorName} updated this issue`];
   if (event.statusChange) {
@@ -352,10 +355,10 @@ function createTimelineEventMessage(args: {
   if (event.assigneeChange) {
     const from = event.assigneeChange.from.agentId
       ? (agentMap?.get(event.assigneeChange.from.agentId)?.name ?? event.assigneeChange.from.agentId.slice(0, 8))
-      : (formatAssigneeUserLabel(event.assigneeChange.from.userId, currentUserId) ?? "Unassigned");
+      : (formatAssigneeUserLabel(event.assigneeChange.from.userId, currentUserId, currentUserName) ?? "Unassigned");
     const to = event.assigneeChange.to.agentId
       ? (agentMap?.get(event.assigneeChange.to.agentId)?.name ?? event.assigneeChange.to.agentId.slice(0, 8))
-      : (formatAssigneeUserLabel(event.assigneeChange.to.userId, currentUserId) ?? "Unassigned");
+      : (formatAssigneeUserLabel(event.assigneeChange.to.userId, currentUserId, currentUserName) ?? "Unassigned");
     lines.push(`Assignee: ${from} -> ${to}`);
   }
 
@@ -743,6 +746,7 @@ export function buildIssueChatMessages(args: {
   projectId?: string | null;
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
+  currentUserName?: string | null;
 }) {
   const {
     comments,
@@ -758,6 +762,7 @@ export function buildIssueChatMessages(args: {
     projectId,
     agentMap,
     currentUserId,
+    currentUserName,
   } = args;
 
   const orderedMessages: MessageWithOrder[] = [];
@@ -766,7 +771,7 @@ export function buildIssueChatMessages(args: {
     orderedMessages.push({
       createdAtMs: toTimestamp(comment.createdAt),
       order: 1,
-      message: createCommentMessage({ comment, agentMap, currentUserId, companyId, projectId }),
+      message: createCommentMessage({ comment, agentMap, currentUserId, currentUserName, companyId, projectId }),
     });
   }
 
@@ -774,7 +779,7 @@ export function buildIssueChatMessages(args: {
     orderedMessages.push({
       createdAtMs: toTimestamp(event.createdAt),
       order: 0,
-      message: createTimelineEventMessage({ event, agentMap, currentUserId }),
+      message: createTimelineEventMessage({ event, agentMap, currentUserId, currentUserName }),
     });
   }
 

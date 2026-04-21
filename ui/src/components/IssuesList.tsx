@@ -273,6 +273,7 @@ export function IssuesList({
     retry: false,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const currentUserName = session?.user?.name ?? null;
   const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
 
   // Scope the storage key per company so folding/view state is independent across companies.
@@ -523,11 +524,11 @@ export function IssuesList({
         key === "__unassigned"
           ? "Unassigned"
           : key.startsWith("__user:")
-            ? (formatAssigneeUserLabel(key.slice("__user:".length), currentUserId) ?? "User")
+            ? (formatAssigneeUserLabel(key.slice("__user:".length), currentUserId, currentUserName) ?? "User")
             : (agentName(key) ?? key.slice(0, 8)),
       items: groups[key]!,
     }));
-  }, [filtered, viewState.groupBy, agents, agentName, currentUserId, workspaceNameMap, issueTitleMap]);
+  }, [filtered, viewState.groupBy, agents, agentName, currentUserId, currentUserName, workspaceNameMap, issueTitleMap]);
 
   const newIssueDefaults = useCallback((groupKey?: string) => {
     const defaults: Record<string, unknown> = { ...(baseCreateIssueDefaults ?? {}) };
@@ -895,7 +896,7 @@ export function IssuesList({
                                           <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-dashed border-muted-foreground/35 bg-muted/30">
                                             <User className="h-3.5 w-3.5" />
                                           </span>
-                                          {formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? "User"}
+                                          {formatAssigneeUserLabel(issue.assigneeUserId, currentUserId, currentUserName) ?? "User"}
                                         </span>
                                       ) : (
                                         <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">

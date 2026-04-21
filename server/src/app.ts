@@ -29,6 +29,7 @@ import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
+import { operatorProfileRoutes } from "./routes/operator-profile.js";
 import { llmRoutes } from "./routes/llms.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
@@ -53,6 +54,7 @@ import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
+import { operatorProfileService } from "./services/operator-profile.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
@@ -167,20 +169,34 @@ export async function createApp(
       resolveSession: opts.resolveSession,
     }),
   );
-  app.get("/api/auth/get-session", (req, res) => {
+  const operatorProfiles = operatorProfileService(db);
+  app.get("/api/auth/get-session", async (req, res) => {
     if (req.actor.type !== "board" || !req.actor.userId) {
       res.status(401).json({ error: "Unauthorized" });
       return;
     }
+    const source = req.actor.source;
+    if (source !== "local_implicit" && source !== "session" && source !== "board_key") {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    const profile = await operatorProfiles.getForActor({
+      userId: req.actor.userId,
+      source,
+      isInstanceAdmin: source === "local_implicit" || req.actor.isInstanceAdmin === true,
+    });
     res.json({
       session: {
         id: `paperclip:${req.actor.source}:${req.actor.userId}`,
         userId: req.actor.userId,
       },
       user: {
-        id: req.actor.userId,
-        email: null,
-        name: req.actor.source === "local_implicit" ? "Local Board" : null,
+        id: profile.id,
+        email: profile.email,
+        name: profile.name,
+        image: profile.image,
+        source: profile.source,
+        isInstanceAdmin: profile.isInstanceAdmin,
       },
     });
   });
@@ -227,6 +243,7 @@ export async function createApp(
   api.use(sidebarPreferenceRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));
+  api.use(operatorProfileRoutes(db));
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = createPluginWorkerManager();
   const pluginRegistry = pluginRegistryService(db);

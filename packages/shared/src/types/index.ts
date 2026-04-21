@@ -13,6 +13,7 @@ export type {
 } from "./feedback.js";
 export type { InstanceExperimentalSettings, InstanceGeneralSettings, InstanceSettings, BackupRetentionPolicy } from "./instance.js";
 export { DAILY_RETENTION_PRESETS, WEEKLY_RETENTION_PRESETS, MONTHLY_RETENTION_PRESETS, DEFAULT_BACKUP_RETENTION } from "./instance.js";
+export type { OperatorProfile, OperatorProfileSource } from "./operator.js";
 export type {
   CompanySkillSourceType,
   CompanySkillTrustLevel,

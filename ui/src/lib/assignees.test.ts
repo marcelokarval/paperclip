@@ -19,12 +19,12 @@ describe("assignee selection helpers", () => {
   });
 
   it("encodes and parses current-user assignees", () => {
-    const [option] = currentUserAssigneeOption("local-board");
+    const [option] = currentUserAssigneeOption("local-board", "Marcelo");
 
     expect(option).toEqual({
       id: "user:local-board",
-      label: "Me",
-      searchText: "me board human local-board",
+      label: "Marcelo",
+      searchText: "me board human local-board Marcelo",
     });
     expect(parseAssigneeValue(option.id)).toEqual({
       assigneeAgentId: null,
@@ -48,6 +48,7 @@ describe("assignee selection helpers", () => {
 
   it("formats current and board user labels consistently", () => {
     expect(formatAssigneeUserLabel("user-1", "user-1")).toBe("You");
+    expect(formatAssigneeUserLabel("user-1", "user-1", "Marcelo")).toBe("Marcelo");
     expect(formatAssigneeUserLabel("local-board", "someone-else")).toBe("Board");
     expect(formatAssigneeUserLabel("user-abcdef", "someone-else")).toBe("user-");
   });

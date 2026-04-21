@@ -10,6 +10,13 @@ export {
 } from "./instance.js";
 
 export {
+  operatorProfileSchema,
+  operatorProfileSourceSchema,
+  patchOperatorProfileSchema,
+  type PatchOperatorProfile,
+} from "./operator.js";
+
+export {
   upsertBudgetPolicySchema,
   resolveBudgetIncidentSchema,
   type UpsertBudgetPolicy,

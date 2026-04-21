@@ -296,14 +296,26 @@ function mergeOptimisticFeedbackVote(
   ];
 }
 
-function ActorIdentity({ evt, agentMap }: { evt: ActivityEvent; agentMap: Map<string, Agent> }) {
+function ActorIdentity({
+  evt,
+  agentMap,
+  currentUserId,
+  currentUserName,
+}: {
+  evt: ActivityEvent;
+  agentMap: Map<string, Agent>;
+  currentUserId?: string | null;
+  currentUserName?: string | null;
+}) {
   const id = evt.actorId;
   if (evt.actorType === "agent") {
     const agent = agentMap.get(id);
     return <Identity name={agent?.name ?? id.slice(0, 8)} size="sm" />;
   }
   if (evt.actorType === "system") return <Identity name="System" size="sm" />;
-  if (evt.actorType === "user") return <Identity name="Board" size="sm" />;
+  if (evt.actorType === "user") {
+    return <Identity name={currentUserId && id === currentUserId ? currentUserName ?? "You" : "Board"} size="sm" />;
+  }
   return <Identity name={id || "Unknown"} size="sm" />;
 }
 
@@ -545,6 +557,7 @@ type IssueDetailChatTabProps = {
   feedbackTermsUrl: string | null;
   agentMap: Map<string, Agent>;
   currentUserId: string | null;
+  currentUserName?: string | null;
   draftKey: string;
   reassignOptions: Array<{ id: string; label: string; searchText?: string }>;
   currentAssigneeValue: string;
@@ -578,6 +591,7 @@ function IssueDetailChatTab({
   feedbackTermsUrl,
   agentMap,
   currentUserId,
+  currentUserName,
   draftKey,
   reassignOptions,
   currentAssigneeValue,
@@ -724,6 +738,7 @@ function IssueDetailChatTab({
         issueStatus={issue.status}
         agentMap={agentMap}
         currentUserId={currentUserId}
+        currentUserName={currentUserName}
         draftKey={draftKey}
         enableReassign
         reassignOptions={reassignOptions}
@@ -755,6 +770,7 @@ type IssueDetailActivityTabProps = {
   issueId: string;
   agentMap: Map<string, Agent>;
   currentUserId: string | null;
+  currentUserName?: string | null;
   pendingApprovalAction: { approvalId: string; action: "approve" | "reject" } | null;
   onApprovalAction: (approvalId: string, action: "approve" | "reject") => void;
 };
@@ -763,6 +779,7 @@ function IssueDetailActivityTab({
   issueId,
   agentMap,
   currentUserId,
+  currentUserName,
   pendingApprovalAction,
   onApprovalAction,
 }: IssueDetailActivityTabProps) {
@@ -879,8 +896,8 @@ function IssueDetailActivityTab({
         <div className="space-y-1.5">
           {activity.slice(0, 20).map((evt) => (
             <div key={evt.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <ActorIdentity evt={evt} agentMap={agentMap} />
-              <span>{formatIssueActivityAction(evt.action, evt.details, { agentMap, currentUserId })}</span>
+              <ActorIdentity evt={evt} agentMap={agentMap} currentUserId={currentUserId} currentUserName={currentUserName} />
+              <span>{formatIssueActivityAction(evt.action, evt.details, { agentMap, currentUserId, currentUserName })}</span>
               <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
             </div>
           ))}
@@ -1036,6 +1053,7 @@ export function IssueDetail() {
     enabled: !!selectedCompanyId,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const currentUserName = session?.user?.name ?? null;
   const { data: feedbackVotes } = useQuery({
     queryKey: queryKeys.issues.feedbackVotes(issueId!),
     queryFn: () => issuesApi.listFeedbackVotes(issueId!),
@@ -2758,6 +2776,7 @@ export function IssueDetail() {
               feedbackTermsUrl={FEEDBACK_TERMS_URL}
               agentMap={agentMap}
               currentUserId={currentUserId}
+              currentUserName={currentUserName}
               draftKey={`paperclip:issue-comment-draft:${issue.id}`}
               reassignOptions={commentReassignOptions}
               currentAssigneeValue={actualAssigneeValue}
@@ -2804,6 +2823,7 @@ export function IssueDetail() {
               issueId={issue.id}
               agentMap={agentMap}
               currentUserId={currentUserId}
+              currentUserName={currentUserName}
               pendingApprovalAction={pendingApprovalAction}
               onApprovalAction={(approvalId, action) => {
                 approvalDecision.mutate({ approvalId, action });

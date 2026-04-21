@@ -74,6 +74,7 @@ interface CommentThreadProps {
   issueStatus?: string;
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
+  currentUserName?: string | null;
   imageUploadHandler?: (file: File) => Promise<string>;
   /** Callback to attach an image file to the parent issue (not inline in a comment). */
   onAttachImage?: (file: File) => Promise<void>;
@@ -148,12 +149,13 @@ function formatTimelineAssigneeLabel(
   assignee: IssueTimelineAssignee,
   agentMap?: Map<string, Agent>,
   currentUserId?: string | null,
+  currentUserName?: string | null,
 ) {
   if (assignee.agentId) {
     return agentMap?.get(assignee.agentId)?.name ?? assignee.agentId.slice(0, 8);
   }
   if (assignee.userId) {
-    return formatAssigneeUserLabel(assignee.userId, currentUserId) ?? "Board";
+    return formatAssigneeUserLabel(assignee.userId, currentUserId, currentUserName) ?? "Board";
   }
   return "Unassigned";
 }
@@ -163,6 +165,7 @@ function formatTimelineActorName(
   actorId: string,
   agentMap?: Map<string, Agent>,
   currentUserId?: string | null,
+  currentUserName?: string | null,
 ) {
   if (actorType === "agent") {
     return agentMap?.get(actorId)?.name ?? actorId.slice(0, 8);
@@ -170,7 +173,7 @@ function formatTimelineActorName(
   if (actorType === "system") {
     return "System";
   }
-  return formatAssigneeUserLabel(actorId, currentUserId) ?? "Board";
+  return formatAssigneeUserLabel(actorId, currentUserId, currentUserName) ?? "Board";
 }
 
 function initialsForName(name: string) {
@@ -287,6 +290,7 @@ function CopyMarkdownButton({ text }: { text: string }) {
 function CommentCard({
   comment,
   agentMap,
+  currentUserName,
   companyId,
   projectId,
   feedbackVote = null,
@@ -299,6 +303,7 @@ function CommentCard({
 }: {
   comment: CommentWithRunMeta;
   agentMap?: Map<string, Agent>;
+  currentUserName?: string | null;
   companyId?: string | null;
   projectId?: string | null;
   feedbackVote?: FeedbackVoteValue | null;
@@ -337,7 +342,7 @@ function CommentCard({
             />
           </Link>
         ) : (
-          <Identity name="You" size="sm" />
+          <Identity name={currentUserName ?? "You"} size="sm" />
         )}
         <span className="flex items-center gap-1.5">
           {isQueued ? (
@@ -446,12 +451,14 @@ function TimelineEventCard({
   event,
   agentMap,
   currentUserId,
+  currentUserName,
 }: {
   event: IssueTimelineEvent;
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
+  currentUserName?: string | null;
 }) {
-  const actorName = formatTimelineActorName(event.actorType, event.actorId, agentMap, currentUserId);
+  const actorName = formatTimelineActorName(event.actorType, event.actorId, agentMap, currentUserId, currentUserName);
 
   return (
     <div id={`activity-${event.id}`} className="flex items-start gap-2.5 py-1.5">
@@ -492,11 +499,11 @@ function TimelineEventCard({
               Assignee
             </span>
             <span className="text-muted-foreground">
-              {formatTimelineAssigneeLabel(event.assigneeChange.from, agentMap, currentUserId)}
+              {formatTimelineAssigneeLabel(event.assigneeChange.from, agentMap, currentUserId, currentUserName)}
             </span>
             <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
             <span className="font-medium text-foreground">
-              {formatTimelineAssigneeLabel(event.assigneeChange.to, agentMap, currentUserId)}
+              {formatTimelineAssigneeLabel(event.assigneeChange.to, agentMap, currentUserId, currentUserName)}
             </span>
           </div>
         ) : null}
@@ -509,6 +516,7 @@ const TimelineList = memo(function TimelineList({
   timeline,
   agentMap,
   currentUserId,
+  currentUserName,
   companyId,
   projectId,
   onApproveApproval,
@@ -524,6 +532,7 @@ const TimelineList = memo(function TimelineList({
   timeline: TimelineItem[];
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
+  currentUserName?: string | null;
   companyId?: string | null;
   projectId?: string | null;
   onApproveApproval?: (approvalId: string) => Promise<void>;
@@ -557,6 +566,7 @@ const TimelineList = memo(function TimelineList({
               event={item.event}
               agentMap={agentMap}
               currentUserId={currentUserId}
+              currentUserName={currentUserName}
             />
           );
         }
@@ -621,6 +631,7 @@ const TimelineList = memo(function TimelineList({
             key={comment.id}
             comment={comment}
             agentMap={agentMap}
+            currentUserName={currentUserName}
             companyId={companyId}
             projectId={projectId}
             feedbackVote={feedbackVoteByTargetId?.get(comment.id) ?? null}
@@ -655,6 +666,7 @@ export function CommentThread({
   issueStatus,
   agentMap,
   currentUserId,
+  currentUserName,
   imageUploadHandler,
   onAttachImage,
   draftKey,
@@ -857,6 +869,7 @@ export function CommentThread({
         timeline={timeline}
         agentMap={agentMap}
         currentUserId={currentUserId}
+        currentUserName={currentUserName}
         companyId={companyId}
         projectId={projectId}
         onApproveApproval={onApproveApproval}
@@ -896,6 +909,7 @@ export function CommentThread({
                 key={comment.id}
                 comment={comment}
                 agentMap={agentMap}
+                currentUserName={currentUserName}
                 companyId={companyId}
                 projectId={projectId}
                 highlightCommentId={highlightCommentId}

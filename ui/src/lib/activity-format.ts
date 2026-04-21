@@ -17,6 +17,7 @@ type ActivityIssueReference = {
 interface ActivityFormatOptions {
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
+  currentUserName?: string | null;
 }
 
 const ACTIVITY_ROW_VERBS: Record<string, string> = {
@@ -118,9 +119,13 @@ function readIssueReferences(details: ActivityDetails, key: string): ActivityIss
   return value.filter(isActivityIssueReference);
 }
 
-function formatUserLabel(userId: string | null | undefined, currentUserId?: string | null): string {
+function formatUserLabel(
+  userId: string | null | undefined,
+  currentUserId?: string | null,
+  currentUserName?: string | null,
+): string {
   if (!userId || userId === "local-board") return "Board";
-  if (currentUserId && userId === currentUserId) return "You";
+  if (currentUserId && userId === currentUserId) return currentUserName ?? "You";
   return `user ${userId.slice(0, 5)}`;
 }
 
@@ -129,7 +134,7 @@ function formatParticipantLabel(participant: ActivityParticipant, options: Activ
     const agentId = participant.agentId ?? "";
     return options.agentMap?.get(agentId)?.name ?? "agent";
   }
-  return formatUserLabel(participant.userId, options.currentUserId);
+  return formatUserLabel(participant.userId, options.currentUserId, options.currentUserName);
 }
 
 function formatIssueReferenceLabel(reference: ActivityIssueReference): string {

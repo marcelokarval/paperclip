@@ -183,6 +183,7 @@ export function IssueProperties({
     queryFn: () => authApi.getSession(),
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId;
+  const currentUserName = session?.user?.name ?? null;
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(companyId!),
@@ -265,7 +266,7 @@ export function IssueProperties({
     : null;
   const reviewerValues = stageParticipantValues(issue.executionPolicy, "review");
   const approverValues = stageParticipantValues(issue.executionPolicy, "approval");
-  const userLabel = (userId: string | null | undefined) => formatAssigneeUserLabel(userId, currentUserId);
+  const userLabel = (userId: string | null | undefined) => formatAssigneeUserLabel(userId, currentUserId, currentUserName);
   const assigneeUserLabel = userLabel(issue.assigneeUserId);
   const creatorUserLabel = userLabel(issue.createdByUserId);
   const updateExecutionPolicy = (nextReviewers: string[], nextApprovers: string[]) => {
