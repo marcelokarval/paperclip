@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { projectsApi } from "../api/projects";
@@ -38,7 +39,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { PROJECT_COLORS } from "@paperclipai/shared";
-import { cn } from "../lib/utils";
+import { cn, projectUrl, projectWorkspaceUrl } from "../lib/utils";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
 import { ChoosePathButton } from "./PathInstructionsModal";
@@ -89,6 +90,7 @@ export function NewProjectDialog() {
   const { newProjectOpen, closeNewProject } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState("planned");
@@ -239,8 +241,14 @@ export function NewProjectDialog() {
 
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(selectedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(created.id) });
+      const primaryWorkspace =
+        created.primaryWorkspace
+        ?? created.workspaces?.find((workspace) => workspace.isPrimary)
+        ?? created.workspaces?.[0]
+        ?? null;
       reset();
       closeNewProject();
+      navigate(primaryWorkspace ? projectWorkspaceUrl(created, primaryWorkspace.id) : projectUrl(created));
     } catch {
       // surface through createProject.isError
     }

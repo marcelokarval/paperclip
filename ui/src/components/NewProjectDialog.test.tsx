@@ -40,6 +40,8 @@ const mockAssetsApi = vi.hoisted(() => ({
   uploadImage: vi.fn(),
 }));
 
+const mockNavigate = vi.hoisted(() => vi.fn());
+
 vi.mock("../context/DialogContext", () => ({
   useDialog: () => dialogState,
 }));
@@ -62,6 +64,10 @@ vi.mock("../api/agents", () => ({
 
 vi.mock("../api/assets", () => ({
   assetsApi: mockAssetsApi,
+}));
+
+vi.mock("@/lib/router", () => ({
+  useNavigate: () => mockNavigate,
 }));
 
 vi.mock("./MarkdownEditor", async () => {
@@ -170,9 +176,16 @@ describe("NewProjectDialog", () => {
     document.body.appendChild(container);
     dialogState.newProjectOpen = true;
     dialogState.closeNewProject.mockReset();
+    mockNavigate.mockReset();
     mockProjectsApi.create.mockReset();
     mockProjectsApi.createWorkspace.mockReset();
-    mockProjectsApi.create.mockResolvedValue({ id: "project-1", name: "Launch" });
+    mockProjectsApi.create.mockResolvedValue({
+      id: "project-1",
+      urlKey: "launch",
+      name: "Launch",
+      workspaces: [],
+      primaryWorkspace: null,
+    });
     mockGoalsApi.list.mockResolvedValue([]);
     mockAgentsApi.list.mockResolvedValue([]);
     mockAssetsApi.uploadImage.mockResolvedValue({ contentPath: "/uploads/asset.png" });
@@ -183,6 +196,20 @@ describe("NewProjectDialog", () => {
   });
 
   it("creates a repo-only project with a primary git workspace and no separate workspace call", async () => {
+    mockProjectsApi.create.mockResolvedValue({
+      id: "project-1",
+      urlKey: "launch",
+      name: "Launch",
+      workspaces: [
+        {
+          id: "workspace-1",
+          isPrimary: true,
+        },
+      ],
+      primaryWorkspace: {
+        id: "workspace-1",
+      },
+    });
     const { root } = renderDialog(container);
     await flush();
 
@@ -205,6 +232,7 @@ describe("NewProjectDialog", () => {
       }),
     );
     expect(mockProjectsApi.createWorkspace).not.toHaveBeenCalled();
+    expect(mockNavigate).toHaveBeenCalledWith("/projects/launch/workspaces/workspace-1");
 
     act(() => root.unmount());
   });
@@ -225,11 +253,24 @@ describe("NewProjectDialog", () => {
       }),
     );
     expect(mockProjectsApi.createWorkspace).not.toHaveBeenCalled();
+    expect(mockNavigate).toHaveBeenCalledWith("/projects/launch");
 
     act(() => root.unmount());
   });
 
   it("creates a local plus GitHub project workspace when both values are selected", async () => {
+    mockProjectsApi.create.mockResolvedValue({
+      id: "project-1",
+      urlKey: "paperclip-fork",
+      name: "Paperclip Fork",
+      workspaces: [
+        {
+          id: "workspace-2",
+          isPrimary: true,
+        },
+      ],
+      primaryWorkspace: null,
+    });
     const { root } = renderDialog(container);
     await flush();
 
@@ -253,6 +294,7 @@ describe("NewProjectDialog", () => {
         }),
       }),
     );
+    expect(mockNavigate).toHaveBeenCalledWith("/projects/paperclip-fork/workspaces/workspace-2");
 
     act(() => root.unmount());
   });
