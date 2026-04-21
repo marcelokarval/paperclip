@@ -121,6 +121,43 @@ const projectGoal = {
   updatedAt: new Date("2026-03-20T00:00:00Z"),
 };
 
+function baseProject(overrides: Record<string, unknown> = {}) {
+  return {
+    id: legacyProjectLinkedIssue.projectId,
+    companyId: "company-1",
+    urlKey: "onboarding",
+    goalId: projectGoal.id,
+    goalIds: [projectGoal.id],
+    goals: [{ id: projectGoal.id, title: projectGoal.title }],
+    name: "Onboarding",
+    description: null,
+    status: "in_progress",
+    leadAgentId: null,
+    targetDate: null,
+    color: null,
+    pauseReason: null,
+    pausedAt: null,
+    executionWorkspacePolicy: null,
+    codebase: {
+      workspaceId: null,
+      repoUrl: null,
+      repoRef: null,
+      defaultRef: null,
+      repoName: null,
+      localFolder: null,
+      managedFolder: "/tmp/company-1/project-1",
+      effectiveLocalFolder: "/tmp/company-1/project-1",
+      origin: "managed_checkout",
+    },
+    workspaces: [],
+    primaryWorkspace: null,
+    archivedAt: null,
+    createdAt: new Date("2026-03-20T00:00:00Z"),
+    updatedAt: new Date("2026-03-20T00:00:00Z"),
+    ...overrides,
+  };
+}
+
 describe("issue goal context routes", () => {
   beforeEach(() => {
     vi.resetModules();
@@ -139,39 +176,7 @@ describe("issue goal context routes", () => {
     });
     mockIssueService.getComment.mockResolvedValue(null);
     mockIssueService.listAttachments.mockResolvedValue([]);
-    mockProjectService.getById.mockResolvedValue({
-      id: legacyProjectLinkedIssue.projectId,
-      companyId: "company-1",
-      urlKey: "onboarding",
-      goalId: projectGoal.id,
-      goalIds: [projectGoal.id],
-      goals: [{ id: projectGoal.id, title: projectGoal.title }],
-      name: "Onboarding",
-      description: null,
-      status: "in_progress",
-      leadAgentId: null,
-      targetDate: null,
-      color: null,
-      pauseReason: null,
-      pausedAt: null,
-      executionWorkspacePolicy: null,
-      codebase: {
-        workspaceId: null,
-        repoUrl: null,
-        repoRef: null,
-        defaultRef: null,
-        repoName: null,
-        localFolder: null,
-        managedFolder: "/tmp/company-1/project-1",
-        effectiveLocalFolder: "/tmp/company-1/project-1",
-        origin: "managed_checkout",
-      },
-      workspaces: [],
-      primaryWorkspace: null,
-      archivedAt: null,
-      createdAt: new Date("2026-03-20T00:00:00Z"),
-      updatedAt: new Date("2026-03-20T00:00:00Z"),
-    });
+    mockProjectService.getById.mockResolvedValue(baseProject());
     mockProjectService.listByIds.mockResolvedValue([]);
     mockGoalService.getById.mockImplementation(async (id: string) =>
       id === projectGoal.id ? projectGoal : null,
@@ -237,5 +242,60 @@ describe("issue goal context routes", () => {
         identifier: "PAP-580",
       }),
     ]);
+  });
+
+  it("surfaces repository baseline context on GET /issues/:id/heartbeat-context", async () => {
+    mockProjectService.getById.mockResolvedValue(baseProject({
+      primaryWorkspace: {
+        id: "66666666-6666-4666-8666-666666666666",
+        metadata: {
+          repositoryDocumentationBaseline: {
+            status: "ready",
+            source: "scan",
+            updatedAt: "2026-04-21T12:00:00.000Z",
+            summary: "Detected TypeScript project.",
+            stack: ["TypeScript", "React"],
+            documentationFiles: ["AGENTS.md", "README.md"],
+            guardrails: [
+              "Documentation only; do not create issues or child issues from this baseline.",
+              "Do not wake agents, assign work, create PRs, or write files to the repository.",
+            ],
+            repository: {
+              cwd: "/workspace/repo",
+              repoUrl: "https://github.com/example/repo",
+              repoRef: null,
+              defaultRef: "main",
+            },
+            gaps: ["No architecture document detected."],
+            constraints: {
+              repositoryWritesAllowed: false,
+              backlogGenerationAllowed: false,
+              childIssuesAllowed: false,
+              agentWakeupAllowed: false,
+            },
+          },
+        },
+      },
+    }));
+
+    const res = await request(await createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.repositoryBaseline).toMatchObject({
+      workspaceId: "66666666-6666-4666-8666-666666666666",
+      status: "ready",
+      summary: "Detected TypeScript project.",
+      stack: ["TypeScript", "React"],
+      documentationFiles: ["AGENTS.md", "README.md"],
+      gaps: ["No architecture document detected."],
+      constraints: {
+        repositoryWritesAllowed: false,
+        backlogGenerationAllowed: false,
+        childIssuesAllowed: false,
+        agentWakeupAllowed: false,
+      },
+    });
   });
 });

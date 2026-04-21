@@ -23,6 +23,7 @@ import {
   updateIssueSchema,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
+  readRepositoryDocumentationBaselineFromMetadata,
   type ExecutionWorkspace,
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
@@ -158,6 +159,29 @@ function shouldImplicitlyReopenCommentForAgent(input: {
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   if (input.actorType === "agent" && input.actorId === input.assigneeAgentId) return false;
   return true;
+}
+
+function buildIssueRepositoryBaselineContext(project: {
+  primaryWorkspace?: { id: string; metadata: Record<string, unknown> | null } | null;
+} | null) {
+  const workspace = project?.primaryWorkspace ?? null;
+  if (!workspace) return null;
+  const baseline = readRepositoryDocumentationBaselineFromMetadata(workspace.metadata);
+  if (!baseline) return null;
+
+  return {
+    workspaceId: workspace.id,
+    status: baseline.status,
+    source: baseline.source,
+    updatedAt: baseline.updatedAt,
+    summary: baseline.summary,
+    stack: baseline.stack,
+    documentationFiles: baseline.documentationFiles,
+    guardrails: baseline.guardrails,
+    gaps: baseline.gaps ?? [],
+    repository: baseline.repository ?? null,
+    constraints: baseline.constraints ?? null,
+  };
 }
 
 function diffExecutionParticipants(
@@ -810,6 +834,7 @@ export function issueRoutes(
             targetDate: project.targetDate,
           }
         : null,
+      repositoryBaseline: buildIssueRepositoryBaselineContext(project),
       goal: goal
         ? {
             id: goal.id,
