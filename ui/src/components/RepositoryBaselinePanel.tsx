@@ -6,6 +6,7 @@ import type {
   RepositoryDocumentationBaselineForm,
   RepositoryDocumentationBaselineStatus,
 } from "../lib/repository-documentation-baseline";
+import { Link } from "../lib/router";
 import { issueUrl } from "../lib/utils";
 
 type RepositoryBaselinePanelProps = {
@@ -118,9 +119,9 @@ export function RepositoryBaselinePanel({
           assign agents, wake agents, open PRs, or write repository files.
         </p>
         {trackingIssueRef ? (
-          <a className="mt-2 inline-flex text-sm font-medium text-primary hover:underline" href={issueUrl(trackingIssueRef)}>
+          <Link className="mt-2 inline-flex text-sm font-medium text-primary hover:underline" to={issueUrl(trackingIssueRef)}>
             Open {trackingIssueRef.identifier}
-          </a>
+          </Link>
         ) : null}
       </div>
       {hasRepositoryIdentityOnly ? (
