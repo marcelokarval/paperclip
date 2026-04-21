@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
+import type { AdapterEnvironmentProbeMode } from "@paperclipai/shared";
 import type { Company } from "@paperclipai/shared";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
@@ -158,6 +159,28 @@ function withTimeout<T>(
   });
 }
 
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const rec = value as Record<string, unknown>;
+    return `{${Object.keys(rec)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableStringify(rec[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+export function buildAdapterEnvironmentTestSignature(input: {
+  companyId: string | null;
+  adapterType: string;
+  adapterConfig: Record<string, unknown>;
+}): string {
+  return stableStringify(input);
+}
+
 export function OnboardingWizard() {
   const { onboardingOpen, onboardingOptions, closeOnboarding } = useDialog();
   const { companies, setSelectedCompanyId, loading: companiesLoading } = useCompany();
@@ -208,6 +231,11 @@ export function OnboardingWizard() {
   const [url, setUrl] = useState("");
   const [adapterEnvResult, setAdapterEnvResult] =
     useState<AdapterEnvironmentTestResult | null>(null);
+  const [adapterEnvSignature, setAdapterEnvSignature] = useState<string | null>(
+    null
+  );
+  const [adapterEnvProbe, setAdapterEnvProbe] =
+    useState<AdapterEnvironmentProbeMode | null>(null);
   const [adapterEnvError, setAdapterEnvError] = useState<string | null>(null);
   const [adapterEnvLoading, setAdapterEnvLoading] = useState(false);
   const [forceUnsetAnthropicApiKey, setForceUnsetAnthropicApiKey] =
@@ -328,12 +356,6 @@ export function OnboardingWizard() {
     command.trim() ||
     (COMMAND_PLACEHOLDERS[adapterType] ?? adapterType.replace(/_local$/, ""));
 
-  useEffect(() => {
-    if (step !== 2) return;
-    setAdapterEnvResult(null);
-    setAdapterEnvError(null);
-  }, [step, adapterType, model, command, args, url]);
-
   const selectedModel = (adapterModels ?? []).find((m) => m.id === model);
   const hasAnthropicApiKeyOverrideCheck =
     adapterEnvResult?.checks.some(
@@ -404,6 +426,8 @@ export function OnboardingWizard() {
     setArgs("");
     setUrl("");
     setAdapterEnvResult(null);
+    setAdapterEnvSignature(null);
+    setAdapterEnvProbe(null);
     setAdapterEnvError(null);
     setAdapterEnvLoading(false);
     setForceUnsetAnthropicApiKey(false);
@@ -457,8 +481,47 @@ export function OnboardingWizard() {
     return config;
   }
 
+  function getAdapterEnvironmentTestSignature(
+    adapterConfig: Record<string, unknown>
+  ): string {
+    return buildAdapterEnvironmentTestSignature({
+      companyId: createdCompanyId,
+      adapterType,
+      adapterConfig
+    });
+  }
+
+  function hasCurrentAdapterEnvironmentResult(
+    adapterConfig: Record<string, unknown>
+  ): boolean {
+    return Boolean(
+      adapterEnvResult &&
+        adapterEnvSignature === getAdapterEnvironmentTestSignature(adapterConfig)
+    );
+  }
+
+  useEffect(() => {
+    if (!adapterEnvSignature) return;
+    const nextSignature = getAdapterEnvironmentTestSignature(buildAdapterConfig());
+    if (adapterEnvSignature === nextSignature) return;
+    setAdapterEnvResult(null);
+    setAdapterEnvSignature(null);
+    setAdapterEnvProbe(null);
+    setAdapterEnvError(null);
+  }, [
+    createdCompanyId,
+    adapterEnvSignature,
+    adapterType,
+    model,
+    command,
+    args,
+    url,
+    forceUnsetAnthropicApiKey
+  ]);
+
   async function runAdapterEnvironmentTest(
-    adapterConfigOverride?: Record<string, unknown>
+    adapterConfigOverride?: Record<string, unknown>,
+    probe: AdapterEnvironmentProbeMode = "quick"
   ): Promise<AdapterEnvironmentTestResult | null> {
     if (!createdCompanyId) {
       setAdapterEnvError(
@@ -468,18 +531,23 @@ export function OnboardingWizard() {
     }
     const requestId = adapterEnvRequestIdRef.current + 1;
     adapterEnvRequestIdRef.current = requestId;
+    const adapterConfig = adapterConfigOverride ?? buildAdapterConfig();
+    const signature = getAdapterEnvironmentTestSignature(adapterConfig);
     setAdapterEnvLoading(true);
     setAdapterEnvError(null);
     try {
       const result = await withTimeout(
         agentsApi.testEnvironment(createdCompanyId, adapterType, {
-          adapterConfig: adapterConfigOverride ?? buildAdapterConfig()
+          adapterConfig,
+          probe
         }),
         ADAPTER_ENVIRONMENT_TEST_TIMEOUT_MS,
         "Adapter environment test timed out. Check the local CLI login/session in a terminal and retry."
       );
       if (adapterEnvRequestIdRef.current === requestId) {
         setAdapterEnvResult(result);
+        setAdapterEnvSignature(signature);
+        setAdapterEnvProbe(probe);
       }
       return result;
     } catch (err) {
@@ -607,15 +675,38 @@ export function OnboardingWizard() {
       }
 
       if (isLocalAdapter) {
-        const result = adapterEnvResult ?? (await runAdapterEnvironmentTest());
+        const adapterConfig = buildAdapterConfig();
+        const result = hasCurrentAdapterEnvironmentResult(adapterConfig)
+          ? adapterEnvResult
+          : await runAdapterEnvironmentTest(adapterConfig);
         if (!result) return;
+      }
+
+      const adapterConfig = buildAdapterConfig();
+      if (createdAgentId) {
+        await agentsApi.update(
+          createdAgentId,
+          {
+            name: agentName.trim(),
+            adapterType,
+            adapterConfig,
+            runtimeConfig: buildNewAgentRuntimeConfig(),
+            replaceAdapterConfig: true
+          },
+          createdCompanyId
+        );
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.agents.list(createdCompanyId)
+        });
+        setStep(3);
+        return;
       }
 
       const agent = await agentsApi.create(createdCompanyId, {
         name: agentName.trim(),
         role: "ceo",
         adapterType,
-        adapterConfig: buildAdapterConfig(),
+        adapterConfig,
         runtimeConfig: buildNewAgentRuntimeConfig()
       });
       setCreatedAgentId(agent.id);
@@ -1178,19 +1269,30 @@ export function OnboardingWizard() {
                             Adapter environment check
                           </p>
                           <p className="text-[11px] text-muted-foreground">
-                            Runs a live probe that asks the adapter CLI to
-                            respond with hello.
+                            Quick check validates CLI/auth setup. Live probe also
+                            asks the model to respond with hello.
                           </p>
                         </div>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-7 px-2.5 text-xs"
-                          disabled={adapterEnvLoading}
-                          onClick={() => void runAdapterEnvironmentTest()}
-                        >
-                          {adapterEnvLoading ? "Testing..." : "Test now"}
-                        </Button>
+                        <div className="flex items-center gap-1.5">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 px-2.5 text-xs"
+                            disabled={adapterEnvLoading}
+                            onClick={() => void runAdapterEnvironmentTest(undefined, "quick")}
+                          >
+                            {adapterEnvLoading ? "Checking..." : "Quick check"}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-2.5 text-xs"
+                            disabled={adapterEnvLoading}
+                            onClick={() => void runAdapterEnvironmentTest(undefined, "live")}
+                          >
+                            Live probe
+                          </Button>
+                        </div>
                       </div>
 
                       {adapterEnvError && (
@@ -1203,10 +1305,18 @@ export function OnboardingWizard() {
                       adapterEnvResult.status === "pass" ? (
                         <div className="flex items-center gap-2 rounded-md border border-green-300 dark:border-green-500/40 bg-green-50 dark:bg-green-500/10 px-3 py-2 text-xs text-green-700 dark:text-green-300 animate-in fade-in slide-in-from-bottom-1 duration-300">
                           <Check className="h-3.5 w-3.5 shrink-0" />
-                          <span className="font-medium">Passed</span>
+                          <span className="font-medium">
+                            Passed {adapterEnvProbe === "live" ? "live probe" : "quick check"}
+                          </span>
+                          <span className="ml-auto opacity-80">
+                            {new Date(adapterEnvResult.testedAt).toLocaleTimeString()}
+                          </span>
                         </div>
                       ) : adapterEnvResult ? (
-                        <AdapterEnvironmentResult result={adapterEnvResult} />
+                        <AdapterEnvironmentResult
+                          result={adapterEnvResult}
+                          probe={adapterEnvProbe}
+                        />
                       ) : null}
 
                       {shouldSuggestUnsetAnthropicApiKey && (
@@ -1557,9 +1667,11 @@ export function OnboardingWizard() {
 }
 
 function AdapterEnvironmentResult({
-  result
+  result,
+  probe
 }: {
   result: AdapterEnvironmentTestResult;
+  probe: AdapterEnvironmentProbeMode | null;
 }) {
   const statusLabel =
     result.status === "pass"
@@ -1577,7 +1689,9 @@ function AdapterEnvironmentResult({
   return (
     <div className={`rounded-md border px-2.5 py-2 text-[11px] ${statusClass}`}>
       <div className="flex items-center justify-between gap-2">
-        <span className="font-medium">{statusLabel}</span>
+        <span className="font-medium">
+          {statusLabel} {probe === "live" ? "live probe" : "quick check"}
+        </span>
         <span className="opacity-80">
           {new Date(result.testedAt).toLocaleTimeString()}
         </span>

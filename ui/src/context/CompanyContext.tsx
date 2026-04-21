@@ -115,11 +115,12 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
     () => companies.find((company) => company.id === selectedCompanyId) ?? null,
     [companies, selectedCompanyId],
   );
+  const resolvedSelectedCompanyId = selectedCompany?.id ?? null;
 
   const value = useMemo(
     () => ({
       companies,
-      selectedCompanyId,
+      selectedCompanyId: resolvedSelectedCompanyId,
       selectedCompany,
       selectionSource,
       loading: isLoading,
@@ -130,7 +131,7 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
     }),
     [
       companies,
-      selectedCompanyId,
+      resolvedSelectedCompanyId,
       selectedCompany,
       selectionSource,
       isLoading,

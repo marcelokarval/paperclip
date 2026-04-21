@@ -5,6 +5,7 @@ import type {
   AgentInstructionsFileDetail,
   AgentSkillSnapshot,
   AdapterEnvironmentTestResult,
+  AdapterEnvironmentProbeMode,
   AgentKeyCreated,
   AgentRuntimeState,
   AgentTaskSession,
@@ -174,7 +175,7 @@ export const agentsApi = {
   testEnvironment: (
     companyId: string,
     type: string,
-    data: { adapterConfig: Record<string, unknown> },
+    data: { adapterConfig: Record<string, unknown>; probe?: AdapterEnvironmentProbeMode },
   ) =>
     api.post<AdapterEnvironmentTestResult>(
       `/companies/${companyId}/adapters/${type}/test-environment`,

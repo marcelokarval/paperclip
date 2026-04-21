@@ -15,6 +15,7 @@ import path from "node:path";
 import { parseCodexJsonl } from "./parse.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
 import { buildCodexExecArgs } from "./codex-args.js";
+import { isCodexLocalFastModeSupported } from "../index.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -143,6 +144,13 @@ export async function testEnvironment(
         detail: command,
         hint: "Use `codex` as the command value to run the automatic login and installation probe.",
       });
+    } else if (ctx.probe !== "live") {
+      checks.push({
+        code: "codex_live_probe_skipped",
+        level: "info",
+        message: "Quick check skipped the live Codex hello probe.",
+        hint: "Run the live probe when you need to verify model round-trip latency and response.",
+      });
     } else if (hasPathOverride) {
       checks.push({
         code: "codex_hello_probe_skipped_path_override",
@@ -151,8 +159,23 @@ export async function testEnvironment(
         hint: "Remove PATH/Path overrides from adapter env and retry to run a trusted probe.",
       });
     } else {
-      const execArgs = buildCodexExecArgs({ ...config, fastMode: false });
+      const probeReasoningEffort =
+        asString(config.modelReasoningEffort, asString(config.reasoningEffort, "")).trim() || "low";
+      const model = asString(config.model, "").trim();
+      const execArgs = buildCodexExecArgs({
+        ...config,
+        modelReasoningEffort: probeReasoningEffort,
+        fastMode: isCodexLocalFastModeSupported(model),
+      });
       const args = execArgs.args;
+      checks.push({
+        code: "codex_hello_probe_optimized",
+        level: "info",
+        message: "Codex hello probe uses low reasoning effort and Fast mode when supported.",
+        detail: execArgs.fastModeApplied
+          ? `modelReasoningEffort=${probeReasoningEffort}; fastMode=enabled`
+          : `modelReasoningEffort=${probeReasoningEffort}; fastMode=not supported for ${model || "(default)"}`,
+      });
       if (execArgs.fastModeIgnoredReason) {
         checks.push({
           code: "codex_fast_mode_unsupported_model",

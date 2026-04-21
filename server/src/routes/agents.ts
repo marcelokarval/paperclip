@@ -818,6 +818,7 @@ export function agentRoutes(db: Db) {
         companyId,
         adapterType: type,
         config: runtimeAdapterConfig,
+        probe: req.body.probe,
       });
 
       res.json(result);

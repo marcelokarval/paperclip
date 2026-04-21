@@ -57,7 +57,7 @@ describe("codex_local environment diagnostics", () => {
         companyId: "company-1",
         adapterType: "codex_local",
         config: {
-          command: process.execPath,
+          command: "codex",
           cwd,
           env: { CODEX_HOME: codexHome },
         },
@@ -95,6 +95,102 @@ describe("codex_local environment diagnostics", () => {
       expect(result.checks.some((check) => check.code === "codex_openai_api_key_missing")).toBe(true);
       expect(result.checks.some((check) => check.code === "codex_native_auth_present")).toBe(false);
     } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("runs the hello probe with low reasoning effort and fast mode when supported", async () => {
+    const root = path.join(
+      os.tmpdir(),
+      `paperclip-codex-probe-args-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    const binDir = path.join(root, "bin");
+    const cwd = path.join(root, "workspace");
+    const argsPath = path.join(root, "args.txt");
+    const fakeCodex = path.join(binDir, "codex");
+    const originalPath = process.env.PATH;
+    const script = [
+      "#!/bin/sh",
+      "printf '%s\\n' \"$@\" > \"$CAPTURE_ARGS_PATH\"",
+      "cat >/dev/null",
+      "printf '%s\\n' '{\"type\":\"thread.started\",\"thread_id\":\"test-thread\"}'",
+      "printf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"hello\"}}'",
+      "printf '%s\\n' '{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"cached_input_tokens\":0,\"output_tokens\":1}}'",
+      "exit 0",
+      "",
+    ].join("\n");
+
+    try {
+      await fs.mkdir(binDir, { recursive: true });
+      await fs.writeFile(fakeCodex, script, "utf8");
+      await fs.chmod(fakeCodex, 0o755);
+      process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "codex_local",
+        probe: "live",
+        config: {
+          command: "codex",
+          cwd,
+          model: "gpt-5.4",
+          env: {
+            OPENAI_API_KEY: "test-key",
+            CAPTURE_ARGS_PATH: argsPath,
+          },
+        },
+      });
+
+      expect(result.status).toBe("pass");
+      expect(
+        result.checks.some((check) => check.code === "codex_hello_probe_optimized" && check.detail?.includes("fastMode=enabled")),
+      ).toBe(true);
+      const args = await fs.readFile(argsPath, "utf8");
+      expect(args).toContain('model_reasoning_effort="low"');
+      expect(args).toContain('service_tier="fast"');
+      expect(args).toContain("features.fast_mode=true");
+    } finally {
+      if (originalPath === undefined) {
+        delete process.env.PATH;
+      } else {
+        process.env.PATH = originalPath;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("skips the live hello probe in quick mode", async () => {
+    const root = path.join(os.tmpdir(), `paperclip-codex-quick-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    const binDir = path.join(root, "bin");
+    const cwd = path.join(root, "workspace");
+    const fakeCodex = path.join(binDir, "codex");
+    const originalPath = process.env.PATH;
+
+    try {
+      await fs.mkdir(binDir, { recursive: true });
+      await fs.writeFile(fakeCodex, "#!/bin/sh\nprintf 'codex 0.0.0\\n'\nexit 0\n", "utf8");
+      await fs.chmod(fakeCodex, 0o755);
+      process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "codex_local",
+        probe: "quick",
+        config: {
+          command: "codex",
+          cwd,
+          env: { OPENAI_API_KEY: "test-key" },
+        },
+      });
+
+      expect(result.checks.some((check) => check.code === "codex_live_probe_skipped")).toBe(true);
+      expect(result.checks.some((check) => check.code === "codex_hello_probe_optimized")).toBe(false);
+    } finally {
+      if (originalPath === undefined) {
+        delete process.env.PATH;
+      } else {
+        process.env.PATH = originalPath;
+      }
       await fs.rm(root, { recursive: true, force: true });
     }
   });

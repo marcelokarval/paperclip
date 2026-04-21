@@ -153,6 +153,13 @@ export async function testEnvironment(
         detail: command,
         hint: "Use `claude` as the command value to run the automatic login and installation probe.",
       });
+    } else if (ctx.probe !== "live") {
+      checks.push({
+        code: "claude_live_probe_skipped",
+        level: "info",
+        message: "Quick check skipped the live Claude hello probe.",
+        hint: "Run the live probe when you need to verify model round-trip latency and response.",
+      });
     } else if (hasPathOverride) {
       checks.push({
         code: "claude_hello_probe_skipped_path_override",
@@ -162,7 +169,7 @@ export async function testEnvironment(
       });
     } else {
       const model = asString(config.model, "").trim();
-      const effort = asString(config.effort, "").trim();
+      const effort = asString(config.effort, "").trim() || "low";
       const chrome = asBoolean(config.chrome, false);
       const maxTurns = asNumber(config.maxTurnsPerRun, 0);
       const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
@@ -182,6 +189,12 @@ export async function testEnvironment(
       if (effort) args.push("--effort", effort);
       if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
       if (extraArgs.length > 0) args.push(...extraArgs);
+      checks.push({
+        code: "claude_hello_probe_optimized",
+        level: "info",
+        message: "Claude hello probe uses low effort unless explicitly configured otherwise.",
+        detail: `effort=${effort}`,
+      });
 
       const probe = await runChildProcess(
         `claude-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`,

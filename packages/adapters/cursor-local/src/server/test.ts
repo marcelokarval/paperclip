@@ -157,6 +157,13 @@ export async function testEnvironment(
           ? `Logged in as ${cursorAuth.email}.`
           : `Credentials found in ${cursorConfigPath(cursorHome)}.`,
       });
+    } else if (ctx.probe !== "live") {
+      checks.push({
+        code: "cursor_live_probe_skipped",
+        level: "info",
+        message: "Quick check skipped the live Cursor hello probe.",
+        hint: "Run the live probe when you need to verify model round-trip latency and response.",
+      });
     } else {
       checks.push({
         code: "cursor_api_key_missing",

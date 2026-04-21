@@ -215,6 +215,7 @@ export type {
   AgentConfigRevision,
   AdapterEnvironmentCheckLevel,
   AdapterEnvironmentTestStatus,
+  AdapterEnvironmentProbeMode,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
   AssetImage,

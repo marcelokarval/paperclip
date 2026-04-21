@@ -131,6 +131,13 @@ export async function testEnvironment(
         detail: command,
         hint: "Use the `gemini` CLI command to run the automatic installation and auth probe.",
       });
+    } else if (ctx.probe !== "live") {
+      checks.push({
+        code: "gemini_live_probe_skipped",
+        level: "info",
+        message: "Quick check skipped the live Gemini hello probe.",
+        hint: "Run the live probe when you need to verify model round-trip latency and response.",
+      });
     } else {
       const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
       const approvalMode = asString(config.approvalMode, asBoolean(config.yolo, false) ? "yolo" : "default");

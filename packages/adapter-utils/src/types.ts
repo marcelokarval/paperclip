@@ -140,6 +140,7 @@ export interface AdapterEnvironmentCheck {
 }
 
 export type AdapterEnvironmentTestStatus = "pass" | "warn" | "fail";
+export type AdapterEnvironmentProbeMode = "quick" | "live";
 
 export interface AdapterEnvironmentTestResult {
   adapterType: string;
@@ -201,6 +202,7 @@ export interface AdapterEnvironmentTestContext {
   companyId: string;
   adapterType: string;
   config: Record<string, unknown>;
+  probe?: AdapterEnvironmentProbeMode;
   deployment?: {
     mode?: "local_trusted" | "authenticated";
     exposure?: "private" | "public";

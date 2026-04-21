@@ -112,6 +112,7 @@ export interface AgentConfigRevision {
 
 export type AdapterEnvironmentCheckLevel = "info" | "warn" | "error";
 export type AdapterEnvironmentTestStatus = "pass" | "warn" | "fail";
+export type AdapterEnvironmentProbeMode = "quick" | "live";
 
 export interface AdapterEnvironmentCheck {
   code: string;

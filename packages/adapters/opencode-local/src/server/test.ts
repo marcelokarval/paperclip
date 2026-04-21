@@ -231,7 +231,14 @@ export async function testEnvironment(
       }
     }
 
-    if (canRunProbe && modelValidationPassed) {
+    if (canRunProbe && modelValidationPassed && ctx.probe !== "live") {
+      checks.push({
+        code: "opencode_live_probe_skipped",
+        level: "info",
+        message: "Quick check skipped the live OpenCode hello probe.",
+        hint: "Run the live probe when you need to verify model round-trip latency and response.",
+      });
+    } else if (canRunProbe && modelValidationPassed) {
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);
         if (fromExtraArgs.length > 0) return fromExtraArgs;

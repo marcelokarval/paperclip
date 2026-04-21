@@ -10,6 +10,7 @@ export type {
   AdapterEnvironmentCheckLevel,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestStatus,
+  AdapterEnvironmentProbeMode,
   AdapterEnvironmentTestResult,
   AdapterEnvironmentTestContext,
   AdapterSkillSyncMode,

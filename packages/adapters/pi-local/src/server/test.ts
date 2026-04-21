@@ -195,7 +195,14 @@ export async function testEnvironment(
     }
   }
 
-  if (canRunProbe && configuredModel) {
+  if (canRunProbe && configuredModel && ctx.probe !== "live") {
+    checks.push({
+      code: "pi_live_probe_skipped",
+      level: "info",
+      message: "Quick check skipped the live Pi hello probe.",
+      hint: "Run the live probe when you need to verify model round-trip latency and response.",
+    });
+  } else if (canRunProbe && configuredModel) {
     // Parse model for probe
     const provider = configuredModel.includes("/") 
       ? configuredModel.slice(0, configuredModel.indexOf("/")) 

@@ -56,6 +56,7 @@ export type {
   AgentConfigRevision,
   AdapterEnvironmentCheckLevel,
   AdapterEnvironmentTestStatus,
+  AdapterEnvironmentProbeMode,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
 } from "./agent.js";

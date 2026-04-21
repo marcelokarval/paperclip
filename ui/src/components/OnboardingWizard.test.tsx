@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  buildAdapterEnvironmentTestSignature,
   buildCompanySetupCreatePayload,
   canEnterOnboardingStep,
   findResumableOnboardingCompany,
@@ -40,5 +41,35 @@ describe("OnboardingWizard issue prefix setup", () => {
     expect(findResumableOnboardingCompany(companies, "Different", "p4y")?.id).toBe("company-1");
     expect(findResumableOnboardingCompany(companies, "Prop4You", "NEW")).toBeNull();
     expect(findResumableOnboardingCompany(companies, "Unknown", "UNK")).toBeNull();
+  });
+
+  it("keys adapter environment test reuse by company, adapter, and config", () => {
+    const first = buildAdapterEnvironmentTestSignature({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      adapterConfig: {
+        env: { B: "2", A: "1" },
+        model: "gpt-5.4",
+      },
+    });
+    const sameConfigDifferentKeyOrder = buildAdapterEnvironmentTestSignature({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      adapterConfig: {
+        model: "gpt-5.4",
+        env: { A: "1", B: "2" },
+      },
+    });
+    const changedModel = buildAdapterEnvironmentTestSignature({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      adapterConfig: {
+        env: { A: "1", B: "2" },
+        model: "gpt-5.3-codex",
+      },
+    });
+
+    expect(sameConfigDifferentKeyOrder).toBe(first);
+    expect(changedModel).not.toBe(first);
   });
 });
