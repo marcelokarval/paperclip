@@ -375,6 +375,38 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     );
   });
 
+  it("accepts issue identifiers with alphanumeric setup prefixes through getById", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Prop4You",
+      issuePrefix: "P4Y",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      issueNumber: 1,
+      identifier: "P4Y-1",
+      title: "Repository documentation baseline",
+      status: "backlog",
+      priority: "medium",
+      createdByUserId: "user-1",
+    });
+
+    const issue = await svc.getById("P4Y-1");
+
+    expect(issue).toEqual(
+      expect.objectContaining({
+        id: issueId,
+        identifier: "P4Y-1",
+      }),
+    );
+  });
+
   it("returns null instead of throwing for malformed non-uuid issue refs", async () => {
     await expect(svc.getById("not-a-uuid")).resolves.toBeNull();
   });

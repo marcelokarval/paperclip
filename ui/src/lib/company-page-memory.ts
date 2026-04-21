@@ -52,7 +52,7 @@ export function sanitizeRememberedPathForCompany(params: {
   const segments = pathname.split("/").filter(Boolean);
   const [root, entityId] = segments;
   if (root === "issues" && entityId) {
-    const identifierMatch = /^([A-Za-z]+)-\d+$/.exec(entityId);
+    const identifierMatch = /^([A-Za-z][A-Za-z0-9]*)-\d+$/.exec(entityId);
     if (
       identifierMatch &&
       normalizeCompanyPrefix(identifierMatch[1] ?? "") !== normalizeCompanyPrefix(params.companyPrefix)

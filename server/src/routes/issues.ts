@@ -22,6 +22,7 @@ import {
   upsertIssueDocumentSchema,
   updateIssueSchema,
   getClosedIsolatedExecutionWorkspaceMessage,
+  isIssueIdentifierRef,
   isClosedIsolatedExecutionWorkspace,
   readRepositoryDocumentationBaselineFromMetadata,
   type ExecutionWorkspace,
@@ -551,7 +552,7 @@ export function issueRoutes(
   }
 
   async function normalizeIssueIdentifier(rawId: string): Promise<string> {
-    if (/^[A-Z]+-\d+$/i.test(rawId)) {
+    if (isIssueIdentifierRef(rawId)) {
       const issue = await svc.getByIdentifier(rawId);
       if (issue) {
         return issue.id;

@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { isUuidLike, type ProjectWorkspace } from "@paperclipai/shared";
+import {
+  isUuidLike,
+  type ProjectWorkspace,
+  type RefreshRepositoryDocumentationBaselineRequest,
+} from "@paperclipai/shared";
 import { ArrowLeft, Check, ExternalLink, Loader2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -334,12 +338,24 @@ export function ProjectWorkspaceDetail() {
   });
 
   const refreshRepositoryBaseline = useMutation({
-    mutationFn: () => projectsApi.refreshRepositoryBaseline(project!.id, routeWorkspaceId, lookupCompanyId),
+    mutationFn: (request: RefreshRepositoryDocumentationBaselineRequest = {}) =>
+      projectsApi.refreshRepositoryBaseline(project!.id, routeWorkspaceId, lookupCompanyId, request),
     onSuccess: (result) => {
       invalidateProject();
       setErrorMessage(null);
       const status = typeof result.baseline.status === "string" ? result.baseline.status : "updated";
-      setBaselineActionMessage(`Repository baseline ${status}.`);
+      const trackingIssue = result.trackingIssue ?? null;
+      setBaselineActionMessage(
+        trackingIssue
+          ? `Repository baseline ${status}. Operator issue ${trackingIssue.identifier ?? trackingIssue.id} is linked.`
+          : `Repository baseline ${status}.`,
+      );
+      if (trackingIssue) {
+        const companyId = project!.companyId;
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, project!.id) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(trackingIssue.id) });
+      }
     },
     onError: (error) => {
       setBaselineActionMessage(null);
@@ -607,7 +623,7 @@ export function ProjectWorkspaceDetail() {
                 form={form.repositoryBaseline}
                 isRefreshing={refreshRepositoryBaseline.isPending}
                 actionMessage={baselineActionMessage}
-                onRefresh={() => refreshRepositoryBaseline.mutate()}
+                onRefresh={(request) => refreshRepositoryBaseline.mutate(request ?? {})}
                 onChange={(repositoryBaselineForm) =>
                   setForm((current) =>
                     current ? { ...current, repositoryBaseline: repositoryBaselineForm } : current

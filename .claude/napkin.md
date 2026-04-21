@@ -35,6 +35,8 @@
 ## Domain Behavior Guardrails
 1. **[2026-04-20] Repository baseline is documentation, not backlog**
    Do instead: when designing repo/project intake, keep repository analysis read-only and Paperclip-owned; do not create split issues, child issues, repo writes, imports, PRs, or agent wakeups unless explicitly added as a separate operator action.
+2. **[2026-04-21] Issue identifiers follow configured prefixes, including digits**
+   Do instead: centralize identifier parsing and accept alphanumeric prefixes like `P4Y-1`; do not reintroduce route-local `[A-Z]+-\d+` regexes.
 
 ## Shell & Command Reliability
 1. **[2026-04-14] Prefer parallel read-only inspection for repo discovery**

@@ -17,6 +17,10 @@ const mockProjectService = vi.hoisted(() => ({
   remove: vi.fn(),
   resolveByReference: vi.fn(),
 }));
+const mockIssueService = vi.hoisted(() => ({
+  create: vi.fn(),
+  getById: vi.fn(),
+}));
 const mockSecretService = vi.hoisted(() => ({
   normalizeEnvBindingsForPersistence: vi.fn(),
 }));
@@ -32,6 +36,7 @@ vi.mock("../telemetry.js", () => ({
 
 vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
+  issueService: () => mockIssueService,
   projectService: () => mockProjectService,
   secretService: () => mockSecretService,
   workspaceOperationService: () => mockWorkspaceOperationService,
@@ -49,6 +54,7 @@ function registerModuleMocks() {
 
   vi.doMock("../services/index.js", () => ({
     logActivity: mockLogActivity,
+    issueService: () => mockIssueService,
     projectService: () => mockProjectService,
     secretService: () => mockSecretService,
     workspaceOperationService: () => mockWorkspaceOperationService,
@@ -121,6 +127,51 @@ function buildProject(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function buildIssue(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "issue-1",
+    companyId: "company-1",
+    projectId: "project-1",
+    projectWorkspaceId: "workspace-1",
+    goalId: null,
+    parentId: null,
+    title: "Repository documentation baseline",
+    description: null,
+    status: "backlog",
+    priority: "medium",
+    assigneeAgentId: null,
+    assigneeUserId: null,
+    checkoutRunId: null,
+    executionRunId: null,
+    executionAgentNameKey: null,
+    executionLockedAt: null,
+    createdByAgentId: null,
+    createdByUserId: "board-user",
+    issueNumber: 1,
+    identifier: "PAP-1",
+    originKind: "manual",
+    originId: null,
+    originRunId: null,
+    requestDepth: 0,
+    billingCode: null,
+    assigneeAdapterOverrides: null,
+    executionPolicy: null,
+    executionState: null,
+    executionWorkspaceId: null,
+    executionWorkspacePreference: null,
+    executionWorkspaceSettings: null,
+    startedAt: null,
+    completedAt: null,
+    cancelledAt: null,
+    hiddenAt: null,
+    labelIds: [],
+    labels: [],
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  };
+}
+
 describe("project env routes", () => {
   beforeEach(() => {
     vi.resetModules();
@@ -133,6 +184,8 @@ describe("project env routes", () => {
     mockProjectService.resolveByReference.mockResolvedValue({ ambiguous: false, project: null });
     mockProjectService.createWorkspace.mockResolvedValue(null);
     mockProjectService.listWorkspaces.mockResolvedValue([]);
+    mockIssueService.create.mockResolvedValue(buildIssue());
+    mockIssueService.getById.mockResolvedValue(null);
     mockSecretService.normalizeEnvBindingsForPersistence.mockImplementation(async (_companyId, env) => env);
     mockStartRuntimeServicesForWorkspaceControl.mockResolvedValue([]);
     mockStopRuntimeServicesForProjectWorkspace.mockResolvedValue(undefined);
@@ -523,5 +576,136 @@ describe("project env routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body).toEqual({ error: "Board access required" });
     expect(mockProjectService.updateWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("creates an operator-controlled repository baseline tracking issue when requested", async () => {
+    const repoRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-baseline-route-"));
+    await mkdir(path.join(repoRoot, "doc"), { recursive: true });
+    await writeFile(path.join(repoRoot, "README.md"), "# Route baseline\n", "utf8");
+    await writeFile(path.join(repoRoot, "doc", "PRODUCT.md"), "# Product context\n", "utf8");
+    const workspace = {
+      id: "workspace-1",
+      name: "Workspace 1",
+      isPrimary: true,
+      cwd: repoRoot,
+      repoUrl: "https://github.com/example/repo",
+      repoRef: "main",
+      defaultRef: "main",
+      metadata: {},
+    };
+    const createdIssue = buildIssue({
+      id: "tracking-issue-1",
+      identifier: "PAP-1",
+      title: "Repository documentation baseline for Project",
+    });
+    mockIssueService.create.mockResolvedValue(createdIssue);
+    mockProjectService.getById.mockResolvedValue(buildProject({ workspaces: [workspace] }));
+    mockProjectService.updateWorkspace.mockImplementation(async (_projectId, _workspaceId, data) => ({
+      ...workspace,
+      ...data,
+    }));
+
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/projects/project-1/workspaces/workspace-1/repository-baseline")
+      .send({ createTrackingIssue: true });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        parentId: null,
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        status: "backlog",
+        title: "Repository documentation baseline for Project",
+        description: expect.stringContaining("This is not backlog decomposition."),
+        createdByAgentId: null,
+        createdByUserId: "board-user",
+      }),
+    );
+    expect(mockIssueService.create.mock.calls[0]?.[1]?.description).toContain("Do not create child issues.");
+    expect(mockIssueService.create.mock.calls[0]?.[1]?.description).toContain("Do not wake agents.");
+    expect(mockProjectService.updateWorkspace).toHaveBeenCalledWith(
+      "project-1",
+      "workspace-1",
+      {
+        metadata: expect.objectContaining({
+          repositoryDocumentationBaseline: expect.objectContaining({
+            trackingIssueId: "tracking-issue-1",
+            trackingIssueIdentifier: "PAP-1",
+          }),
+        }),
+      },
+    );
+    expect(res.body.trackingIssue).toMatchObject({
+      id: "tracking-issue-1",
+      identifier: "PAP-1",
+    });
+  });
+
+  it("reuses an existing repository baseline tracking issue instead of creating duplicates", async () => {
+    const repoRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-baseline-route-"));
+    await writeFile(path.join(repoRoot, "README.md"), "# Route baseline\n", "utf8");
+    const existingIssue = buildIssue({
+      id: "tracking-issue-1",
+      identifier: "PAP-1",
+      title: "Repository documentation baseline for Project",
+    });
+    const workspace = {
+      id: "workspace-1",
+      name: "Workspace 1",
+      isPrimary: true,
+      cwd: repoRoot,
+      repoUrl: "https://github.com/example/repo",
+      repoRef: "main",
+      defaultRef: "main",
+      metadata: {
+        repositoryDocumentationBaseline: {
+          status: "ready",
+          source: "scan",
+          updatedAt: "2026-04-21T00:00:00.000Z",
+          summary: "Existing baseline",
+          stack: [],
+          documentationFiles: ["README.md"],
+          guardrails: [],
+          trackingIssueId: "tracking-issue-1",
+          trackingIssueIdentifier: "PAP-1",
+        },
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(existingIssue);
+    mockProjectService.getById.mockResolvedValue(buildProject({ workspaces: [workspace] }));
+    mockProjectService.updateWorkspace.mockImplementation(async (_projectId, _workspaceId, data) => ({
+      ...workspace,
+      ...data,
+    }));
+
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/projects/project-1/workspaces/workspace-1/repository-baseline")
+      .send({ createTrackingIssue: true });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.getById).toHaveBeenCalledWith("tracking-issue-1");
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+    expect(res.body.trackingIssue).toMatchObject({
+      id: "tracking-issue-1",
+      identifier: "PAP-1",
+    });
+    expect(mockProjectService.updateWorkspace).toHaveBeenCalledWith(
+      "project-1",
+      "workspace-1",
+      {
+        metadata: expect.objectContaining({
+          repositoryDocumentationBaseline: expect.objectContaining({
+            trackingIssueId: "tracking-issue-1",
+            trackingIssueIdentifier: "PAP-1",
+          }),
+        }),
+      },
+    );
   });
 });

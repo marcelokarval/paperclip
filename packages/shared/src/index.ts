@@ -1,4 +1,5 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
+export { isIssueIdentifierRef } from "./issue-identifiers.js";
 export {
   COMPANY_STATUSES,
   DEPLOYMENT_MODES,
@@ -224,6 +225,7 @@ export type {
   ProjectCodebaseOrigin,
   ProjectGoalRef,
   ProjectWorkspace,
+  RefreshRepositoryDocumentationBaselineRequest,
   RefreshRepositoryDocumentationBaselineResponse,
   RepositoryDocumentationBaseline,
   RepositoryDocumentationBaselineConstraints,
@@ -409,8 +411,10 @@ export {
   repositoryDocumentationBaselineSchema,
   repositoryDocumentationBaselineSourceSchema,
   repositoryDocumentationBaselineStatusSchema,
+  refreshRepositoryDocumentationBaselineRequestSchema,
   writeRepositoryDocumentationBaselineToMetadata,
   type RepositoryDocumentationBaselineInput,
+  type RefreshRepositoryDocumentationBaselineRequestInput,
 } from "./validators/repository-baseline.js";
 
 export { workspaceRuntimeControlTargetSchema } from "./validators/execution-workspace.js";

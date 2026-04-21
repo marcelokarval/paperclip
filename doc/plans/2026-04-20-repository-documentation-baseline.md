@@ -622,9 +622,9 @@ Control:
 
 ### Phase 4: Optional issue trail
 
-- Add controlled single tracking issue creation.
-- Link issue to project/workspace/baseline artifact.
-- Keep agent wakeup disabled by default.
+- Done: add controlled single tracking issue creation through an explicit operator action.
+- Done: link issue to project/workspace/baseline artifact and persist the tracking issue reference in workspace metadata.
+- Done: keep agent wakeup disabled by default; the tracking issue is unassigned and does not create children.
 
 ### Phase 5: Browser and regression proof
 

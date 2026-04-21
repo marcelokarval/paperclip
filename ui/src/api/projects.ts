@@ -1,6 +1,7 @@
 import type {
   Project,
   ProjectWorkspace,
+  RefreshRepositoryDocumentationBaselineRequest,
   RefreshRepositoryDocumentationBaselineResponse,
   WorkspaceOperation,
   WorkspaceRuntimeControlTarget,
@@ -38,10 +39,15 @@ export const projectsApi = {
     api.get<RefreshRepositoryDocumentationBaselineResponse>(
       projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}/repository-baseline`),
     ),
-  refreshRepositoryBaseline: (projectId: string, workspaceId: string, companyId?: string) =>
+  refreshRepositoryBaseline: (
+    projectId: string,
+    workspaceId: string,
+    companyId?: string,
+    request: RefreshRepositoryDocumentationBaselineRequest = {},
+  ) =>
     api.post<RefreshRepositoryDocumentationBaselineResponse>(
       projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}/repository-baseline`),
-      {},
+      request,
     ),
   controlWorkspaceRuntimeServices: (
     projectId: string,

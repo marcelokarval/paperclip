@@ -78,6 +78,21 @@ describe("activity routes", () => {
     expect(res.body).toEqual([{ runId: "run-1", adapterType: "codex_local" }]);
   });
 
+  it("resolves issue identifiers with alphanumeric setup prefixes before loading runs", async () => {
+    mockIssueService.getByIdentifier.mockResolvedValue({
+      id: "issue-uuid-1",
+      companyId: "company-1",
+    });
+    mockActivityService.runsForIssue.mockResolvedValue([]);
+
+    const app = await createApp();
+    const res = await request(app).get("/api/issues/P4Y-1/runs");
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("P4Y-1");
+    expect(mockIssueService.getById).not.toHaveBeenCalled();
+  });
+
   it("requires company access before creating activity events", async () => {
     const app = await createApp();
     const res = await request(app)

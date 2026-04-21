@@ -1,18 +1,19 @@
 import type { ReactNode } from "react";
 import { type RepositoryDocumentationBaseline } from "@paperclipai/shared";
-import { FileSearch, Loader2 } from "lucide-react";
+import { FileSearch, Loader2, TicketPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type {
   RepositoryDocumentationBaselineForm,
   RepositoryDocumentationBaselineStatus,
 } from "../lib/repository-documentation-baseline";
+import { issueUrl } from "../lib/utils";
 
 type RepositoryBaselinePanelProps = {
   baseline: RepositoryDocumentationBaseline | null;
   form: RepositoryDocumentationBaselineForm;
   isRefreshing: boolean;
   actionMessage: string | null;
-  onRefresh: () => void;
+  onRefresh: (options?: { createTrackingIssue?: boolean }) => void;
   onChange: (form: RepositoryDocumentationBaselineForm) => void;
 };
 
@@ -54,6 +55,12 @@ export function RepositoryBaselinePanel({
   const updatedAtLabel = formatUpdatedAt(baseline?.updatedAt);
   const hasRepositoryIdentityOnly = Boolean(baseline?.repository?.repoUrl) && !baseline?.repository?.cwd;
   const gaps = baseline?.gaps?.filter((gap) => gap.trim().length > 0) ?? [];
+  const trackingIssueRef = baseline?.trackingIssueId
+    ? {
+        id: baseline.trackingIssueId,
+        identifier: baseline.trackingIssueIdentifier ?? baseline.trackingIssueId,
+      }
+    : null;
 
   const updateForm = (patch: Partial<RepositoryDocumentationBaselineForm>) => {
     onChange({ ...form, ...patch });
@@ -78,20 +85,44 @@ export function RepositoryBaselinePanel({
             </p>
           ) : null}
         </div>
-        <Button
-          type="button"
-          variant="outline"
-          className="w-full sm:w-auto"
-          disabled={isRefreshing}
-          onClick={onRefresh}
-        >
-          {isRefreshing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileSearch className="mr-2 h-4 w-4" />}
-          Refresh baseline
-        </Button>
+        <div className="flex w-full flex-col gap-2 sm:w-auto">
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full sm:w-auto"
+            disabled={isRefreshing}
+            onClick={() => onRefresh()}
+          >
+            {isRefreshing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileSearch className="mr-2 h-4 w-4" />}
+            Refresh baseline
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            className="w-full sm:w-auto"
+            disabled={isRefreshing}
+            onClick={() => onRefresh({ createTrackingIssue: true })}
+          >
+            {isRefreshing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <TicketPlus className="mr-2 h-4 w-4" />}
+            Create operator issue
+          </Button>
+        </div>
       </div>
       {actionMessage ? (
         <p className="mt-3 text-sm text-muted-foreground">{actionMessage}</p>
       ) : null}
+      <div className="mt-3 rounded-xl border border-border bg-background/70 px-3 py-2 text-sm text-muted-foreground">
+        <div className="font-medium text-foreground">Operator workflow</div>
+        <p className="mt-1">
+          The operator issue is a single tracking artifact for this baseline. It does not create child issues,
+          assign agents, wake agents, open PRs, or write repository files.
+        </p>
+        {trackingIssueRef ? (
+          <a className="mt-2 inline-flex text-sm font-medium text-primary hover:underline" href={issueUrl(trackingIssueRef)}>
+            Open {trackingIssueRef.identifier}
+          </a>
+        ) : null}
+      </div>
       {hasRepositoryIdentityOnly ? (
         <div className="mt-3 rounded-xl border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-200">
           This workspace has a repo URL but no local path. Paperclip recorded repository identity only; add a local path

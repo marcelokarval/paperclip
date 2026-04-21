@@ -1,4 +1,5 @@
 import type { ProjectWorkspace } from "./project.js";
+import type { Issue } from "./issue.js";
 
 export const REPOSITORY_DOCUMENTATION_BASELINE_METADATA_KEY = "repositoryDocumentationBaseline";
 
@@ -52,9 +53,16 @@ export interface RepositoryDocumentationBaseline {
   docs?: RepositoryDocumentationBaselineDoc[];
   gaps?: string[];
   constraints?: RepositoryDocumentationBaselineConstraints;
+  trackingIssueId?: string | null;
+  trackingIssueIdentifier?: string | null;
+}
+
+export interface RefreshRepositoryDocumentationBaselineRequest {
+  createTrackingIssue?: boolean;
 }
 
 export interface RefreshRepositoryDocumentationBaselineResponse {
   baseline: RepositoryDocumentationBaseline;
   workspace: ProjectWorkspace;
+  trackingIssue?: Issue | null;
 }

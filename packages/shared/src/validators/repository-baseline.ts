@@ -49,6 +49,12 @@ export const repositoryDocumentationBaselineSchema = z.object({
   docs: z.array(repositoryDocumentationBaselineDocSchema).optional(),
   gaps: z.array(z.string()).optional(),
   constraints: repositoryDocumentationBaselineConstraintsSchema.optional(),
+  trackingIssueId: z.string().nullable().optional(),
+  trackingIssueIdentifier: z.string().nullable().optional(),
+}).strict();
+
+export const refreshRepositoryDocumentationBaselineRequestSchema = z.object({
+  createTrackingIssue: z.boolean().optional().default(false),
 }).strict();
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -92,6 +98,8 @@ export function readRepositoryDocumentationBaselineFromMetadata(
     documentationFiles: asStringArray(record.documentationFiles),
     guardrails: asStringArray(record.guardrails),
     gaps: asStringArray(record.gaps),
+    trackingIssueId: asString(record.trackingIssueId),
+    trackingIssueIdentifier: asString(record.trackingIssueIdentifier),
   };
 }
 
@@ -119,3 +127,6 @@ export function emptyRepositoryDocumentationBaseline(): RepositoryDocumentationB
 }
 
 export type RepositoryDocumentationBaselineInput = z.infer<typeof repositoryDocumentationBaselineSchema>;
+export type RefreshRepositoryDocumentationBaselineRequestInput = z.infer<
+  typeof refreshRepositoryDocumentationBaselineRequestSchema
+>;

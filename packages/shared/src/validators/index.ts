@@ -34,8 +34,10 @@ export {
   repositoryDocumentationBaselineSchema,
   repositoryDocumentationBaselineSourceSchema,
   repositoryDocumentationBaselineStatusSchema,
+  refreshRepositoryDocumentationBaselineRequestSchema,
   writeRepositoryDocumentationBaselineToMetadata,
   type RepositoryDocumentationBaselineInput,
+  type RefreshRepositoryDocumentationBaselineRequestInput,
 } from "./repository-baseline.js";
 export {
   feedbackDataSharingPreferenceSchema,

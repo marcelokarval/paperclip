@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
+import { isIssueIdentifierRef } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { activityService } from "../services/activity.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
@@ -24,7 +25,7 @@ export function activityRoutes(db: Db) {
   const issueSvc = issueService(db);
 
   async function resolveIssueByRef(rawId: string) {
-    if (/^[A-Z]+-\d+$/i.test(rawId)) {
+    if (isIssueIdentifierRef(rawId)) {
       return issueSvc.getByIdentifier(rawId);
     }
     return issueSvc.getById(rawId);

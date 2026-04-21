@@ -106,6 +106,20 @@ function resolveEmbeddedPostgresCredentials(dataDir: string): EmbeddedPostgresCr
   return generated;
 }
 
+function quotePostgresStringLiteral(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+async function rotateEmbeddedPostgresPasswordFromLegacy(input: {
+  port: number;
+  password: string;
+}): Promise<void> {
+  const legacyDb = createDb(`postgres://paperclip:paperclip@127.0.0.1:${input.port}/postgres`);
+  await legacyDb.execute(
+    sql.raw(`ALTER ROLE "paperclip" WITH PASSWORD ${quotePostgresStringLiteral(input.password)}`),
+  );
+}
+
 
 export interface StartedServer {
   server: ReturnType<typeof createServer>;
@@ -453,8 +467,7 @@ export async function startServer(): Promise<StartedServer> {
     if (clusterAlreadyInitialized && embeddedCredentials.source === "generated") {
       const legacyConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
       try {
-        const legacyDb = createDb(legacyConnectionString);
-        await legacyDb.execute(sql`ALTER ROLE "paperclip" WITH PASSWORD ${embeddedPassword}`);
+        await rotateEmbeddedPostgresPasswordFromLegacy({ port, password: embeddedPassword });
         logger.info("Rotated embedded PostgreSQL password from legacy default credentials");
       } catch (err) {
         effectiveEmbeddedPassword = "paperclip";
@@ -465,7 +478,21 @@ export async function startServer(): Promise<StartedServer> {
         );
       }
     }
-    const dbStatus = await ensurePostgresDatabase(embeddedAdminConnectionString, "paperclip");
+    let dbStatus: Awaited<ReturnType<typeof ensurePostgresDatabase>>;
+    try {
+      dbStatus = await ensurePostgresDatabase(embeddedAdminConnectionString, "paperclip");
+    } catch (err) {
+      if (!clusterAlreadyInitialized || embeddedCredentials.source !== "file") {
+        throw err;
+      }
+      try {
+        await rotateEmbeddedPostgresPasswordFromLegacy({ port, password: embeddedPassword });
+        logger.info("Rotated embedded PostgreSQL password from legacy default credentials after saved credential mismatch");
+        dbStatus = await ensurePostgresDatabase(embeddedAdminConnectionString, "paperclip");
+      } catch {
+        throw err;
+      }
+    }
     if (dbStatus === "created") {
       logger.info("Created embedded PostgreSQL database: paperclip");
     }

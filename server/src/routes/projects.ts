@@ -8,6 +8,9 @@ import {
   isUuidLike,
   matchWorkspaceRuntimeServiceToCommand,
   readRepositoryDocumentationBaselineFromMetadata,
+  refreshRepositoryDocumentationBaselineRequestSchema,
+  type Issue,
+  type RepositoryDocumentationBaseline,
   type RefreshRepositoryDocumentationBaselineResponse,
   updateProjectSchema,
   updateProjectWorkspaceSchema,
@@ -16,7 +19,7 @@ import {
 } from "@paperclipai/shared";
 import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
-import { projectService, logActivity, secretService, workspaceOperationService } from "../services/index.js";
+import { projectService, issueService, logActivity, secretService, workspaceOperationService } from "../services/index.js";
 import { conflict } from "../errors.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import {
@@ -32,9 +35,95 @@ import { getTelemetryClient } from "../telemetry.js";
 export function projectRoutes(db: Db) {
   const router = Router();
   const svc = projectService(db);
+  const issuesSvc = issueService(db);
   const secretsSvc = secretService(db);
   const workspaceOperations = workspaceOperationService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+  type ProjectRouteProject = NonNullable<Awaited<ReturnType<typeof svc.getById>>>;
+  type ProjectRouteWorkspace = ProjectRouteProject["workspaces"][number];
+  type ProjectRouteIssue = Awaited<ReturnType<typeof issuesSvc.create>>;
+
+  function buildRepositoryBaselineTrackingIssueDescription(input: {
+    projectName: string;
+    workspaceName: string;
+    baseline: RepositoryDocumentationBaseline;
+  }) {
+    const docs = input.baseline.documentationFiles.length > 0
+      ? input.baseline.documentationFiles.map((file) => `- ${file}`).join("\n")
+      : "- No documentation files were detected yet.";
+    const stack = input.baseline.stack.length > 0
+      ? input.baseline.stack.map((entry) => `- ${entry}`).join("\n")
+      : "- No stack signals were detected yet.";
+    const gaps = input.baseline.gaps && input.baseline.gaps.length > 0
+      ? input.baseline.gaps.map((gap) => `- ${gap}`).join("\n")
+      : "- No documentation gaps were recorded.";
+
+    return [
+      "This issue tracks the repository documentation baseline for this project.",
+      "",
+      `Project: ${input.projectName}`,
+      `Workspace: ${input.workspaceName}`,
+      `Baseline status: ${input.baseline.status}`,
+      "",
+      "Scope constraints:",
+      "- This is not backlog decomposition.",
+      "- Do not create child issues.",
+      "- Do not modify repository files.",
+      "- Do not assign implementation work.",
+      "- Do not wake agents.",
+      "- Produce or refresh only Paperclip-owned documentation artifacts.",
+      "",
+      "Detected documentation files:",
+      docs,
+      "",
+      "Detected stack signals:",
+      stack,
+      "",
+      "Documentation gaps:",
+      gaps,
+      "",
+      "Operator note: agents may use this issue as context only after an explicit operator assignment or wakeup.",
+    ].join("\n");
+  }
+
+  async function resolveRepositoryBaselineTrackingIssue(input: {
+    actorUserId: string | null;
+    baseline: RepositoryDocumentationBaseline;
+    project: ProjectRouteProject;
+    workspace: ProjectRouteWorkspace;
+  }): Promise<ProjectRouteIssue | null> {
+    const existingIssueId = input.baseline.trackingIssueId?.trim() || null;
+    if (existingIssueId) {
+      const existing = await issuesSvc.getById(existingIssueId);
+      if (
+        existing &&
+        existing.companyId === input.project.companyId &&
+        existing.projectId === input.project.id &&
+        existing.projectWorkspaceId === input.workspace.id
+      ) {
+        return existing;
+      }
+    }
+
+    return issuesSvc.create(input.project.companyId, {
+      projectId: input.project.id,
+      projectWorkspaceId: input.workspace.id,
+      parentId: null,
+      title: `Repository documentation baseline for ${input.project.name}`,
+      description: buildRepositoryBaselineTrackingIssueDescription({
+        projectName: input.project.name,
+        workspaceName: input.workspace.name,
+        baseline: input.baseline,
+      }),
+      status: "backlog",
+      priority: "medium",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      requestDepth: 0,
+      createdByAgentId: null,
+      createdByUserId: input.actorUserId,
+    });
+  }
 
   async function resolveCompanyIdForProjectReference(req: Request) {
     const companyIdQuery = req.query.companyId;
@@ -339,13 +428,39 @@ export function projectRoutes(db: Db) {
     if (!resolved) return;
     assertBoard(req);
     const { project, workspace: currentWorkspace } = resolved;
+    const request = refreshRepositoryDocumentationBaselineRequestSchema.parse(req.body ?? {});
+    const existingBaseline = readRepositoryDocumentationBaselineFromMetadata(currentWorkspace.metadata);
 
-    const baseline = await buildRepositoryDocumentationBaseline({
+    const scannedBaseline = await buildRepositoryDocumentationBaseline({
       cwd: currentWorkspace.cwd,
       repoUrl: currentWorkspace.repoUrl,
       repoRef: currentWorkspace.repoRef,
       defaultRef: currentWorkspace.defaultRef,
     });
+    let baseline: RepositoryDocumentationBaseline = {
+      ...scannedBaseline,
+      trackingIssueId: existingBaseline?.trackingIssueId ?? null,
+      trackingIssueIdentifier: existingBaseline?.trackingIssueIdentifier ?? null,
+    };
+    let trackingIssue: ProjectRouteIssue | null = null;
+    const actor = getActorInfo(req);
+
+    if (request.createTrackingIssue) {
+      trackingIssue = await resolveRepositoryBaselineTrackingIssue({
+        actorUserId: actor.actorType === "user" ? actor.actorId : null,
+        baseline,
+        project,
+        workspace: currentWorkspace,
+      });
+      if (trackingIssue) {
+        baseline = {
+          ...baseline,
+          trackingIssueId: trackingIssue.id,
+          trackingIssueIdentifier: trackingIssue.identifier ?? null,
+        };
+      }
+    }
+
     const workspace = await svc.updateWorkspace(id, workspaceId, {
       metadata: writeRepositoryDocumentationBaselineToMetadata({
         metadata: currentWorkspace.metadata,
@@ -357,7 +472,6 @@ export function projectRoutes(db: Db) {
       return;
     }
 
-    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: project.companyId,
       actorType: actor.actorType,
@@ -373,8 +487,29 @@ export function projectRoutes(db: Db) {
         stack: baseline.stack,
       },
     });
+    if (trackingIssue) {
+      const linkedIssue = trackingIssue;
+      await logActivity(db, {
+        companyId: project.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        action: "project.workspace_repository_baseline_tracking_issue_linked",
+        entityType: "project",
+        entityId: id,
+        details: {
+          workspaceId: workspace.id,
+          issueId: linkedIssue.id,
+          issueIdentifier: linkedIssue.identifier,
+        },
+      });
+    }
 
-    const response: RefreshRepositoryDocumentationBaselineResponse = { baseline, workspace };
+    const response: RefreshRepositoryDocumentationBaselineResponse = {
+      baseline,
+      workspace,
+      trackingIssue: trackingIssue as Issue | null,
+    };
     res.json(response);
   });
 

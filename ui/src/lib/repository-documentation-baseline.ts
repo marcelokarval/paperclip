@@ -65,6 +65,7 @@ export function writeRepositoryDocumentationBaselineMetadata(input: {
   updatedAt: string;
 }): Record<string, unknown> {
   const current = asRecord(input.metadata) ?? {};
+  const existingBaseline = readRepositoryDocumentationBaseline(input.metadata);
   const summary = asString(input.form.summary);
   return writeRepositoryDocumentationBaselineToMetadata({
     metadata: current,
@@ -76,6 +77,8 @@ export function writeRepositoryDocumentationBaselineMetadata(input: {
       stack: splitBaselineLines(input.form.stack),
       documentationFiles: splitBaselineLines(input.form.documentationFiles),
       guardrails: splitBaselineLines(input.form.guardrails),
+      trackingIssueId: existingBaseline?.trackingIssueId ?? null,
+      trackingIssueIdentifier: existingBaseline?.trackingIssueIdentifier ?? null,
     },
   });
 }
