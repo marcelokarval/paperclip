@@ -10,6 +10,7 @@ import { queryKeys } from "../lib/queryKeys";
 import {
   Dialog,
   DialogContent,
+  DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,7 +26,12 @@ import {
   Plus,
   X,
   HelpCircle,
+  FolderOpen,
+  Github,
+  Link2,
+  MinusCircle,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import {
   Tooltip,
   TooltipContent,
@@ -45,6 +51,40 @@ const projectStatuses = [
   { value: "cancelled", label: "Cancelled" },
 ];
 
+type CodebaseSourceMode = "none" | "local" | "repo" | "both";
+
+const codebaseSourceOptions: Array<{
+  value: CodebaseSourceMode;
+  label: string;
+  description: string;
+  icon: LucideIcon;
+}> = [
+  {
+    value: "local",
+    label: "Local folder",
+    description: "Use an existing checkout on this machine for future local agent runs.",
+    icon: FolderOpen,
+  },
+  {
+    value: "repo",
+    label: "GitHub repo",
+    description: "Record a remote repository now; no clone or command runs during project creation.",
+    icon: Github,
+  },
+  {
+    value: "both",
+    label: "Local + GitHub",
+    description: "Bind a local checkout and its remote source of truth.",
+    icon: Link2,
+  },
+  {
+    value: "none",
+    label: "No codebase yet",
+    description: "Create the project without a repository or workspace binding.",
+    icon: MinusCircle,
+  },
+];
+
 export function NewProjectDialog() {
   const { newProjectOpen, closeNewProject } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
@@ -55,6 +95,7 @@ export function NewProjectDialog() {
   const [goalIds, setGoalIds] = useState<string[]>([]);
   const [targetDate, setTargetDate] = useState("");
   const [expanded, setExpanded] = useState(false);
+  const [codebaseSourceMode, setCodebaseSourceMode] = useState<CodebaseSourceMode>("none");
   const [workspaceLocalPath, setWorkspaceLocalPath] = useState("");
   const [workspaceRepoUrl, setWorkspaceRepoUrl] = useState("");
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
@@ -111,6 +152,7 @@ export function NewProjectDialog() {
     setGoalIds([]);
     setTargetDate("");
     setExpanded(false);
+    setCodebaseSourceMode("none");
     setWorkspaceLocalPath("");
     setWorkspaceRepoUrl("");
     setWorkspaceError(null);
@@ -148,9 +190,19 @@ export function NewProjectDialog() {
 
   async function handleSubmit() {
     if (!selectedCompanyId || !name.trim()) return;
-    const localPath = workspaceLocalPath.trim();
-    const repoUrl = workspaceRepoUrl.trim();
+    const usesLocalPath = codebaseSourceMode === "local" || codebaseSourceMode === "both";
+    const usesRepoUrl = codebaseSourceMode === "repo" || codebaseSourceMode === "both";
+    const localPath = usesLocalPath ? workspaceLocalPath.trim() : "";
+    const repoUrl = usesRepoUrl ? workspaceRepoUrl.trim() : "";
 
+    if (usesLocalPath && !localPath) {
+      setWorkspaceError("Local folder is required for this codebase source.");
+      return;
+    }
+    if (usesRepoUrl && !repoUrl) {
+      setWorkspaceError("Repo URL is required for this codebase source.");
+      return;
+    }
     if (localPath && !isAbsolutePath(localPath)) {
       setWorkspaceError("Local folder must be a full absolute path.");
       return;
@@ -163,6 +215,18 @@ export function NewProjectDialog() {
     setWorkspaceError(null);
 
     try {
+      const workspacePayload: Record<string, unknown> | null =
+        codebaseSourceMode === "none"
+          ? null
+          : {
+              name: localPath
+                ? deriveWorkspaceNameFromPath(localPath)
+                : deriveWorkspaceNameFromRepo(repoUrl),
+              sourceType: repoUrl ? "git_repo" : "local_path",
+              isPrimary: true,
+              ...(localPath ? { cwd: localPath } : {}),
+              ...(repoUrl ? { repoUrl } : {}),
+            };
       const created = await createProject.mutateAsync({
         name: name.trim(),
         description: description.trim() || undefined,
@@ -170,18 +234,8 @@ export function NewProjectDialog() {
         color: PROJECT_COLORS[Math.floor(Math.random() * PROJECT_COLORS.length)],
         ...(goalIds.length > 0 ? { goalIds } : {}),
         ...(targetDate ? { targetDate } : {}),
+        ...(workspacePayload ? { workspace: workspacePayload } : {}),
       });
-
-      if (localPath || repoUrl) {
-        const workspacePayload: Record<string, unknown> = {
-          name: localPath
-            ? deriveWorkspaceNameFromPath(localPath)
-            : deriveWorkspaceNameFromRepo(repoUrl),
-          ...(localPath ? { cwd: localPath } : {}),
-          ...(repoUrl ? { repoUrl } : {}),
-        };
-        await projectsApi.createWorkspace(created.id, workspacePayload);
-      }
 
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(selectedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(created.id) });
@@ -201,6 +255,18 @@ export function NewProjectDialog() {
 
   const selectedGoals = (goals ?? []).filter((g) => goalIds.includes(g.id));
   const availableGoals = (goals ?? []).filter((g) => !goalIds.includes(g.id));
+  const usesLocalPath = codebaseSourceMode === "local" || codebaseSourceMode === "both";
+  const usesRepoUrl = codebaseSourceMode === "repo" || codebaseSourceMode === "both";
+  const selectedCodebaseOption = codebaseSourceOptions.find((option) => option.value === codebaseSourceMode)!;
+  const SelectedCodebaseIcon = selectedCodebaseOption.icon;
+  const codebaseSummary =
+    codebaseSourceMode === "none"
+      ? "This project will start without a repository or workspace. You can connect one later from the project Workspaces tab."
+      : codebaseSourceMode === "repo"
+        ? "Paperclip will record this remote repository. It will not clone it or run commands during project creation."
+        : codebaseSourceMode === "local"
+          ? "Paperclip will bind this local folder as the primary workspace. No commands run during project creation."
+          : "Paperclip will bind the local folder as the primary workspace and record the GitHub repository as its remote source.";
 
   return (
     <Dialog
@@ -214,11 +280,16 @@ export function NewProjectDialog() {
     >
       <DialogContent
         showCloseButton={false}
-        className={cn("p-0 gap-0", expanded ? "sm:max-w-2xl" : "sm:max-w-lg")}
+        className={cn(
+          "flex max-h-[calc(100vh-2rem)] flex-col overflow-hidden p-0 gap-0",
+          expanded ? "sm:max-w-2xl" : "sm:max-w-lg",
+        )}
         onKeyDown={handleKeyDown}
       >
+        <DialogTitle className="sr-only">New project</DialogTitle>
+
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
+        <div className="flex shrink-0 items-center justify-between px-4 py-2.5 border-b border-border">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             {selectedCompany && (
               <span className="bg-muted px-1.5 py-0.5 rounded text-xs font-medium">
@@ -248,93 +319,140 @@ export function NewProjectDialog() {
           </div>
         </div>
 
-        {/* Name */}
-        <div className="px-4 pt-4 pb-2 shrink-0">
-          <input
-            className="w-full text-lg font-semibold bg-transparent outline-none placeholder:text-muted-foreground/50"
-            placeholder="Project name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Tab" && !e.shiftKey) {
-                e.preventDefault();
-                descriptionEditorRef.current?.focus();
-              }
-            }}
-            autoFocus
-          />
-        </div>
-
-        {/* Description */}
-        <div className="px-4 pb-2">
-          <MarkdownEditor
-            ref={descriptionEditorRef}
-            value={description}
-            onChange={setDescription}
-            placeholder="Add description..."
-            bordered={false}
-            mentions={mentionOptions}
-            contentClassName={cn("text-sm text-muted-foreground", expanded ? "min-h-[220px]" : "min-h-[120px]")}
-            imageUploadHandler={async (file) => {
-              const asset = await uploadDescriptionImage.mutateAsync(file);
-              return asset.contentPath;
-            }}
-          />
-        </div>
-
-        <div className="px-4 pt-3 pb-3 space-y-3 border-t border-border">
-          <div>
-            <div className="mb-1 flex items-center gap-1.5">
-              <label className="block text-xs text-muted-foreground">Repo URL</label>
-              <span className="text-xs text-muted-foreground/50">optional</span>
-              <Tooltip delayDuration={300}>
-                <TooltipTrigger asChild>
-                  <HelpCircle className="h-3 w-3 text-muted-foreground/50 cursor-help" />
-                </TooltipTrigger>
-                <TooltipContent side="top" className="max-w-[240px] text-xs">
-                  Link a GitHub repository so agents can clone, read, and push code for this project.
-                </TooltipContent>
-              </Tooltip>
-            </div>
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {/* Name */}
+          <div className="px-4 pt-4 pb-2 shrink-0">
             <input
-              className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs outline-none"
-              value={workspaceRepoUrl}
-              onChange={(e) => { setWorkspaceRepoUrl(e.target.value); setWorkspaceError(null); }}
-              placeholder="https://github.com/org/repo"
+              className="w-full text-lg font-semibold bg-transparent outline-none placeholder:text-muted-foreground/50"
+              placeholder="Project name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Tab" && !e.shiftKey) {
+                  e.preventDefault();
+                  descriptionEditorRef.current?.focus();
+                }
+              }}
+              autoFocus
             />
           </div>
 
-          <div>
-            <div className="mb-1 flex items-center gap-1.5">
-              <label className="block text-xs text-muted-foreground">Local folder</label>
-              <span className="text-xs text-muted-foreground/50">optional</span>
-              <Tooltip delayDuration={300}>
-                <TooltipTrigger asChild>
-                  <HelpCircle className="h-3 w-3 text-muted-foreground/50 cursor-help" />
-                </TooltipTrigger>
-                <TooltipContent side="top" className="max-w-[240px] text-xs">
-                  Set an absolute path on this machine where local agents will read and write files for this project.
-                </TooltipContent>
-              </Tooltip>
+          {/* Description */}
+          <div className="px-4 pb-2">
+            <MarkdownEditor
+              ref={descriptionEditorRef}
+              value={description}
+              onChange={setDescription}
+              placeholder="Add description..."
+              bordered={false}
+              mentions={mentionOptions}
+              contentClassName={cn("text-sm text-muted-foreground", expanded ? "min-h-[220px]" : "min-h-[120px]")}
+              imageUploadHandler={async (file) => {
+                const asset = await uploadDescriptionImage.mutateAsync(file);
+                return asset.contentPath;
+              }}
+            />
+          </div>
+
+          <div className="px-4 pt-3 pb-3 space-y-3 border-t border-border">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-1.5">
+                <label className="block text-xs font-medium text-muted-foreground">Codebase intake</label>
+                <Tooltip delayDuration={300}>
+                  <TooltipTrigger asChild>
+                    <HelpCircle className="h-3 w-3 text-muted-foreground/50 cursor-help" />
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="max-w-[260px] text-xs">
+                    This only binds project context. It does not create tasks, clone repositories, or run setup commands.
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Connect a local folder, a GitHub repo, both, or skip codebase setup for now.
+              </p>
             </div>
-            <div className="flex items-center gap-2">
+          </div>
+
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {codebaseSourceOptions.map((option) => {
+              const Icon = option.icon;
+              const active = option.value === codebaseSourceMode;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={cn(
+                    "rounded-md border px-3 py-2 text-left transition-colors",
+                    active
+                      ? "border-foreground/50 bg-accent/60"
+                      : "border-border hover:bg-accent/40",
+                  )}
+                  onClick={() => {
+                    setCodebaseSourceMode(option.value);
+                    setWorkspaceError(null);
+                  }}
+                >
+                  <span className="flex items-center gap-2 text-xs font-medium">
+                    <Icon className="h-3.5 w-3.5 text-muted-foreground" />
+                    {option.label}
+                  </span>
+                  <span className="mt-1 block text-[11px] leading-4 text-muted-foreground">
+                    {option.description}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {usesRepoUrl && (
+            <div>
+              <div className="mb-1 flex items-center gap-1.5">
+                <label className="block text-xs text-muted-foreground">GitHub repo URL</label>
+                <span className="text-xs text-muted-foreground/50">required</span>
+              </div>
               <input
-                className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
-                value={workspaceLocalPath}
-                onChange={(e) => { setWorkspaceLocalPath(e.target.value); setWorkspaceError(null); }}
-                placeholder="/absolute/path/to/workspace"
+                className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs outline-none"
+                value={workspaceRepoUrl}
+                onChange={(e) => { setWorkspaceRepoUrl(e.target.value); setWorkspaceError(null); }}
+                placeholder="https://github.com/org/repo"
               />
-              <ChoosePathButton />
             </div>
+          )}
+
+          {usesLocalPath && (
+            <div>
+              <div className="mb-1 flex items-center gap-1.5">
+                <label className="block text-xs text-muted-foreground">Local folder</label>
+                <span className="text-xs text-muted-foreground/50">required</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
+                  value={workspaceLocalPath}
+                  onChange={(e) => { setWorkspaceLocalPath(e.target.value); setWorkspaceError(null); }}
+                  placeholder="/absolute/path/to/workspace"
+                />
+                <ChoosePathButton />
+              </div>
+            </div>
+          )}
+
+          <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+            <div className="mb-1 flex items-center gap-1.5 font-medium text-foreground/80">
+              <SelectedCodebaseIcon className="h-3.5 w-3.5 text-muted-foreground" />
+              {selectedCodebaseOption.label}
+            </div>
+            {codebaseSummary}
           </div>
 
           {workspaceError && (
             <p className="text-xs text-destructive">{workspaceError}</p>
           )}
-        </div>
+          </div>
 
-        {/* Property chips */}
-        <div className="flex items-center gap-1.5 px-4 py-2 border-t border-border flex-wrap">
+          {/* Property chips */}
+          <div className="flex items-center gap-1.5 px-4 py-2 border-t border-border flex-wrap">
           {/* Status */}
           <Popover open={statusOpen} onOpenChange={setStatusOpen}>
             <PopoverTrigger asChild>
@@ -426,10 +544,11 @@ export function NewProjectDialog() {
               placeholder="Target date"
             />
           </div>
+          </div>
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between px-4 py-2.5 border-t border-border">
+        <div className="flex shrink-0 items-center justify-between px-4 py-2.5 border-t border-border">
           {createProject.isError ? (
             <p className="text-xs text-destructive">Failed to create project.</p>
           ) : (

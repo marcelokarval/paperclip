@@ -55,7 +55,7 @@ export function Projects() {
         <EmptyState
           icon={Hexagon}
           message="No projects yet."
-          action="Add Project"
+          action="Connect your first codebase"
           onAction={openNewProject}
         />
       )}
