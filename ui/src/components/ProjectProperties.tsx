@@ -15,12 +15,13 @@ import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { AlertCircle, Archive, ArchiveRestore, Check, ExternalLink, Github, Loader2, Plus, Trash2, X } from "lucide-react";
+import { AlertCircle, Archive, ArchiveRestore, Check, ExternalLink, FileSearch, Github, Loader2, Plus, Trash2, X } from "lucide-react";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { DraftInput } from "./agent-config-primitives";
 import { InlineEditor } from "./InlineEditor";
 import { EnvVarEditor } from "./EnvVarEditor";
+import { readRepositoryDocumentationBaseline } from "../lib/repository-documentation-baseline";
 
 const PROJECT_STATUSES = [
   { value: "backlog", label: "Backlog" },
@@ -228,6 +229,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
   const [workspaceCwd, setWorkspaceCwd] = useState("");
   const [workspaceRepoUrl, setWorkspaceRepoUrl] = useState("");
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [repositoryBaselineMessage, setRepositoryBaselineMessage] = useState<string | null>(null);
 
   const commitField = (field: ProjectConfigFieldKey, data: Record<string, unknown>) => {
     if (onFieldUpdate) {
@@ -281,6 +283,10 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
   const workspaces = project.workspaces ?? [];
   const codebase = project.codebase;
   const primaryCodebaseWorkspace = project.primaryWorkspace ?? null;
+  const repositoryBaseline = readRepositoryDocumentationBaseline(primaryCodebaseWorkspace?.metadata);
+  const repositoryBaselineStack = repositoryBaseline?.stack.filter(Boolean) ?? [];
+  const repositoryBaselineDocs = repositoryBaseline?.documentationFiles.filter(Boolean) ?? [];
+  const repositoryBaselineGaps = repositoryBaseline?.gaps?.filter(Boolean) ?? [];
   const hasAdditionalLegacyWorkspaces = workspaces.some((workspace) => workspace.id !== primaryCodebaseWorkspace?.id);
   const executionWorkspacePolicy = project.executionWorkspacePolicy ?? null;
   const executionWorkspacesEnabled = executionWorkspacePolicy?.enabled === true;
@@ -334,6 +340,20 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
       setWorkspaceMode(null);
       setWorkspaceError(null);
       invalidateProject();
+    },
+  });
+  const refreshRepositoryBaseline = useMutation({
+    mutationFn: () => {
+      if (!primaryCodebaseWorkspace) throw new Error("Connect a codebase workspace before refreshing the baseline.");
+      return projectsApi.refreshRepositoryBaseline(project.id, primaryCodebaseWorkspace.id, selectedCompanyId ?? undefined);
+    },
+    onSuccess: (result) => {
+      const status = typeof result.baseline.status === "string" ? result.baseline.status : "updated";
+      setRepositoryBaselineMessage(`Repository baseline ${status}.`);
+      invalidateProject();
+    },
+    onError: (error) => {
+      setRepositoryBaselineMessage(error instanceof Error ? error.message : "Failed to refresh repository baseline.");
     },
   });
 
@@ -760,6 +780,104 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
             {hasAdditionalLegacyWorkspaces && (
               <div className="text-[11px] text-muted-foreground">
                 Additional legacy workspace records exist on this project. Paperclip is using the primary workspace as the codebase view.
+              </div>
+            )}
+
+            {primaryCodebaseWorkspace ? (
+              <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0 space-y-1">
+                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                      Repository baseline
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Read-only Paperclip context for this codebase. It does not create issues, wake agents, open PRs, or write to the repo.
+                    </p>
+                    {repositoryBaseline ? (
+                      <div className="space-y-2">
+                        <p className="text-[11px] text-muted-foreground">
+                          Status: <span className="font-medium">{repositoryBaseline.status}</span>
+                          {repositoryBaseline.updatedAt ? <> · Updated {formatDate(repositoryBaseline.updatedAt)}</> : null}
+                        </p>
+                        {repositoryBaseline.summary ? (
+                          <p className="text-xs text-muted-foreground">{repositoryBaseline.summary}</p>
+                        ) : null}
+                        {repositoryBaselineStack.length > 0 ? (
+                          <div className="flex flex-wrap gap-1">
+                            {repositoryBaselineStack.slice(0, 8).map((item) => (
+                              <span
+                                key={item}
+                                className="rounded-full border border-border bg-background px-2 py-0.5 text-[10px] text-muted-foreground"
+                              >
+                                {item}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                        {repositoryBaselineDocs.length > 0 ? (
+                          <div className="space-y-1">
+                            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                              Documentation files
+                            </div>
+                            <div className="grid gap-1 text-[11px] text-muted-foreground sm:grid-cols-2">
+                              {repositoryBaselineDocs.slice(0, 6).map((item) => (
+                                <span key={item} className="min-w-0 break-all font-mono">
+                                  {item}
+                                </span>
+                              ))}
+                            </div>
+                            {repositoryBaselineDocs.length > 6 ? (
+                              <p className="text-[11px] text-muted-foreground">
+                                +{repositoryBaselineDocs.length - 6} more in workspace details.
+                              </p>
+                            ) : null}
+                          </div>
+                        ) : null}
+                        {repositoryBaselineGaps.length > 0 ? (
+                          <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-800 dark:text-amber-200">
+                            {repositoryBaselineGaps[0]}
+                            {repositoryBaselineGaps.length > 1 ? ` +${repositoryBaselineGaps.length - 1} more` : ""}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <p className="text-[11px] text-muted-foreground">No baseline has been recorded yet.</p>
+                    )}
+                    {repositoryBaselineMessage ? (
+                      <p className="text-[11px] text-muted-foreground">{repositoryBaselineMessage}</p>
+                    ) : null}
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="xs"
+                    className="h-7 w-full px-2 sm:w-auto"
+                    disabled={refreshRepositoryBaseline.isPending}
+                    onClick={() => refreshRepositoryBaseline.mutate()}
+                  >
+                    {refreshRepositoryBaseline.isPending ? (
+                      <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                    ) : (
+                      <FileSearch className="mr-1 h-3 w-3" />
+                    )}
+                    Refresh baseline
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="xs"
+                    className="h-7 w-full px-2 sm:w-auto"
+                    asChild
+                  >
+                    <Link to={`/projects/${project.urlKey}/workspaces/${primaryCodebaseWorkspace.id}`}>
+                      Details
+                    </Link>
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-md border border-dashed border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                Connect a repo or local folder to create a primary workspace before recording a repository baseline.
               </div>
             )}
 
