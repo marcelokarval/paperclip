@@ -367,6 +367,7 @@ export async function createApp(
     });
     const renderViteHtml = viteHtmlRenderer;
 
+    app.use(vite.middlewares);
     app.get(/.*/, async (req, res, next) => {
       if (!shouldServeViteDevHtml(req)) {
         next();
@@ -379,7 +380,6 @@ export async function createApp(
         next(err);
       }
     });
-    app.use(vite.middlewares);
   }
 
   app.use(errorHandler);
