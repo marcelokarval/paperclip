@@ -7,7 +7,6 @@ import { createServer } from "node:http";
 import { and, asc, eq } from "drizzle-orm";
 import { WebSocketServer } from "ws";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { REPOSITORY_BASELINE_CEO_REVIEW_REQUEST_MARKER } from "@paperclipai/shared";
 import {
   agents,
   agentWakeupRequests,
@@ -18,6 +17,8 @@ import {
   heartbeatRuns,
   issueComments,
   issues,
+  projects,
+  projectWorkspaces,
 } from "@paperclipai/db";
 import { heartbeatService } from "../services/heartbeat.ts";
 
@@ -940,10 +941,12 @@ describe("heartbeat comment wake batching", () => {
     }
   }, 120_000);
 
-  it("moves repository baseline CEO review runs to operator review instead of leaving them stranded", async () => {
+  it("moves repository baseline tracking issue runs to operator review instead of leaving them stranded", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const agentId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
     const issueId = randomUUID();
     const wakeCommentId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
@@ -978,9 +981,35 @@ describe("heartbeat comment wake batching", () => {
         permissions: {},
       });
 
+      await db.insert(projects).values({
+        id: projectId,
+        companyId,
+        name: "Runtime Project",
+        status: "planned",
+      });
+
+      await db.insert(projectWorkspaces).values({
+        id: workspaceId,
+        companyId,
+        projectId,
+        name: "Runtime Workspace",
+        sourceType: "local_path",
+        cwd: "/tmp/paperclip-baseline-workspace",
+        isPrimary: true,
+        metadata: {
+          repositoryDocumentationBaseline: {
+            status: "ready",
+            trackingIssueId: issueId,
+            trackingIssueIdentifier: `${issuePrefix}-1`,
+          },
+        },
+      });
+
       await db.insert(issues).values({
         id: issueId,
         companyId,
+        projectId,
+        projectWorkspaceId: workspaceId,
         title: "Repository documentation baseline",
         status: "todo",
         priority: "medium",
@@ -995,7 +1024,7 @@ describe("heartbeat comment wake batching", () => {
         issueId,
         authorAgentId: null,
         authorUserId: "local-board",
-        body: `${REPOSITORY_BASELINE_CEO_REVIEW_REQUEST_MARKER}\nCEO baseline review request.`,
+        body: "refaça seu review [@CEO](agent://example)",
       });
 
       const run = await heartbeat.wakeup(agentId, {

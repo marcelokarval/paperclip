@@ -8,6 +8,7 @@ import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   REPOSITORY_BASELINE_CEO_REVIEW_REQUEST_MARKER,
+  REPOSITORY_DOCUMENTATION_BASELINE_METADATA_KEY,
   type BillingType,
   type ExecutionWorkspace,
   type ExecutionWorkspaceConfig,
@@ -2860,24 +2861,50 @@ export function heartbeatService(db: Db) {
     return comments.some((comment) => comment.body.includes(REPOSITORY_BASELINE_CEO_REVIEW_REQUEST_MARKER));
   }
 
+  async function isRepositoryBaselineTrackingIssue(issue: {
+    id: string;
+    identifier: string | null;
+    companyId: string;
+    projectWorkspaceId: string | null;
+  }): Promise<boolean> {
+    if (!issue.projectWorkspaceId) return false;
+
+    const workspace = await db
+      .select({ metadata: projectWorkspaces.metadata })
+      .from(projectWorkspaces)
+      .where(and(eq(projectWorkspaces.id, issue.projectWorkspaceId), eq(projectWorkspaces.companyId, issue.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!workspace) return false;
+
+    const metadata = parseObject(workspace.metadata);
+    const baseline = parseObject(metadata[REPOSITORY_DOCUMENTATION_BASELINE_METADATA_KEY]);
+    const trackingIssueId = readNonEmptyString(baseline.trackingIssueId);
+    const trackingIssueIdentifier = readNonEmptyString(baseline.trackingIssueIdentifier);
+    return trackingIssueId === issue.id || (!!issue.identifier && trackingIssueIdentifier === issue.identifier);
+  }
+
   async function moveRepositoryBaselineReviewToOperatorReview(input: {
     run: typeof heartbeatRuns.$inferSelect;
     issueId: string;
     agent: typeof agents.$inferSelect;
   }) {
-    if (!(await isRepositoryBaselineReviewRun(input.run))) return;
-
     const issue = await db
       .select({
         id: issues.id,
         companyId: issues.companyId,
         identifier: issues.identifier,
+        projectWorkspaceId: issues.projectWorkspaceId,
         status: issues.status,
       })
       .from(issues)
       .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.run.companyId)))
       .then((rows) => rows[0] ?? null);
     if (!issue || issue.status !== "in_progress") return;
+
+    const shouldMoveToOperatorReview =
+      (await isRepositoryBaselineReviewRun(input.run)) ||
+      (await isRepositoryBaselineTrackingIssue(issue));
+    if (!shouldMoveToOperatorReview) return;
 
     const updated = await issuesSvc.update(issue.id, {
       status: "in_review",
