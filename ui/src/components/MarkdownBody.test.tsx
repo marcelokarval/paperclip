@@ -47,6 +47,10 @@ function renderMarkdown(children: string, seededIssues: Array<{ identifier: stri
   );
 }
 
+function extractAnchorTags(html: string): string[] {
+  return html.match(/<a\b[^>]*>/g) ?? [];
+}
+
 describe("MarkdownBody", () => {
   it("renders markdown images without a resolver", () => {
     const html = renderToStaticMarkup(
@@ -137,13 +141,29 @@ describe("MarkdownBody", () => {
   });
 
   it("rewrites full issue URLs to internal issue links", () => {
-    const html = renderMarkdown("See http://localhost:3100/PAP/issues/PAP-1179.", [
+    const html = renderMarkdown("See /PAP/issues/PAP-1179.", [
       { identifier: "PAP-1179", status: "blocked" },
     ]);
 
     expect(html).toContain('href="/issues/PAP-1179"');
     expect(html).toContain("text-red-600");
-    expect(html).toContain(">http://localhost:3100/PAP/issues/PAP-1179<");
+    expect(html).toContain(">/PAP/issues/PAP-1179<");
+  });
+
+  it("preserves full external issue URLs instead of rewriting them to local issues", () => {
+    const html = renderMarkdown("See http://remote.example.test/PAP/issues/PAP-1179.");
+    const anchors = extractAnchorTags(html);
+
+    expect(anchors.some((anchor) => anchor.includes('href="http://remote.example.test/PAP/issues/PAP-1179"'))).toBe(true);
+    expect(anchors.some((anchor) => anchor.includes('target="_blank"'))).toBe(true);
+    expect(html).not.toContain('href="/issues/PAP-1179"');
+  });
+
+  it("does not rewrite GitHub issue URLs to local issues", () => {
+    const html = renderMarkdown("See https://github.com/paperclipai/paperclip/issues/1778.");
+
+    expect(html).toContain('href="https://github.com/paperclipai/paperclip/issues/1778"');
+    expect(html).not.toContain('href="/issues/1778"');
   });
 
   it("rewrites issue scheme links to internal issue links", () => {

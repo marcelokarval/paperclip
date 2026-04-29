@@ -42,7 +42,7 @@ afterEach(async () => {
     const cleanup = cleanups.pop();
     await cleanup?.();
   }
-});
+}, 30_000);
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(

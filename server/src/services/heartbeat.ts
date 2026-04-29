@@ -9,6 +9,8 @@ import type { Db } from "@paperclipai/db";
 import {
   REPOSITORY_BASELINE_CEO_REVIEW_REQUEST_MARKER,
   REPOSITORY_DOCUMENTATION_BASELINE_METADATA_KEY,
+  readRepositoryDocumentationBaselineFromMetadata,
+  projectIssueSystemGuidanceSchema,
   type BillingType,
   type ExecutionWorkspace,
   type ExecutionWorkspaceConfig,
@@ -22,6 +24,7 @@ import {
   heartbeatRuns,
   issueComments,
   issues,
+  labels,
   projects,
   projectWorkspaces,
 } from "@paperclipai/db";
@@ -45,6 +48,10 @@ import {
   mergeHeartbeatRunResultJson,
   summarizeHeartbeatRunResultJson,
 } from "./heartbeat-run-summary.js";
+import { buildRepositoryBaselineTrackingIssueDescription } from "./repository-baseline-tracking-issue.js";
+import {
+  hasRepositoryBaselineReviewResponseForFingerprint,
+} from "./repository-baseline-review-comments.js";
 import { logActivity, type LogActivityInput } from "./activity-log.js";
 import {
   buildWorkspaceReadyComment,
@@ -1160,6 +1167,14 @@ async function buildPaperclipWakePayload(input: {
     });
   }
 
+  const projectIssueSystem = issueSummary?.id
+    ? await buildPaperclipWakeProjectIssueSystem({
+        db: input.db,
+        companyId: input.companyId,
+        issueId: issueSummary.id,
+      })
+    : null;
+
   return {
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
     issue: issueSummary
@@ -1171,6 +1186,7 @@ async function buildPaperclipWakePayload(input: {
           priority: issueSummary.priority,
         }
       : null,
+    projectIssueSystem,
     checkedOutByHarness: input.contextSnapshot[PAPERCLIP_HARNESS_CHECKOUT_KEY] === true,
     executionStage: Object.keys(executionStage).length > 0 ? executionStage : null,
     commentIds,
@@ -1183,6 +1199,143 @@ async function buildPaperclipWakePayload(input: {
     },
     truncated,
     fallbackFetchNeeded: truncated || missingCommentCount > 0,
+  };
+}
+
+async function buildPaperclipWakeProjectIssueSystem(input: {
+  db: Db;
+  companyId: string;
+  issueId: string;
+}) {
+  const issue = await input.db
+    .select({
+      projectId: issues.projectId,
+      projectIssueSystemGuidance: projects.issueSystemGuidance,
+    })
+    .from(issues)
+    .leftJoin(projects, eq(issues.projectId, projects.id))
+    .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)))
+    .then((rows) => rows[0] ?? null);
+  if (!issue?.projectId) return null;
+
+  const [labelRows, primaryWorkspace] = await Promise.all([
+    input.db
+      .select({
+        id: labels.id,
+        name: labels.name,
+        color: labels.color,
+        description: labels.description,
+        source: labels.source,
+        metadata: labels.metadata,
+      })
+      .from(labels)
+      .where(eq(labels.companyId, input.companyId))
+      .orderBy(asc(labels.name), asc(labels.id)),
+    input.db
+      .select({
+        metadata: projectWorkspaces.metadata,
+      })
+      .from(projectWorkspaces)
+      .where(
+        and(
+          eq(projectWorkspaces.companyId, input.companyId),
+          eq(projectWorkspaces.projectId, issue.projectId),
+          eq(projectWorkspaces.isPrimary, true),
+        ),
+      )
+      .then((rows) => rows[0] ?? null),
+  ]);
+
+  const baseline = readRepositoryDocumentationBaselineFromMetadata(
+    (primaryWorkspace?.metadata as Record<string, unknown> | null | undefined) ?? null,
+  );
+  const guidance = baseline?.acceptedGuidance ?? null;
+  const parsedProjectGuidance = projectIssueSystemGuidanceSchema.safeParse(issue.projectIssueSystemGuidance);
+  const projectGuidance = parsedProjectGuidance.success ? parsedProjectGuidance.data : null;
+  const recommendedLabels = guidance?.labels ?? baseline?.recommendations?.labels ?? [];
+  const descriptionByName = new Map(
+    recommendedLabels.map((label) => [label.name.trim().toLowerCase(), label.description]),
+  );
+  const issuePolicy = guidance?.issuePolicy ?? baseline?.recommendations?.issuePolicy ?? null;
+  const projectDefaults = guidance?.projectDefaults ?? baseline?.recommendations?.projectDefaults ?? null;
+
+  const hasSystem =
+    labelRows.length > 0 ||
+    Boolean(projectGuidance) ||
+    Boolean(issuePolicy) ||
+    Boolean(projectDefaults);
+  if (!hasSystem) return null;
+
+  return {
+    labels: labelRows.map((label) => ({
+      id: label.id,
+      name: label.name,
+      color: label.color,
+      description: label.description ?? descriptionByName.get(label.name.trim().toLowerCase()) ?? null,
+      source: label.source,
+      metadata: label.metadata,
+    })),
+    parentChildGuidance: projectGuidance?.parentChildGuidance ?? issuePolicy?.parentChildGuidance ?? [],
+    blockingGuidance: projectGuidance?.blockingGuidance ?? issuePolicy?.blockingGuidance ?? [],
+    labelUsageGuidance: projectGuidance?.labelUsageGuidance ?? issuePolicy?.labelUsageGuidance ?? [],
+    reviewGuidance: projectGuidance?.reviewGuidance ?? issuePolicy?.reviewGuidance ?? [],
+    approvalGuidance: projectGuidance?.approvalGuidance ?? issuePolicy?.approvalGuidance ?? [],
+    canonicalDocs: projectGuidance?.canonicalDocs ?? projectDefaults?.canonicalDocs ?? [],
+    suggestedVerificationCommands: projectGuidance?.suggestedVerificationCommands ?? projectDefaults?.suggestedVerificationCommands ?? [],
+  };
+}
+
+async function readRepositoryBaselineReviewFingerprintForIssue(input: {
+  db: Db;
+  companyId: string;
+  issueId: string;
+}) {
+  const row = await input.db
+    .select({
+      operatingContext: projects.operatingContext,
+      workspaceMetadata: projectWorkspaces.metadata,
+    })
+    .from(issues)
+    .leftJoin(projects, eq(issues.projectId, projects.id))
+    .leftJoin(projectWorkspaces, eq(issues.projectWorkspaceId, projectWorkspaces.id))
+    .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)))
+    .then((rows: Array<{ operatingContext: unknown; workspaceMetadata: unknown }>) => rows[0] ?? null);
+
+  const operatingContext = parseObject(row?.operatingContext);
+  const baselineStatus = readNonEmptyString(operatingContext.baselineStatus);
+  const repositoryContextStage = baselineStatus === "accepted"
+    ? "repository_context_accepted"
+    : "baseline_available";
+  const baselineFingerprint =
+    readNonEmptyString(operatingContext.baselineFingerprint)
+    ?? readRepositoryDocumentationBaselineFromMetadata(parseObject(row?.workspaceMetadata))?.updatedAt
+    ?? null;
+  return baselineFingerprint ? `${baselineFingerprint}|${repositoryContextStage}` : null;
+}
+
+function buildPaperclipTruthLedgerForRun(input: {
+  contextSnapshot: Record<string, unknown>;
+  issueId: string | null;
+  repositoryBaselineReview: boolean;
+}) {
+  const issueScoped = Boolean(input.issueId);
+  return {
+    scope: input.repositoryBaselineReview
+      ? "repository_baseline_review"
+      : issueScoped
+        ? "issue_scoped"
+        : null,
+    authoritativeSources: [
+      "wake_payload",
+      "managed_instructions",
+      "project_packet",
+      "paperclip_api_mutations",
+      "runtime_reconciliation",
+    ],
+    issueCommentRequired: shouldRequireIssueCommentForWake(input.contextSnapshot),
+    finalSummaryMayBecomeIssueComment: issueScoped,
+    localShellProbesAreAuxiliary: true,
+    apiRootIsNotOperationalProof: true,
   };
 }
 
@@ -2471,6 +2624,12 @@ export function heartbeatService(db: Db) {
       return null;
     }
 
+    const staleReason = await evaluateQueuedRunStaleness(run, context);
+    if (staleReason) {
+      await cancelQueuedRunForStaleIssue(run, staleReason);
+      return null;
+    }
+
     const claimedAt = new Date();
     const claimed = await db
       .update(heartbeatRuns)
@@ -2525,6 +2684,59 @@ export function heartbeatService(db: Db) {
     }
 
     return claimed;
+  }
+
+  async function evaluateQueuedRunStaleness(
+    run: typeof heartbeatRuns.$inferSelect,
+    context: Record<string, unknown>,
+  ) {
+    const issueId = readNonEmptyString(context.issueId);
+    if (!issueId) return null;
+
+    const issue = await db
+      .select({
+        id: issues.id,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+      .then((rows) => rows[0] ?? null);
+
+    if (!issue) return "issue no longer exists";
+    if (issue.status === "done" || issue.status === "cancelled") {
+      return `issue is ${issue.status}`;
+    }
+    if (
+      issue.assigneeAgentId !== run.agentId &&
+      readNonEmptyString(context.wakeReason) !== "issue_comment_mentioned"
+    ) {
+      return "issue assignee changed";
+    }
+
+    return null;
+  }
+
+  async function cancelQueuedRunForStaleIssue(run: typeof heartbeatRuns.$inferSelect, reason: string) {
+    const message = `Cancelled stale queued issue wake: ${reason}`;
+    const cancelled = await setRunStatus(run.id, "cancelled", {
+      finishedAt: new Date(),
+      error: message,
+      errorCode: "cancelled",
+    });
+    await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+      finishedAt: new Date(),
+      error: message,
+    });
+    if (cancelled) {
+      await appendRunEvent(cancelled, 1, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message,
+      });
+      await finalizeAgentStatus(cancelled.agentId, "cancelled");
+    }
   }
 
   async function finalizeAgentStatus(
@@ -2719,7 +2931,7 @@ export function heartbeatService(db: Db) {
   }
 
   async function hasActiveExecutionPath(companyId: string, issueId: string) {
-    const [run, deferredWake] = await Promise.all([
+    const [run, deferredWake, queuedWake] = await Promise.all([
       db
         .select({ id: heartbeatRuns.id })
         .from(heartbeatRuns)
@@ -2744,9 +2956,56 @@ export function heartbeatService(db: Db) {
         )
         .limit(1)
         .then((rows) => rows[0] ?? null),
+      hasQueuedIssueWake(companyId, issueId),
     ]);
 
-    return Boolean(run || deferredWake);
+    return Boolean(run || deferredWake || queuedWake);
+  }
+
+  async function hasQueuedIssueWake(companyId: string, issueId: string) {
+    return db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+          sql`${agentWakeupRequests.runId} is null`,
+          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function isInvocationBudgetBlocked(issue: typeof issues.$inferSelect, agentId: string) {
+    const budgetBlock = await budgets.getInvocationBlock(issue.companyId, agentId, {
+      issueId: issue.id,
+      projectId: issue.projectId,
+    });
+    return Boolean(budgetBlock);
+  }
+
+  async function enqueueInitialAssignedTodoDispatch(issue: typeof issues.$inferSelect, agentId: string) {
+    return enqueueWakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: {
+        issueId: issue.id,
+        mutation: "assigned_todo_liveness_dispatch",
+      },
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      contextSnapshot: {
+        issueId: issue.id,
+        taskId: issue.id,
+        issueStatus: issue.status,
+        projectId: issue.projectId,
+        mutation: "assigned_todo_liveness_dispatch",
+        source: "issue.assigned_todo_liveness_dispatch",
+      },
+    });
   }
 
   async function enqueueStrandedIssueRecovery(input: {
@@ -2893,6 +3152,7 @@ export function heartbeatService(db: Db) {
         id: issues.id,
         companyId: issues.companyId,
         identifier: issues.identifier,
+        projectId: issues.projectId,
         projectWorkspaceId: issues.projectWorkspaceId,
         status: issues.status,
       })
@@ -2908,8 +3168,42 @@ export function heartbeatService(db: Db) {
 
     const updated = await issuesSvc.update(issue.id, {
       status: "in_review",
+      actorAgentId: input.agent.id,
+      actorUserId: null,
     });
     if (!updated) return;
+
+    if (issue.projectId && issue.projectWorkspaceId) {
+      const baselineContext = await db
+        .select({
+          projectName: projects.name,
+          projectOperatingContext: projects.operatingContext,
+          workspaceName: projectWorkspaces.name,
+          workspaceMetadata: projectWorkspaces.metadata,
+        })
+        .from(projects)
+        .innerJoin(projectWorkspaces, eq(projectWorkspaces.id, issue.projectWorkspaceId))
+        .where(and(eq(projects.id, issue.projectId), eq(projects.companyId, issue.companyId)))
+        .then((rows) => rows[0] ?? null);
+
+      const baseline = baselineContext
+        ? readRepositoryDocumentationBaselineFromMetadata(baselineContext.workspaceMetadata)
+        : null;
+      if (baseline) {
+        await issuesSvc.update(issue.id, {
+          description: buildRepositoryBaselineTrackingIssueDescription({
+            projectName: baselineContext.projectName,
+            workspaceName: baselineContext.workspaceName,
+            baseline,
+            operatingContext: parseObject(baselineContext.projectOperatingContext),
+            issueStatus: "in_review",
+            issueAssigneeAgentId: input.agent.id,
+          }),
+          actorAgentId: input.agent.id,
+          actorUserId: null,
+        });
+      }
+    }
 
     await logActivity(db, {
       companyId: issue.companyId,
@@ -2929,6 +3223,18 @@ export function heartbeatService(db: Db) {
     });
   }
 
+  function buildAutoPostedRunSummaryTruthFooter(input: {
+    runId: string;
+    repositoryBaselineReview: boolean;
+  }) {
+    if (!input.repositoryBaselineReview) return null;
+    return [
+      "_Run truth reconciliation_",
+      `- Paperclip persisted this comment for run ${input.runId}.`,
+      "- Failed local shell probes do not negate this recorded issue-thread update.",
+    ].join("\n");
+  }
+
   async function reconcileStrandedAssignedIssues() {
     const candidates = await db
       .select()
@@ -2942,6 +3248,7 @@ export function heartbeatService(db: Db) {
       );
 
     const result = {
+      assignmentDispatched: 0,
       dispatchRequeued: 0,
       continuationRequeued: 0,
       escalated: 0,
@@ -2976,7 +3283,26 @@ export function heartbeatService(db: Db) {
       const latestRetryReason = readNonEmptyString(latestContext.retryReason);
 
       if (issue.status === "todo") {
-        if (!latestRun || latestRun.status === "succeeded") {
+        if (!latestRun) {
+          if (await hasQueuedIssueWake(issue.companyId, issue.id)) {
+            result.skipped += 1;
+            continue;
+          }
+          if (await isInvocationBudgetBlocked(issue, agentId)) {
+            result.skipped += 1;
+            continue;
+          }
+          const queued = await enqueueInitialAssignedTodoDispatch(issue, agentId);
+          if (queued) {
+            result.assignmentDispatched += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
+        if (latestRun.status === "succeeded") {
           result.skipped += 1;
           continue;
         }
@@ -2999,6 +3325,10 @@ export function heartbeatService(db: Db) {
           continue;
         }
 
+        if (await isInvocationBudgetBlocked(issue, agentId)) {
+          result.skipped += 1;
+          continue;
+        }
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
           agentId,
@@ -3035,6 +3365,10 @@ export function heartbeatService(db: Db) {
         continue;
       }
 
+      if (await isInvocationBudgetBlocked(issue, agentId)) {
+        result.skipped += 1;
+        continue;
+      }
       const queued = await enqueueStrandedIssueRecovery({
         issueId: issue.id,
         agentId,
@@ -3291,6 +3625,12 @@ export function heartbeatService(db: Db) {
     } else {
       delete context[PAPERCLIP_WAKE_PAYLOAD_KEY];
     }
+    const repositoryBaselineReview = issueId ? await isRepositoryBaselineReviewRun(run) : false;
+    context.paperclipTruthLedger = buildPaperclipTruthLedgerForRun({
+      contextSnapshot: context,
+      issueId,
+      repositoryBaselineReview,
+    });
     const existingExecutionWorkspace =
       issueRef?.executionWorkspaceId ? await executionWorkspacesSvc.getById(issueRef.executionWorkspaceId) : null;
     const shouldReuseExisting =
@@ -3970,8 +4310,28 @@ export function heartbeatService(db: Db) {
           try {
             const existingRunComment = await findRunIssueComment(finalizedRun.id, finalizedRun.companyId, issueId);
             if (!existingRunComment) {
-              const issueComment = buildHeartbeatRunIssueComment(persistedResultJson);
-              if (issueComment) {
+              const repositoryBaselineReview = await isRepositoryBaselineReviewRun(finalizedRun);
+              const reviewFingerprint = repositoryBaselineReview
+                ? await readRepositoryBaselineReviewFingerprintForIssue({
+                    db,
+                    companyId: finalizedRun.companyId,
+                    issueId,
+                  })
+                : null;
+              const existingComments = repositoryBaselineReview
+                ? await issuesSvc.listComments(issueId, { limit: 200, order: "desc" })
+                : [];
+              const duplicateRepositoryBaselineReview = repositoryBaselineReview
+                && hasRepositoryBaselineReviewResponseForFingerprint(existingComments, reviewFingerprint);
+              const issueComment = buildHeartbeatRunIssueComment(persistedResultJson, {
+                truthReconciliationFooter: buildAutoPostedRunSummaryTruthFooter({
+                  runId: finalizedRun.id,
+                  repositoryBaselineReview,
+                }),
+                repositoryBaselineReview,
+                reviewFingerprint,
+              });
+              if (issueComment && !duplicateRepositoryBaselineReview) {
                 await issuesSvc.addComment(issueId, issueComment, { agentId: agent.id, runId: finalizedRun.id });
               }
             }

@@ -177,7 +177,10 @@ describe("IssueChatThread", () => {
       );
     });
 
-    expect(container.textContent).toContain("Jump to latest");
+    expect(container.querySelector('[aria-label="Jump to latest"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Go to top"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Previous comment"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Next comment"]')).not.toBeNull();
     expect(container.textContent).not.toContain("Chat (");
 
     const viewport = container.querySelector('[data-testid="thread-viewport"]') as HTMLDivElement | null;
@@ -213,7 +216,7 @@ describe("IssueChatThread", () => {
     });
 
     expect(container.textContent).toContain("No run output captured.");
-    expect(container.textContent).not.toContain("Jump to latest");
+    expect(container.querySelector('[aria-label="Jump to latest"]')).toBeNull();
 
     const viewport = container.querySelector('[data-testid="thread-viewport"]') as HTMLDivElement | null;
     expect(viewport?.className).toContain("space-y-3");
@@ -221,6 +224,67 @@ describe("IssueChatThread", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it("scrolls between comment anchors with the issue chat navigation controls", () => {
+    const root = createRoot(container);
+    const scrollIntoViewMock = vi.fn();
+    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scrollIntoViewMock;
+    threadMessagesMock.mockImplementation(() => (
+      <div data-testid="thread-messages">
+        <div id="comment-comment-1" />
+        <div id="comment-comment-2" />
+      </div>
+    ));
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[{
+              id: "comment-1",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: null,
+              authorUserId: "user-1",
+              body: "First",
+              createdAt: new Date("2026-04-06T12:00:00.000Z"),
+              updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+            }, {
+              id: "comment-2",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: "agent-1",
+              authorUserId: null,
+              body: "Second",
+              createdAt: new Date("2026-04-06T12:01:00.000Z"),
+              updatedAt: new Date("2026-04-06T12:01:00.000Z"),
+            }]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const nextButton = container.querySelector('[aria-label="Next comment"]') as HTMLButtonElement | null;
+    expect(nextButton).not.toBeNull();
+
+    act(() => {
+      nextButton?.click();
+    });
+
+    expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: "smooth", block: "start" });
+
+    act(() => {
+      root.unmount();
+    });
+    HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
   });
 
   it("falls back to a safe transcript warning when assistant-ui throws during message rendering", () => {

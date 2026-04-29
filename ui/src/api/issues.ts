@@ -18,6 +18,12 @@ export type IssueUpdateResponse = Issue & {
   comment?: IssueComment | null;
 };
 
+export type IssueAddCommentResponse =
+  | IssueComment
+  | {
+      skipped: "duplicate_baseline_review_request";
+    };
+
 export const issuesApi = {
   list: (
     companyId: string,
@@ -61,8 +67,10 @@ export const issuesApi = {
     return api.get<Issue[]>(`/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);
   },
   listLabels: (companyId: string) => api.get<IssueLabel[]>(`/companies/${companyId}/labels`),
-  createLabel: (companyId: string, data: { name: string; color: string }) =>
+  createLabel: (companyId: string, data: { name: string; color: string; description?: string | null; metadata?: Record<string, unknown> | null }) =>
     api.post<IssueLabel>(`/companies/${companyId}/labels`, data),
+  updateLabel: (id: string, data: { name?: string; color?: string; description?: string | null; metadata?: Record<string, unknown> | null }) =>
+    api.patch<IssueLabel>(`/labels/${id}`, data),
   deleteLabel: (id: string) => api.delete<IssueLabel>(`/labels/${id}`),
   get: (id: string) => api.get<Issue>(`/issues/${id}`),
   markRead: (id: string) => api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, {}),
@@ -120,7 +128,7 @@ export const issuesApi = {
     },
   ) => api.post<FeedbackVote>(`/issues/${id}/feedback-votes`, data),
   addComment: (id: string, body: string, reopen?: boolean, interrupt?: boolean) =>
-    api.post<IssueComment>(
+    api.post<IssueAddCommentResponse>(
       `/issues/${id}/comments`,
       {
         body,

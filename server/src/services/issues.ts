@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -23,7 +23,13 @@ import {
   projects,
 } from "@paperclipai/db";
 import type { IssueRelationIssueSummary } from "@paperclipai/shared";
-import { extractAgentMentionIds, extractProjectMentionIds, isIssueIdentifierRef, isUuidLike } from "@paperclipai/shared";
+import {
+  extractAgentMentionIds,
+  extractProjectMentionIds,
+  isIssueIdentifierRef,
+  isUuidLike,
+  readRepositoryDocumentationBaselineFromMetadata,
+} from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
@@ -35,9 +41,64 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getDefaultCompanyGoal } from "./goals.js";
+import { normalizeRepositoryBaselineReviewCommentForPersistence } from "./heartbeat-run-summary.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+export function normalizeBaselineTrackingIssueAgentComment(input: {
+  body: string;
+  issueId: string;
+  issueIdentifier: string | null;
+  workspaceMetadata: unknown;
+  operatingContext: unknown;
+}) {
+  const operatingContext = isObjectRecord(input.operatingContext)
+    ? input.operatingContext
+    : {};
+  const baselineStatus = typeof operatingContext.baselineStatus === "string" ? operatingContext.baselineStatus : null;
+  const repositoryContextStage = baselineStatus === "accepted"
+    ? "repository_context_accepted"
+    : "baseline_available";
+  const workspaceBaseline = readRepositoryDocumentationBaselineFromMetadata(
+    isObjectRecord(input.workspaceMetadata) ? input.workspaceMetadata : null,
+  );
+  const contextTrackingIssueId =
+    typeof operatingContext.baselineTrackingIssueId === "string" && operatingContext.baselineTrackingIssueId.trim().length > 0
+      ? operatingContext.baselineTrackingIssueId.trim()
+      : null;
+  const contextTrackingIssueIdentifier =
+    typeof operatingContext.baselineTrackingIssueIdentifier === "string" && operatingContext.baselineTrackingIssueIdentifier.trim().length > 0
+      ? operatingContext.baselineTrackingIssueIdentifier.trim()
+      : null;
+  const trackingIssueId = workspaceBaseline?.trackingIssueId ?? null;
+  const trackingIssueIdentifier = workspaceBaseline?.trackingIssueIdentifier ?? null;
+  const isBaselineTrackingIssue =
+    contextTrackingIssueId === input.issueId
+    || trackingIssueId === input.issueId
+    || (!!input.issueIdentifier && (
+      contextTrackingIssueIdentifier === input.issueIdentifier
+      || trackingIssueIdentifier === input.issueIdentifier
+    ));
+
+  if (!isBaselineTrackingIssue) return input.body;
+
+  const baselineFingerprint =
+    (typeof operatingContext.baselineFingerprint === "string" && operatingContext.baselineFingerprint.trim().length > 0
+      ? operatingContext.baselineFingerprint.trim()
+      : null)
+    ?? workspaceBaseline?.updatedAt
+    ?? null;
+  const reviewFingerprint = baselineFingerprint ? `${baselineFingerprint}|${repositoryContextStage}` : null;
+  return normalizeRepositoryBaselineReviewCommentForPersistence({
+    body: input.body,
+    reviewFingerprint,
+  });
+}
 
 function assertTransition(from: string, to: string) {
   if (from === to) return;
@@ -1150,6 +1211,70 @@ export function issueService(db: Db) {
     return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
   }
 
+  async function clearExecutionRunIfTerminal(issueId: string) {
+    const now = new Date();
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`select id from issues where id = ${issueId} for update`);
+      const current = await tx
+        .select({ executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!current?.executionRunId) return false;
+
+      const run = await tx
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, current.executionRunId))
+        .then((rows) => rows[0] ?? null);
+      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+
+      await tx
+        .update(issues)
+        .set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: now,
+        })
+        .where(and(eq(issues.id, issueId), eq(issues.executionRunId, current.executionRunId)));
+      return true;
+    });
+  }
+
+  async function adoptUnownedCheckoutRun(input: {
+    issueId: string;
+    actorAgentId: string;
+    actorRunId: string;
+  }) {
+    const now = new Date();
+    return db
+      .update(issues)
+      .set({
+        checkoutRunId: input.actorRunId,
+        executionRunId: input.actorRunId,
+        executionLockedAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(issues.id, input.issueId),
+          eq(issues.status, "in_progress"),
+          eq(issues.assigneeAgentId, input.actorAgentId),
+          isNull(issues.checkoutRunId),
+          or(isNull(issues.executionRunId), eq(issues.executionRunId, input.actorRunId)),
+        ),
+      )
+      .returning({
+        id: issues.id,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function adoptStaleCheckoutRun(input: {
     issueId: string;
     actorAgentId: string;
@@ -1197,6 +1322,8 @@ export function issueService(db: Db) {
         return await listInternal(companyId, filters, { includeActivityLogs: false });
       }
     },
+
+    clearExecutionRunIfTerminal,
 
     countUnreadTouchedByUser: async (companyId: string, userId: string, status?: string) => {
       const conditions = [
@@ -1782,38 +1909,7 @@ export function issueService(db: Db) {
 
       const now = new Date();
 
-      // Fix C: staleness detection — if executionRunId references a run that is no
-      // longer queued or running, clear it before applying the execution lock condition
-      // so a dead lock can't produce a spurious 409.
-      // Wrapped in a transaction with SELECT FOR UPDATE to make the read + clear atomic,
-      // matching the existing pattern in enqueueWakeup().
-      await db.transaction(async (tx) => {
-        await tx.execute(
-          sql`select id from issues where id = ${id} for update`,
-        );
-        const preCheckRow = await tx
-          .select({ executionRunId: issues.executionRunId })
-          .from(issues)
-          .where(eq(issues.id, id))
-          .then((rows) => rows[0] ?? null);
-        if (!preCheckRow?.executionRunId) return;
-        const lockRun = await tx
-          .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, preCheckRow.executionRunId))
-          .then((rows) => rows[0] ?? null);
-        if (!lockRun || (lockRun.status !== "queued" && lockRun.status !== "running")) {
-          await tx
-            .update(issues)
-            .set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null, updatedAt: now })
-            .where(
-              and(
-                eq(issues.id, id),
-                eq(issues.executionRunId, preCheckRow.executionRunId),
-              ),
-            );
-        }
-      });
+      await clearExecutionRunIfTerminal(id);
 
       const sameRunAssigneeCondition = checkoutRunId
         ? and(
@@ -1872,24 +1968,11 @@ export function issueService(db: Db) {
         (current.executionRunId == null || current.executionRunId === checkoutRunId) &&
         checkoutRunId
       ) {
-        const adopted = await db
-          .update(issues)
-          .set({
-            checkoutRunId,
-            executionRunId: checkoutRunId,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(issues.id, id),
-              eq(issues.status, "in_progress"),
-              eq(issues.assigneeAgentId, agentId),
-              isNull(issues.checkoutRunId),
-              or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId)),
-            ),
-          )
-          .returning()
-          .then((rows) => rows[0] ?? null);
+        const adopted = await adoptUnownedCheckoutRun({
+          issueId: id,
+          actorAgentId: agentId,
+          actorRunId: checkoutRunId,
+        });
         if (adopted) return adopted;
       }
 
@@ -1936,12 +2019,15 @@ export function issueService(db: Db) {
     },
 
     assertCheckoutOwner: async (id: string, actorAgentId: string, actorRunId: string | null) => {
+      await clearExecutionRunIfTerminal(id);
+
       const current = await db
         .select({
           id: issues.id,
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
           checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
         })
         .from(issues)
         .where(eq(issues.id, id))
@@ -1955,6 +2041,27 @@ export function issueService(db: Db) {
         sameRunLock(current.checkoutRunId, actorRunId)
       ) {
         return { ...current, adoptedFromRunId: null as string | null };
+      }
+
+      if (
+        actorRunId &&
+        current.status === "in_progress" &&
+        current.assigneeAgentId === actorAgentId &&
+        current.checkoutRunId == null &&
+        (current.executionRunId == null || current.executionRunId === actorRunId)
+      ) {
+        const adopted = await adoptUnownedCheckoutRun({
+          issueId: id,
+          actorAgentId,
+          actorRunId,
+        });
+
+        if (adopted) {
+          return {
+            ...adopted,
+            adoptedFromRunId: null,
+          };
+        }
       }
 
       if (
@@ -1984,12 +2091,15 @@ export function issueService(db: Db) {
         status: current.status,
         assigneeAgentId: current.assigneeAgentId,
         checkoutRunId: current.checkoutRunId,
+        executionRunId: current.executionRunId,
         actorAgentId,
         actorRunId,
       });
     },
 
     release: async (id: string, actorAgentId?: string, actorRunId?: string | null) => {
+      await clearExecutionRunIfTerminal(id);
+
       const existing = await db
         .select()
         .from(issues)
@@ -2007,12 +2117,15 @@ export function issueService(db: Db) {
         existing.checkoutRunId &&
         !sameRunLock(existing.checkoutRunId, actorRunId ?? null)
       ) {
-        throw conflict("Only checkout run can release issue", {
-          issueId: existing.id,
-          assigneeAgentId: existing.assigneeAgentId,
-          checkoutRunId: existing.checkoutRunId,
-          actorRunId: actorRunId ?? null,
-        });
+        const staleCheckoutRun = await isTerminalOrMissingHeartbeatRun(existing.checkoutRunId);
+        if (!staleCheckoutRun) {
+          throw conflict("Only checkout run can release issue", {
+            issueId: existing.id,
+            assigneeAgentId: existing.assigneeAgentId,
+            checkoutRunId: existing.checkoutRunId,
+            actorRunId: actorRunId ?? null,
+          });
+        }
       }
 
       const updated = await db
@@ -2021,6 +2134,9 @@ export function issueService(db: Db) {
           status: "todo",
           assigneeAgentId: null,
           checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, id))
@@ -2029,6 +2145,45 @@ export function issueService(db: Db) {
       if (!updated) return null;
       const [enriched] = await withIssueLabels(db, [updated]);
       return enriched;
+    },
+
+    adminForceRelease: async (id: string, opts?: { clearAssignee?: boolean }) => {
+      const result = await db.transaction(async (tx) => {
+        const existing = await tx
+          .select()
+          .from(issues)
+          .where(eq(issues.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!existing) return null;
+
+        const [updated] = await tx
+          .update(issues)
+          .set({
+            ...(opts?.clearAssignee ? { assigneeAgentId: null, assigneeUserId: null } : {}),
+            checkoutRunId: null,
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(issues.id, id))
+          .returning();
+        if (!updated) return null;
+        const [enriched] = await withIssueLabels(tx, [updated]);
+        return {
+          issue: enriched,
+          previous: {
+            checkoutRunId: existing.checkoutRunId,
+            executionRunId: existing.executionRunId,
+            executionAgentNameKey: existing.executionAgentNameKey,
+            executionLockedAt: existing.executionLockedAt,
+            assigneeAgentId: existing.assigneeAgentId,
+            assigneeUserId: existing.assigneeUserId,
+          },
+        };
+      });
+
+      return result;
     },
 
     listLabels: (companyId: string) =>
@@ -2041,16 +2196,46 @@ export function issueService(db: Db) {
         .where(eq(labels.id, id))
         .then((rows) => rows[0] ?? null),
 
-    createLabel: async (companyId: string, data: Pick<typeof labels.$inferInsert, "name" | "color">) => {
+    createLabel: async (
+      companyId: string,
+      data: Pick<typeof labels.$inferInsert, "name" | "color"> & Partial<Pick<typeof labels.$inferInsert, "description" | "source" | "metadata">>,
+    ) => {
       const [created] = await db
         .insert(labels)
         .values({
           companyId,
           name: data.name.trim(),
           color: data.color,
+          description: typeof data.description === "string" && data.description.trim() ? data.description.trim() : null,
+          source: data.source ?? "manual",
+          metadata: data.metadata ?? null,
         })
         .returning();
       return created;
+    },
+
+    updateLabel: async (
+      id: string,
+      data: Partial<Pick<typeof labels.$inferInsert, "name" | "color" | "description" | "source" | "metadata">>,
+    ) => {
+      const patch: Partial<typeof labels.$inferInsert> = {
+        updatedAt: new Date(),
+      };
+      if (data.name !== undefined) patch.name = data.name.trim();
+      if (data.color !== undefined) patch.color = data.color;
+      if (data.description !== undefined) {
+        patch.description = typeof data.description === "string" && data.description.trim()
+          ? data.description.trim()
+          : null;
+      }
+      if (data.source !== undefined) patch.source = data.source;
+      if (data.metadata !== undefined) patch.metadata = data.metadata;
+      return db
+        .update(labels)
+        .set(patch)
+        .where(eq(labels.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
     },
 
     deleteLabel: async (id: string) =>
@@ -2089,14 +2274,14 @@ export function issueService(db: Db) {
         if (!anchor) return [];
         conditions.push(
           order === "asc"
-            ? sql<boolean>`(
-                ${issueComments.createdAt} > ${anchor.createdAt}
-                OR (${issueComments.createdAt} = ${anchor.createdAt} AND ${issueComments.id} > ${anchor.id})
-              )`
-            : sql<boolean>`(
-                ${issueComments.createdAt} < ${anchor.createdAt}
-                OR (${issueComments.createdAt} = ${anchor.createdAt} AND ${issueComments.id} < ${anchor.id})
-              )`,
+            ? or(
+                gt(issueComments.createdAt, anchor.createdAt),
+                and(eq(issueComments.createdAt, anchor.createdAt), gt(issueComments.id, anchor.id)),
+              )!
+            : or(
+                lt(issueComments.createdAt, anchor.createdAt),
+                and(eq(issueComments.createdAt, anchor.createdAt), lt(issueComments.id, anchor.id)),
+              )!,
         );
       }
 
@@ -2181,17 +2366,42 @@ export function issueService(db: Db) {
       actor: { agentId?: string; userId?: string; runId?: string | null },
     ) => {
       const issue = await db
-        .select({ companyId: issues.companyId })
+        .select({
+          companyId: issues.companyId,
+          identifier: issues.identifier,
+          projectId: issues.projectId,
+          projectWorkspaceId: issues.projectWorkspaceId,
+        })
         .from(issues)
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
 
       if (!issue) throw notFound("Issue not found");
 
+      let normalizedCommentBody = body;
+      if (actor.agentId && actor.runId && issue.projectId && issue.projectWorkspaceId) {
+        const baselineContext = await db
+          .select({
+            operatingContext: projects.operatingContext,
+            workspaceMetadata: projectWorkspaces.metadata,
+          })
+          .from(projects)
+          .leftJoin(projectWorkspaces, eq(projectWorkspaces.id, issue.projectWorkspaceId))
+          .where(and(eq(projects.id, issue.projectId), eq(projects.companyId, issue.companyId)))
+          .then((rows) => rows[0] ?? null);
+        normalizedCommentBody = normalizeBaselineTrackingIssueAgentComment({
+          body,
+          issueId,
+          issueIdentifier: issue.identifier,
+          workspaceMetadata: baselineContext?.workspaceMetadata ?? null,
+          operatingContext: baselineContext?.operatingContext ?? null,
+        });
+      }
+
       const currentUserRedactionOptions = {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
       };
-      const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
+      const redactedBody = redactCurrentUserText(normalizedCommentBody, currentUserRedactionOptions);
       const [comment] = await db
         .insert(issueComments)
         .values({

@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { issuesApi } from "../api/issues";
+import { operatorProfileApi } from "../api/operatorProfile";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -16,6 +17,11 @@ import { buildExecutionPolicy, stageParticipantValues } from "../lib/issue-execu
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
+import { ProjectIssueContextPanel } from "./ProjectIssueContextPanel";
+import {
+  getProjectIssueContextModel,
+  getProjectParticipantSuggestions,
+} from "../lib/project-operating-context";
 import { formatDate, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Separator } from "@/components/ui/separator";
@@ -182,8 +188,13 @@ export function IssueProperties({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
   });
+  const { data: operatorProfile } = useQuery({
+    queryKey: queryKeys.operatorProfile,
+    queryFn: () => operatorProfileApi.get(),
+  });
   const currentUserId = session?.user?.id ?? session?.session?.userId;
-  const currentUserName = session?.user?.name ?? null;
+  const currentUserName = operatorProfile?.name ?? session?.user?.name ?? null;
+  const currentUserImage = operatorProfile?.image ?? session?.user?.image ?? null;
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(companyId!),
@@ -247,8 +258,24 @@ export function IssueProperties({
     return project?.name ?? id.slice(0, 8);
   };
   const currentProject = issue.projectId
-    ? orderedProjects.find((project) => project.id === issue.projectId) ?? null
-    : null;
+    ? orderedProjects.find((project) => project.id === issue.projectId) ?? issue.project ?? null
+    : issue.project ?? null;
+  const isRepositoryBaselineTrackingIssue = Boolean(
+    currentProject?.operatingContext?.baselineTrackingIssueId === issue.id
+    || (
+      issue.identifier
+      && currentProject?.operatingContext?.baselineTrackingIssueIdentifier === issue.identifier
+    ),
+  );
+  const currentProjectIssueContext = getProjectIssueContextModel(currentProject);
+  const participantSuggestions = getProjectParticipantSuggestions(currentProject, agents ?? []);
+  const recommendedProjectLabels = useMemo(() => {
+    if (!labels?.length || !currentProjectIssueContext?.labelCatalog.length) return [];
+    const labelByName = new Map(labels.map((label) => [label.name.trim().toLowerCase(), label]));
+    return currentProjectIssueContext.labelCatalog
+      .map((entry) => labelByName.get(entry.name.trim().toLowerCase()) ?? null)
+      .filter((label): label is NonNullable<typeof labels>[number] => Boolean(label));
+  }, [currentProjectIssueContext, labels]);
   const projectLink = (id: string | null) => {
     if (!id) return null;
     const project = projects?.find((p) => p.id === id) ?? null;
@@ -267,6 +294,8 @@ export function IssueProperties({
   const reviewerValues = stageParticipantValues(issue.executionPolicy, "review");
   const approverValues = stageParticipantValues(issue.executionPolicy, "approval");
   const userLabel = (userId: string | null | undefined) => formatAssigneeUserLabel(userId, currentUserId, currentUserName);
+  const userImage = (userId: string | null | undefined) =>
+    currentUserId && userId === currentUserId ? currentUserImage : null;
   const assigneeUserLabel = userLabel(issue.assigneeUserId);
   const creatorUserLabel = userLabel(issue.createdByUserId);
   const updateExecutionPolicy = (nextReviewers: string[], nextApprovers: string[]) => {
@@ -384,25 +413,55 @@ export function IssueProperties({
         onChange={(e) => setLabelSearch(e.target.value)}
         autoFocus={!inline}
       />
+      {recommendedProjectLabels.length > 0 ? (
+        <div className="mb-2 space-y-1.5 border-b border-border pb-2">
+          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Project recommended</div>
+          <div className="flex flex-wrap gap-1">
+            {recommendedProjectLabels.map((label) => {
+              const selected = (issue.labelIds ?? []).includes(label.id);
+              return (
+                <button
+                  key={`recommended-${label.id}`}
+                  type="button"
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] transition-colors",
+                    selected ? "border-foreground/30 bg-accent text-foreground" : "border-border text-muted-foreground hover:bg-accent/50",
+                  )}
+                  onClick={() => toggleLabel(label.id)}
+                >
+                  <span className="h-2 w-2 rounded-full" style={{ backgroundColor: label.color }} />
+                  {label.name}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
       <div className="max-h-44 overflow-y-auto overscroll-contain space-y-0.5">
         {(labels ?? [])
           .filter((label) => {
             if (!labelSearch.trim()) return true;
-            return label.name.toLowerCase().includes(labelSearch.toLowerCase());
+            const query = labelSearch.toLowerCase();
+            return (
+              label.name.toLowerCase().includes(query) ||
+              (label.description ?? "").toLowerCase().includes(query)
+            );
           })
           .map((label) => {
             const selected = (issue.labelIds ?? []).includes(label.id);
             return (
               <button
                 key={label.id}
-                className={cn(
-                  "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-left",
-                  selected && "bg-accent"
-                )}
+                className={cn("flex items-start gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-left", selected && "bg-accent")}
                 onClick={() => toggleLabel(label.id)}
               >
-                <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: label.color }} />
-                <span className="truncate">{label.name}</span>
+                <span className="mt-0.5 h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: label.color }} />
+                <span className="min-w-0">
+                  <span className="block truncate">{label.name}</span>
+                  {label.description ? (
+                    <span className="block text-[11px] text-muted-foreground">{label.description}</span>
+                  ) : null}
+                </span>
               </button>
             );
           })}
@@ -442,10 +501,7 @@ export function IssueProperties({
   const assigneeTrigger = assignee ? (
     <Identity name={assignee.name} size="sm" />
   ) : assigneeUserLabel ? (
-    <>
-      <User className="h-3.5 w-3.5 text-muted-foreground" />
-      <span className="text-sm">{assigneeUserLabel}</span>
-    </>
+    <Identity name={assigneeUserLabel} avatarUrl={userImage(issue.assigneeUserId)} size="sm" />
   ) : (
     <>
       <User className="h-3.5 w-3.5 text-muted-foreground" />
@@ -929,6 +985,54 @@ export function IssueProperties({
           {projectContent}
         </PropertyPicker>
 
+        {currentProject ? (
+          <div className="pb-1">
+            <ProjectIssueContextPanel
+              project={currentProject}
+              title="Project context"
+            />
+            {participantSuggestions ? (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {participantSuggestions.assigneeAgentId && issue.assigneeAgentId !== participantSuggestions.assigneeAgentId ? (
+                  <button
+                    type="button"
+                    className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+                    onClick={() => onUpdate({ assigneeAgentId: participantSuggestions.assigneeAgentId, assigneeUserId: null })}
+                  >
+                    Suggest assignee
+                  </button>
+                ) : null}
+                {participantSuggestions.reviewerValue && !reviewerValues.includes(participantSuggestions.reviewerValue) ? (
+                  <button
+                    type="button"
+                    className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+                    onClick={() =>
+                      updateExecutionPolicy(
+                        [...reviewerValues, participantSuggestions.reviewerValue!],
+                        approverValues,
+                      )}
+                  >
+                    Suggest reviewer
+                  </button>
+                ) : null}
+                {!isRepositoryBaselineTrackingIssue && participantSuggestions.approverValue && !approverValues.includes(participantSuggestions.approverValue) ? (
+                  <button
+                    type="button"
+                    className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+                    onClick={() =>
+                      updateExecutionPolicy(
+                        reviewerValues,
+                        [...approverValues, participantSuggestions.approverValue!],
+                      )}
+                  >
+                    Suggest approver
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
         <PropertyPicker
           inline={inline}
           label="Parent"
@@ -1029,24 +1133,28 @@ export function IssueProperties({
         </PropertyPicker>
         {nextRunnableExecutionStage === "review" && reviewerValues.length > 0 ? runExecutionButton("review") : null}
 
-        <PropertyPicker
-          inline={inline}
-          label="Approvers"
-          open={approversOpen}
-          onOpenChange={(open) => { setApproversOpen(open); if (!open) setApproverSearch(""); }}
-          triggerContent={approverTrigger}
-          triggerClassName="min-w-0 max-w-full"
-          popoverClassName="w-56"
-        >
-          {executionParticipantsContent(
-            "approval",
-            approverValues,
-            approverSearch,
-            setApproverSearch,
-            () => updateExecutionPolicy(reviewerValues, []),
-          )}
-        </PropertyPicker>
-        {nextRunnableExecutionStage === "approval" && approverValues.length > 0 ? runExecutionButton("approval") : null}
+        {!isRepositoryBaselineTrackingIssue ? (
+          <>
+            <PropertyPicker
+              inline={inline}
+              label="Approvers"
+              open={approversOpen}
+              onOpenChange={(open) => { setApproversOpen(open); if (!open) setApproverSearch(""); }}
+              triggerContent={approverTrigger}
+              triggerClassName="min-w-0 max-w-full"
+              popoverClassName="w-56"
+            >
+              {executionParticipantsContent(
+                "approval",
+                approverValues,
+                approverSearch,
+                setApproverSearch,
+                () => updateExecutionPolicy(reviewerValues, []),
+              )}
+            </PropertyPicker>
+            {nextRunnableExecutionStage === "approval" && approverValues.length > 0 ? runExecutionButton("approval") : null}
+          </>
+        ) : null}
 
         {currentExecutionLabel && (
           <PropertyRow label="Execution">
@@ -1098,10 +1206,11 @@ export function IssueProperties({
                 <Identity name={agentName(issue.createdByAgentId) ?? issue.createdByAgentId.slice(0, 8)} size="sm" />
               </Link>
             ) : (
-              <>
-                <User className="h-3.5 w-3.5 text-muted-foreground" />
-                <span className="text-sm">{creatorUserLabel ?? "User"}</span>
-              </>
+              <Identity
+                name={creatorUserLabel ?? "User"}
+                avatarUrl={userImage(issue.createdByUserId)}
+                size="sm"
+              />
             )}
           </PropertyRow>
         )}

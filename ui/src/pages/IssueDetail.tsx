@@ -3,12 +3,14 @@ import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
+import type { IssueAddCommentResponse } from "../api/issues";
 import { approvalsApi } from "../api/approvals";
 import { activityApi, type RunForIssue } from "../api/activity";
 import { heartbeatsApi, type ActiveRunForIssue, type LiveRunForIssue } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
+import { operatorProfileApi } from "../api/operatorProfile";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
@@ -45,6 +47,7 @@ import {
   matchesIssueRef,
   mergeIssueComments,
   removeIssueCommentFromPages,
+  shouldAutoloadOlderIssueComments,
   takeOptimisticIssueComment,
   upsertIssueCommentInPages,
   type IssueCommentReassignment,
@@ -53,6 +56,7 @@ import {
 import { removeLiveRunById, upsertInterruptedRun } from "../lib/optimistic-issue-runs";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatTokens, visibleRunCostUsd } from "../lib/utils";
+import { projectWorkspaceUrl } from "../lib/utils";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { InlineEditor } from "../components/InlineEditor";
 import { IssueChatThread, type IssueChatComposerHandle } from "../components/IssueChatThread";
@@ -62,7 +66,6 @@ import { IssueProperties } from "../components/IssueProperties";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
 import type { MentionOption } from "../components/MarkdownEditor";
 import { ImageGalleryModal } from "../components/ImageGalleryModal";
-import { ScrollToBottom } from "../components/ScrollToBottom";
 import { StatusIcon } from "../components/StatusIcon";
 import { PriorityIcon } from "../components/PriorityIcon";
 import { Identity } from "../components/Identity";
@@ -81,6 +84,12 @@ import { shouldRenderRichSubIssuesSection } from "../lib/issue-detail-subissues"
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
 import { readRepositoryDocumentationBaseline } from "../lib/repository-documentation-baseline";
 import {
+  buildBaselineCeoReviewRequestComment,
+  buildRepositoryBaselineReviewFingerprint,
+  readBaselineReviewRequestPresent,
+} from "../lib/repository-baseline-actions";
+import { buildStaffingHireDraft } from "../lib/staffing-hire";
+import {
   Activity as ActivityIcon,
   Archive,
   ArrowLeft,
@@ -90,6 +99,7 @@ import {
   EyeOff,
   FileSearch,
   Hexagon,
+  Loader2,
   MessageSquare,
   MoreHorizontal,
   MoreVertical,
@@ -98,11 +108,11 @@ import {
   Repeat,
   SlidersHorizontal,
   Trash2,
+  UserPlus,
 } from "lucide-react";
 import {
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
-  REPOSITORY_BASELINE_CEO_REVIEW_REQUEST_MARKER,
   type ActivityEvent,
   type Agent,
   type FeedbackVote,
@@ -122,50 +132,7 @@ type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 const ISSUE_COMMENT_PAGE_SIZE = 50;
-
-function formatBaselineList(values: readonly string[] | null | undefined, emptyLabel: string) {
-  const normalized = (values ?? []).map((value) => value.trim()).filter(Boolean);
-  if (normalized.length === 0) return `- ${emptyLabel}`;
-  return normalized.map((value) => `- ${value}`).join("\n");
-}
-
-function buildBaselineCeoReviewRequestComment(input: {
-  baselineIssue: Issue;
-  summary: string | null | undefined;
-  stack: readonly string[] | null | undefined;
-  documentationFiles: readonly string[] | null | undefined;
-  guardrails: readonly string[] | null | undefined;
-}) {
-  const baselineRef = input.baselineIssue.identifier ?? input.baselineIssue.id;
-  return [
-    REPOSITORY_BASELINE_CEO_REVIEW_REQUEST_MARKER,
-    `CEO baseline review request for ${baselineRef}.`,
-    "",
-    "Scope constraints:",
-    "- Keep the review in this same baseline issue.",
-    "- Do not create child issues, new issues, backlog decomposition, PRs, or repository writes.",
-    "- Do not wake or assign other agents unless the operator explicitly asks.",
-    "- Use the baseline as read-only Paperclip context.",
-    "- When documentation conflicts, prefer operator-approved freshness notes and explicitly named canonical docs over older analysis docs.",
-    "",
-    "Baseline summary:",
-    input.summary?.trim() || "No baseline summary recorded.",
-    "",
-    "Detected stack signals:",
-    formatBaselineList(input.stack, "No stack signals recorded."),
-    "",
-    "Documentation files to inspect first:",
-    formatBaselineList(input.documentationFiles, "No documentation files recorded."),
-    "",
-    "Baseline guardrails:",
-    formatBaselineList(input.guardrails, "No guardrails recorded."),
-    "",
-    "Expected output:",
-    "- Confirm whether the baseline is sufficient for future agent work.",
-    "- Identify missing context the operator should add before delegation.",
-    "- Recommend the next single operator action, if any.",
-  ].join("\n");
-}
+const ISSUE_COMMENT_AUTOLOAD_LIMIT = ISSUE_COMMENT_PAGE_SIZE * 3;
 
 function resolveRunningIssueRun(
   activeRun: ActiveRunForIssue | null | undefined,
@@ -301,11 +268,13 @@ function ActorIdentity({
   agentMap,
   currentUserId,
   currentUserName,
+  currentUserImage,
 }: {
   evt: ActivityEvent;
   agentMap: Map<string, Agent>;
   currentUserId?: string | null;
   currentUserName?: string | null;
+  currentUserImage?: string | null;
 }) {
   const id = evt.actorId;
   if (evt.actorType === "agent") {
@@ -314,7 +283,14 @@ function ActorIdentity({
   }
   if (evt.actorType === "system") return <Identity name="System" size="sm" />;
   if (evt.actorType === "user") {
-    return <Identity name={currentUserId && id === currentUserId ? currentUserName ?? "You" : "Board"} size="sm" />;
+    const isCurrentUser = Boolean(currentUserId && id === currentUserId);
+    return (
+      <Identity
+        name={isCurrentUser ? currentUserName ?? "You" : "Board"}
+        avatarUrl={isCurrentUser ? currentUserImage : null}
+        size="sm"
+      />
+    );
   }
   return <Identity name={id || "Unknown"} size="sm" />;
 }
@@ -366,6 +342,17 @@ function IssueChatSkeleton() {
         <Skeleton className="h-24 w-full rounded-xl" />
       </div>
     </div>
+  );
+}
+
+function isDuplicateBaselineReviewRequestResponse(
+  response: IssueAddCommentResponse,
+): response is Extract<IssueAddCommentResponse, { skipped: "duplicate_baseline_review_request" }> {
+  return (
+    typeof response === "object"
+    && response !== null
+    && "skipped" in response
+    && response.skipped === "duplicate_baseline_review_request"
   );
 }
 
@@ -558,12 +545,14 @@ type IssueDetailChatTabProps = {
   agentMap: Map<string, Agent>;
   currentUserId: string | null;
   currentUserName?: string | null;
+  currentUserImage?: string | null;
   draftKey: string;
   reassignOptions: Array<{ id: string; label: string; searchText?: string }>;
   currentAssigneeValue: string;
   suggestedAssigneeValue: string;
   mentions: MentionOption[];
   composerDisabledReason: string | null;
+  resolveComposerSubmitDisabledReason?: (body: string) => string | null;
   onVote: (
     commentId: string,
     vote: "up" | "down",
@@ -592,12 +581,14 @@ function IssueDetailChatTab({
   agentMap,
   currentUserId,
   currentUserName,
+  currentUserImage,
   draftKey,
   reassignOptions,
   currentAssigneeValue,
   suggestedAssigneeValue,
   mentions,
   composerDisabledReason,
+  resolveComposerSubmitDisabledReason,
   onVote,
   onAdd,
   onImageUpload,
@@ -739,6 +730,7 @@ function IssueDetailChatTab({
         agentMap={agentMap}
         currentUserId={currentUserId}
         currentUserName={currentUserName}
+        currentUserImage={currentUserImage}
         draftKey={draftKey}
         enableReassign
         reassignOptions={reassignOptions}
@@ -746,6 +738,7 @@ function IssueDetailChatTab({
         suggestedAssigneeValue={suggestedAssigneeValue}
         mentions={mentions}
         composerDisabledReason={composerDisabledReason}
+        resolveComposerSubmitDisabledReason={resolveComposerSubmitDisabledReason}
         onVote={onVote}
         onAdd={onAdd}
         imageUploadHandler={onImageUpload}
@@ -771,6 +764,7 @@ type IssueDetailActivityTabProps = {
   agentMap: Map<string, Agent>;
   currentUserId: string | null;
   currentUserName?: string | null;
+  currentUserImage?: string | null;
   pendingApprovalAction: { approvalId: string; action: "approve" | "reject" } | null;
   onApprovalAction: (approvalId: string, action: "approve" | "reject") => void;
 };
@@ -780,6 +774,7 @@ function IssueDetailActivityTab({
   agentMap,
   currentUserId,
   currentUserName,
+  currentUserImage,
   pendingApprovalAction,
   onApprovalAction,
 }: IssueDetailActivityTabProps) {
@@ -896,7 +891,13 @@ function IssueDetailActivityTab({
         <div className="space-y-1.5">
           {activity.slice(0, 20).map((evt) => (
             <div key={evt.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <ActorIdentity evt={evt} agentMap={agentMap} currentUserId={currentUserId} currentUserName={currentUserName} />
+              <ActorIdentity
+                evt={evt}
+                agentMap={agentMap}
+                currentUserId={currentUserId}
+                currentUserName={currentUserName}
+                currentUserImage={currentUserImage}
+              />
               <span>{formatIssueActivityAction(evt.action, evt.details, { agentMap, currentUserId, currentUserName })}</span>
               <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
             </div>
@@ -996,6 +997,30 @@ export function IssueDetail() {
     [commentPages?.pages],
   );
 
+  useEffect(() => {
+    if (
+      !shouldAutoloadOlderIssueComments({
+        activeDetailTab: detailTab,
+        hasOlderComments,
+        loadedCommentCount: comments.length,
+        initialPageLoading: commentsLoading,
+        olderPageLoading: commentsLoadingOlder,
+        autoLoadLimit: ISSUE_COMMENT_AUTOLOAD_LIMIT,
+      })
+    ) {
+      return;
+    }
+
+    void fetchOlderComments();
+  }, [
+    comments.length,
+    commentsLoading,
+    commentsLoadingOlder,
+    detailTab,
+    fetchOlderComments,
+    hasOlderComments,
+  ]);
+
   const { data: attachments, isLoading: attachmentsLoading } = useQuery({
     queryKey: queryKeys.issues.attachments(issueId!),
     queryFn: () => issuesApi.listAttachments(issueId!),
@@ -1047,13 +1072,19 @@ export function IssueDetail() {
     queryFn: () => authApi.getSession(),
   });
 
+  const { data: operatorProfile } = useQuery({
+    queryKey: queryKeys.operatorProfile,
+    queryFn: () => operatorProfileApi.get(),
+  });
+
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
-  const currentUserName = session?.user?.name ?? null;
+  const currentUserName = operatorProfile?.name ?? session?.user?.name ?? null;
+  const currentUserImage = operatorProfile?.image ?? session?.user?.image ?? null;
   const { data: feedbackVotes } = useQuery({
     queryKey: queryKeys.issues.feedbackVotes(issueId!),
     queryFn: () => issuesApi.listFeedbackVotes(issueId!),
@@ -1157,9 +1188,72 @@ export function IssueDetail() {
     return null;
   }, [issue]);
   const isRepositoryBaselineTrackingIssue = Boolean(repositoryBaseline);
+  const baselineReviewFingerprint = useMemo(
+    () => buildRepositoryBaselineReviewFingerprint({ project: issue?.project, baseline: repositoryBaseline }),
+    [issue?.project, repositoryBaseline],
+  );
+  const canonicalBaselineReviewRequestBody = useMemo(() => {
+    if (!issue || !repositoryBaseline) return null;
+    return buildBaselineCeoReviewRequestComment({
+      baselineIssue: {
+        id: issue.id,
+        identifier: issue.identifier ?? null,
+      },
+      summary: repositoryBaseline.summary,
+      stack: repositoryBaseline.stack,
+      documentationFiles: repositoryBaseline.documentationFiles,
+      guardrails: repositoryBaseline.guardrails,
+      reviewFingerprint: baselineReviewFingerprint,
+    }).trim();
+  }, [baselineReviewFingerprint, issue, repositoryBaseline]);
+  const baselineOperatingContext = issue?.project?.operatingContext ?? null;
+  const repositoryContextAccepted = baselineOperatingContext?.baselineStatus === "accepted";
+  const executionReadiness = baselineOperatingContext?.executionReadiness ?? "unknown";
+  const executionContextReady = executionReadiness === "ready";
   const hasBaselineCeoReviewRequest = useMemo(
-    () => comments.some((comment) => comment.body.includes(REPOSITORY_BASELINE_CEO_REVIEW_REQUEST_MARKER)),
+    () => readBaselineReviewRequestPresent(comments),
     [comments],
+  );
+  const duplicateBaselineReviewRequestReason = useCallback((body: string) => {
+    if (!isRepositoryBaselineTrackingIssue || !canonicalBaselineReviewRequestBody) return null;
+    if (!hasBaselineCeoReviewRequest) return null;
+    if (body.trim() !== canonicalBaselineReviewRequestBody) return null;
+    return "This baseline review request is already recorded on this issue.";
+  }, [canonicalBaselineReviewRequestBody, hasBaselineCeoReviewRequest, isRepositoryBaselineTrackingIssue]);
+  const { data: linkedApprovalsForIssue = [] } = useQuery({
+    queryKey: queryKeys.issues.approvals(issueId!),
+    queryFn: () => issuesApi.listApprovals(issueId!),
+    enabled: !!issueId,
+    placeholderData: keepPreviousDataForSameQueryTail<Awaited<ReturnType<typeof issuesApi.listApprovals>>>(issueId ?? "pending"),
+  });
+  const isStaffingHiringIssue = issue?.originKind === "staffing_hiring";
+  const pendingStaffingHireApproval = useMemo(
+    () =>
+      isStaffingHiringIssue
+        ? linkedApprovalsForIssue.find(
+            (approval) =>
+              approval.type === "hire_agent"
+              && (approval.status === "pending" || approval.status === "revision_requested"),
+          ) ?? null
+        : null,
+    [isStaffingHiringIssue, linkedApprovalsForIssue],
+  );
+  const staffingWorkspaceHref = issue?.projectId && issue.projectWorkspaceId
+    ? resolvedProject
+      ? projectWorkspaceUrl(resolvedProject, issue.projectWorkspaceId)
+      : `/projects/${issue.projectId}/workspaces/${issue.projectWorkspaceId}`
+    : null;
+  const staffingHireDraft = useMemo(
+    () =>
+      issue && isStaffingHiringIssue
+        ? buildStaffingHireDraft({
+            issueId: issue.id,
+            project: resolvedProject,
+            agents,
+            linkedApprovals: linkedApprovalsForIssue,
+          })
+        : null,
+    [agents, isStaffingHiringIssue, issue, linkedApprovalsForIssue, resolvedProject],
   );
   const openNewSubIssue = useCallback(() => {
     if (!issue) return;
@@ -1393,6 +1487,85 @@ export function IssueDetail() {
       setPendingApprovalAction(null);
     },
   });
+  const createStaffingHireApproval = useMutation({
+    mutationFn: async () => {
+      if (!selectedCompanyId || !issue || !staffingHireDraft || staffingHireDraft.disabledReason) {
+        throw new Error("Staffing hire request is not ready.");
+      }
+      return agentsApi.hire(selectedCompanyId, staffingHireDraft.request);
+    },
+    onSuccess: (result) => {
+      invalidateIssueDetail();
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.approvals(issueId!) });
+      invalidateIssueCollections();
+      if (resolvedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(resolvedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(resolvedCompanyId) });
+        if (issue?.projectId) {
+          queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(issue.projectId) });
+        }
+      }
+      pushToast({
+        title: "Hire approval created",
+        body: result.approval
+          ? `Created pending ${staffingHireDraft?.roleLabel ?? "staffing"} hire approval and assigned this staffing issue for CEO review.`
+          : `${staffingHireDraft?.roleLabel ?? "Staffing"} hire was created without board approval.`,
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Hire approval failed",
+        body: err instanceof Error ? err.message : "Unable to create the staffing hire approval",
+        tone: "error",
+      });
+    },
+  });
+  const approveStaffingHireAndCloseIssue = useMutation({
+    mutationFn: async () => {
+      if (!issue || !pendingStaffingHireApproval) {
+        throw new Error("No pending staffing hire approval is linked to this issue.");
+      }
+      const role =
+        typeof pendingStaffingHireApproval.payload === "object"
+        && pendingStaffingHireApproval.payload !== null
+        && "role" in pendingStaffingHireApproval.payload
+        && typeof pendingStaffingHireApproval.payload.role === "string"
+          ? pendingStaffingHireApproval.payload.role.toUpperCase()
+          : "staffing";
+      await approvalsApi.approve(
+        pendingStaffingHireApproval.id,
+        `Approved ${role} hire from staffing issue ${issue.identifier ?? issue.id}.`,
+      );
+      return issuesApi.update(issue.id, { status: "done" });
+    },
+    onSuccess: () => {
+      invalidateIssueDetail();
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.approvals(issueId!) });
+      invalidateIssueCollections();
+      if (resolvedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(resolvedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(resolvedCompanyId) });
+      }
+      if (pendingStaffingHireApproval) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.approvals.detail(pendingStaffingHireApproval.id) });
+      }
+      pushToast({
+        title: "CTO hire approved",
+        body: "The hire approval was approved and this staffing issue was closed.",
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Unable to close staffing issue",
+        body: err instanceof Error ? err.message : "The hire approval could not be approved.",
+        tone: "error",
+      });
+    },
+  });
 
   const addComment = useMutation({
     mutationFn: ({ body, reopen, interrupt }: { body: string; reopen?: boolean; interrupt?: boolean }) =>
@@ -1434,6 +1607,20 @@ export function IssueDetail() {
         setOptimisticComments((current) =>
           current.filter((entry) => entry.clientId !== context.optimisticCommentId),
         );
+      }
+      if (isDuplicateBaselineReviewRequestResponse(comment)) {
+        if (context?.previousIssue) {
+          queryClient.setQueryData(queryKeys.issues.detail(issueId!), context.previousIssue);
+        }
+        pushToast({
+          title: "Duplicate review request skipped",
+          body: "That baseline review request was already recorded for this issue.",
+          tone: "info",
+        });
+        invalidateIssueDetail();
+        invalidateIssueThreadLazily();
+        invalidateIssueCollections();
+        return;
       }
       if (context?.optimisticCommentId && cancelledQueuedOptimisticCommentIdsRef.current.has(context.optimisticCommentId)) {
         cancelledQueuedOptimisticCommentIdsRef.current.delete(context.optimisticCommentId);
@@ -1600,51 +1787,6 @@ export function IssueDetail() {
       invalidateIssueCollections();
     },
   });
-  const requestBaselineCeoReview = useCallback(() => {
-    if (!issue || !repositoryBaseline) return;
-    if (!baselineReviewAgent) {
-      pushToast({
-        title: "CEO agent not found",
-        body: "Create or activate a CEO agent before requesting a baseline review.",
-        tone: "error",
-      });
-      return;
-    }
-    if (hasBaselineCeoReviewRequest) return;
-
-    addCommentAndReassign.mutate({
-      body: buildBaselineCeoReviewRequestComment({
-        baselineIssue: issue,
-        summary: repositoryBaseline.summary,
-        stack: repositoryBaseline.stack,
-        documentationFiles: repositoryBaseline.documentationFiles,
-        guardrails: repositoryBaseline.guardrails,
-      }),
-      reopen: issue.status === "backlog" || issue.status === "done" || issue.status === "cancelled",
-      reassignment: {
-        assigneeAgentId: baselineReviewAgent.id,
-        assigneeUserId: null,
-      },
-    }, {
-      onSuccess: () => {
-        invalidateIssueRunState();
-        pushToast({
-          title: "CEO review requested",
-          body: `Commented on this issue and assigned it to ${baselineReviewAgent.name}.`,
-          tone: "success",
-        });
-      },
-    });
-  }, [
-    addCommentAndReassign,
-    baselineReviewAgent,
-    hasBaselineCeoReviewRequest,
-    invalidateIssueRunState,
-    issue,
-    pushToast,
-    repositoryBaseline,
-  ]);
-
   const interruptQueuedComment = useMutation({
     mutationFn: (runId: string) => heartbeatsApi.cancel(runId),
     onMutate: async (runId) => {
@@ -2487,27 +2629,31 @@ export function IssueDetail() {
             <div className="space-y-1">
               <div className="flex items-center gap-2 text-sm font-medium text-foreground">
                 <FileSearch className="h-4 w-4 text-sky-500" />
-                Baseline operator actions
+                Baseline support surface
               </div>
               <p className="text-sm text-muted-foreground">
-                This issue is the read-only repository baseline. Keep the review here; requesting CEO review posts a
-                comment on this issue, assigns it to the CEO, and starts the normal issue workflow without creating a
-                new issue. A successful CEO review moves this issue to operator review; accepting the baseline is a
-                separate manual decision.
+                This issue remains the canonical evidence thread for repository review, comments, and acceptance history.
+                The primary operator flow now lives in Project Intake.
               </p>
               {!baselineReviewAgent ? (
                 <p className="text-xs text-amber-600">
                   No active CEO agent is available for baseline review.
                 </p>
+              ) : repositoryContextAccepted && !executionContextReady ? (
+                <p className="text-xs text-sky-700">
+                  Repository context is accepted. The next primary step is staffing in Project Intake.
+                </p>
+              ) : executionContextReady ? (
+                <p className="text-xs text-emerald-700">
+                  Execution clarifications are closed. Project Intake can continue staffing from a cleaner technical contract.
+                </p>
               ) : issue.status === "in_review" ? (
                 <p className="text-xs text-sky-700">
-                  CEO review is ready. Read the latest comments, then mark the baseline accepted only if the operator
-                  agrees with the result.
+                  CEO review is ready. Read the latest comments, then continue the workflow from Project Intake.
                 </p>
               ) : issue.status === "blocked" && hasBaselineCeoReviewRequest ? (
                 <p className="text-xs text-amber-700">
-                  CEO review was requested, but this issue is blocked. If the review comment is sufficient, accept the
-                  baseline manually; otherwise rerun after resolving the runtime problem.
+                  CEO review was requested, but this issue is blocked. Use Project Intake after the runtime problem is resolved.
                 </p>
               ) : hasBaselineCeoReviewRequest ? (
                 <p className="text-xs text-muted-foreground">
@@ -2516,26 +2662,69 @@ export function IssueDetail() {
               ) : null}
             </div>
             <div className="flex flex-col gap-2 sm:flex-row">
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                disabled={!baselineReviewAgent || hasBaselineCeoReviewRequest || addCommentAndReassign.isPending}
-                onClick={requestBaselineCeoReview}
-              >
-                <MessageSquare className="mr-1.5 h-3.5 w-3.5" />
-                {hasBaselineCeoReviewRequest ? "CEO review requested" : "Ask CEO to review baseline"}
-              </Button>
-              {issue.status !== "done" ? (
+              {issue.projectId ? (
+                <Button asChild type="button" variant="secondary" size="sm">
+                  <Link to={`/projects/${issue.project?.urlKey ?? issue.projectId}/intake`}>
+                    <UserPlus className="mr-1.5 h-3.5 w-3.5" />
+                    Open Project Intake
+                  </Link>
+                </Button>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {issue && isStaffingHiringIssue ? (
+        <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/10 p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+                <UserPlus className="h-4 w-4 text-emerald-600" />
+                Staffing operator actions
+              </div>
+              <p className="text-sm text-muted-foreground">
+                This issue is the operational staffing thread. Create the hire approval here, then approve it from this
+                panel to activate the CTO and close the staffing issue. The baseline issue remains the canonical
+                technical reference for the new hire.
+              </p>
+              {staffingHireDraft?.disabledReason ? (
+                <p className="text-xs text-muted-foreground">
+                  {staffingHireDraft.disabledReason}
+                </p>
+              ) : (
+                <p className="text-xs text-emerald-700">
+                  This will create a pending {staffingHireDraft?.roleLabel ?? "staffing"} hire approval tied to this
+                  issue, inheriting the active CEO adapter defaults without copying its managed instructions bundle.
+                </p>
+              )}
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              {pendingStaffingHireApproval ? (
                 <Button
                   type="button"
-                  variant="outline"
+                  variant="default"
                   size="sm"
-                  disabled={updateIssue.isPending}
-                  onClick={() => updateIssue.mutate({ status: "done" })}
+                  disabled={approveStaffingHireAndCloseIssue.isPending}
+                  onClick={() => approveStaffingHireAndCloseIssue.mutate()}
                 >
-                  <Check className="mr-1.5 h-3.5 w-3.5" />
-                  Mark baseline accepted
+                  {approveStaffingHireAndCloseIssue.isPending ? (
+                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Check className="mr-1.5 h-3.5 w-3.5" />
+                  )}
+                  Approve {staffingHireDraft?.roleLabel ?? "hire"} hire and close issue
+                </Button>
+              ) : issue.status !== "done" ? (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  disabled={Boolean(staffingHireDraft?.disabledReason) || createStaffingHireApproval.isPending}
+                  onClick={() => createStaffingHireApproval.mutate()}
+                >
+                  <UserPlus className="mr-1.5 h-3.5 w-3.5" />
+                  Create {staffingHireDraft?.roleLabel ?? "hire"} approval
                 </Button>
               ) : null}
             </div>
@@ -2777,12 +2966,14 @@ export function IssueDetail() {
               agentMap={agentMap}
               currentUserId={currentUserId}
               currentUserName={currentUserName}
+              currentUserImage={currentUserImage}
               draftKey={`paperclip:issue-comment-draft:${issue.id}`}
               reassignOptions={commentReassignOptions}
               currentAssigneeValue={actualAssigneeValue}
               suggestedAssigneeValue={suggestedAssigneeValue}
               mentions={mentionOptions}
               composerDisabledReason={commentComposerDisabledReason}
+              resolveComposerSubmitDisabledReason={duplicateBaselineReviewRequestReason}
               onVote={async (commentId, vote, options) => {
                 await feedbackVoteMutation.mutateAsync({
                   targetType: "issue_comment",
@@ -2824,6 +3015,7 @@ export function IssueDetail() {
               agentMap={agentMap}
               currentUserId={currentUserId}
               currentUserName={currentUserName}
+              currentUserImage={currentUserImage}
               pendingApprovalAction={pendingApprovalAction}
               onApprovalAction={(approvalId, action) => {
                 approvalDecision.mutate({ approvalId, action });
@@ -2867,7 +3059,6 @@ export function IssueDetail() {
           </ScrollArea>
         </SheetContent>
       </Sheet>
-      <ScrollToBottom />
     </div>
   );
 }

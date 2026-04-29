@@ -9,6 +9,7 @@ import {
   createIssueAttachmentMetadataSchema,
   createIssueWorkProductSchema,
   createIssueLabelSchema,
+  updateIssueLabelSchema,
   checkoutIssueSchema,
   createIssueSchema,
   feedbackTargetTypeSchema,
@@ -25,7 +26,9 @@ import {
   isIssueIdentifierRef,
   isClosedIsolatedExecutionWorkspace,
   readRepositoryDocumentationBaselineFromMetadata,
+  projectIssueSystemGuidanceSchema,
   type ExecutionWorkspace,
+  type IssueLabel,
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
@@ -49,7 +52,7 @@ import {
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized } from "../errors.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
   isAllowedIssueAttachmentContentType,
@@ -65,11 +68,27 @@ import {
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
 } from "../services/issue-execution-policy.js";
+import {
+  hasRepositoryBaselineReviewRequestForFingerprint,
+  isRepositoryBaselineReviewRequestComment,
+  readRepositoryBaselineReviewRequestFingerprint,
+} from "../services/repository-baseline-review-comments.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
+
+async function shouldSkipDuplicateBaselineReviewRequestComment(
+  svc: ReturnType<typeof issueService>,
+  issueId: string,
+  commentBody: string | null | undefined,
+) {
+  if (!commentBody || !isRepositoryBaselineReviewRequestComment(commentBody)) return false;
+  const fingerprint = readRepositoryBaselineReviewRequestFingerprint(commentBody);
+  const existingComments = await svc.listComments(issueId, { limit: 200, order: "desc" });
+  return hasRepositoryBaselineReviewRequestForFingerprint(existingComments, fingerprint);
+}
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
@@ -182,6 +201,45 @@ function buildIssueRepositoryBaselineContext(project: {
     gaps: baseline.gaps ?? [],
     repository: baseline.repository ?? null,
     constraints: baseline.constraints ?? null,
+    recommendations: baseline.recommendations ?? null,
+    acceptedGuidance: baseline.acceptedGuidance ?? null,
+  };
+}
+
+function buildIssueProjectIssueSystemContext(input: {
+  labels: IssueLabel[];
+  repositoryBaseline: ReturnType<typeof buildIssueRepositoryBaselineContext>;
+  projectIssueSystemGuidance?: unknown;
+}) {
+  const baseline = input.repositoryBaseline;
+  const parsedProjectGuidance = projectIssueSystemGuidanceSchema.safeParse(input.projectIssueSystemGuidance);
+  const projectGuidance = parsedProjectGuidance.success ? parsedProjectGuidance.data : null;
+  const guidance = baseline?.acceptedGuidance ?? null;
+  const recommendations = baseline?.recommendations ?? null;
+  const suggestedLabels = guidance?.labels ?? recommendations?.labels ?? [];
+  const descriptionByName = new Map(
+    suggestedLabels.map((label) => [label.name.trim().toLowerCase(), label.description]),
+  );
+  const issuePolicy = guidance?.issuePolicy ?? recommendations?.issuePolicy ?? null;
+  const projectDefaults = guidance?.projectDefaults ?? recommendations?.projectDefaults ?? null;
+  if (input.labels.length === 0 && !projectGuidance && !issuePolicy && !projectDefaults) return null;
+
+  return {
+    labels: input.labels.map((label) => ({
+      id: label.id,
+      name: label.name,
+      color: label.color,
+      description: label.description ?? descriptionByName.get(label.name.trim().toLowerCase()) ?? null,
+      source: label.source ?? "manual",
+      metadata: label.metadata ?? null,
+    })),
+    parentChildGuidance: projectGuidance?.parentChildGuidance ?? issuePolicy?.parentChildGuidance ?? [],
+    blockingGuidance: projectGuidance?.blockingGuidance ?? issuePolicy?.blockingGuidance ?? [],
+    labelUsageGuidance: projectGuidance?.labelUsageGuidance ?? issuePolicy?.labelUsageGuidance ?? [],
+    reviewGuidance: projectGuidance?.reviewGuidance ?? issuePolicy?.reviewGuidance ?? [],
+    approvalGuidance: projectGuidance?.approvalGuidance ?? issuePolicy?.approvalGuidance ?? [],
+    canonicalDocs: projectGuidance?.canonicalDocs ?? projectDefaults?.canonicalDocs ?? [],
+    suggestedVerificationCommands: projectGuidance?.suggestedVerificationCommands ?? projectDefaults?.suggestedVerificationCommands ?? [],
   };
 }
 
@@ -709,9 +767,37 @@ export function issueRoutes(
       action: "label.created",
       entityType: "label",
       entityId: label.id,
-      details: { name: label.name, color: label.color },
+      details: { name: label.name, color: label.color, source: label.source },
     });
     res.status(201).json(label);
+  });
+
+  router.patch("/labels/:labelId", validate(updateIssueLabelSchema), async (req, res) => {
+    const labelId = req.params.labelId as string;
+    const existing = await svc.getLabelById(labelId);
+    if (!existing) {
+      res.status(404).json({ error: "Label not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    const updated = await svc.updateLabel(labelId, req.body);
+    if (!updated) {
+      res.status(404).json({ error: "Label not found" });
+      return;
+    }
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: updated.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "label.updated",
+      entityType: "label",
+      entityId: updated.id,
+      details: { changedKeys: Object.keys(req.body).sort() },
+    });
+    res.json(updated);
   });
 
   router.delete("/labels/:labelId", async (req, res) => {
@@ -793,7 +879,7 @@ export function issueRoutes(
         ? req.query.wakeCommentId.trim()
         : null;
 
-    const [{ project, goal }, ancestors, commentCursor, wakeComment, relations, attachments] =
+    const [{ project, goal }, ancestors, commentCursor, wakeComment, relations, attachments, companyLabels] =
       await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
@@ -801,7 +887,9 @@ export function issueRoutes(
       wakeCommentId ? svc.getComment(wakeCommentId) : null,
       svc.getRelationSummaries(issue.id),
       svc.listAttachments(issue.id),
+      svc.listLabels(issue.companyId),
     ]);
+    const repositoryBaseline = buildIssueRepositoryBaselineContext(project);
 
     res.json({
       issue: {
@@ -835,7 +923,12 @@ export function issueRoutes(
             targetDate: project.targetDate,
           }
         : null,
-      repositoryBaseline: buildIssueRepositoryBaselineContext(project),
+      repositoryBaseline,
+      projectIssueSystem: buildIssueProjectIssueSystemContext({
+        labels: companyLabels as IssueLabel[],
+        repositoryBaseline,
+        projectIssueSystemGuidance: project?.issueSystemGuidance,
+      }),
       goal: goal
         ? {
             id: goal.id,
@@ -1524,6 +1617,10 @@ export function issueRoutes(
       };
     }
     Object.assign(updateFields, transition.patch);
+    const runToCancelForCancelledStatus =
+      updateFields.status === "cancelled" && existing.status !== "cancelled"
+        ? await resolveActiveIssueRun(existing)
+        : null;
 
     const nextAssigneeAgentId =
       updateFields.assigneeAgentId === undefined ? existing.assigneeAgentId : (updateFields.assigneeAgentId as string | null);
@@ -1643,6 +1740,23 @@ export function issueRoutes(
       };
     }
     await routinesSvc.syncRunStatusForIssue(issue.id);
+
+    if (runToCancelForCancelledStatus && interruptedRunId !== runToCancelForCancelledStatus.id) {
+      const cancelled = await heartbeat.cancelRun(runToCancelForCancelledStatus.id);
+      if (cancelled) {
+        await logActivity(db, {
+          companyId: cancelled.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "heartbeat.cancelled",
+          entityType: "heartbeat_run",
+          entityId: cancelled.id,
+          details: { agentId: cancelled.agentId, source: "issue_status_cancelled", issueId: existing.id },
+        });
+      }
+    }
 
     if (actor.runId) {
       await heartbeat.reportRunActivity(actor.runId).catch((err) =>
@@ -1778,7 +1892,8 @@ export function issueRoutes(
     }
 
     let comment = null;
-    if (commentBody) {
+    const skipDuplicateBaselineReviewRequest = await shouldSkipDuplicateBaselineReviewRequestComment(svc, id, commentBody);
+    if (commentBody && !skipDuplicateBaselineReviewRequest) {
       comment = await svc.addComment(id, commentBody, {
         agentId: actor.agentId ?? undefined,
         userId: actor.actorType === "user" ? actor.actorId : undefined,
@@ -1804,7 +1919,8 @@ export function issueRoutes(
           ...(hasFieldChanges ? { updated: true } : {}),
         },
       });
-
+    } else if (skipDuplicateBaselineReviewRequest) {
+      logger.info({ issueId: id }, "skipping duplicate baseline CEO review request comment");
     }
     const assigneeChanged =
       issue.assigneeAgentId !== existing.assigneeAgentId || issue.assigneeUserId !== existing.assigneeUserId;
@@ -2165,6 +2281,41 @@ export function issueRoutes(
     res.json(released);
   });
 
+  router.post("/issues/:id/admin/force-release", async (req, res) => {
+    assertBoard(req);
+
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    const result = await svc.adminForceRelease(id, {
+      clearAssignee: req.query.clearAssignee === "true",
+    });
+    if (!result) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: result.issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.admin_force_release",
+      entityType: "issue",
+      entityId: result.issue.id,
+      details: result.previous,
+    });
+
+    res.json(result.issue);
+  });
+
   router.get("/issues/:id/comments", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -2449,38 +2600,43 @@ export function issueRoutes(
       }
     }
 
-    const comment = await svc.addComment(id, req.body.body, {
-      agentId: actor.agentId ?? undefined,
-      userId: actor.actorType === "user" ? actor.actorId : undefined,
-      runId: actor.runId,
-    });
+    const skipDuplicateBaselineReviewRequest = await shouldSkipDuplicateBaselineReviewRequestComment(svc, id, req.body.body);
+    const comment = skipDuplicateBaselineReviewRequest
+      ? null
+      : await svc.addComment(id, req.body.body, {
+          agentId: actor.agentId ?? undefined,
+          userId: actor.actorType === "user" ? actor.actorId : undefined,
+          runId: actor.runId,
+        });
 
     if (actor.runId) {
       await heartbeat.reportRunActivity(actor.runId).catch((err) =>
         logger.warn({ err, runId: actor.runId }, "failed to clear detached run warning after issue comment"));
     }
 
-    await logActivity(db, {
-      companyId: currentIssue.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "issue.comment_added",
-      entityType: "issue",
-      entityId: currentIssue.id,
-      details: {
-        commentId: comment.id,
-        bodySnippet: comment.body.slice(0, 120),
-        identifier: currentIssue.identifier,
-        issueTitle: currentIssue.title,
-        ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
-        ...(interruptedRunId ? { interruptedRunId } : {}),
-      },
-    });
+    if (comment) {
+      await logActivity(db, {
+        companyId: currentIssue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.comment_added",
+        entityType: "issue",
+        entityId: currentIssue.id,
+        details: {
+          commentId: comment.id,
+          bodySnippet: comment.body.slice(0, 120),
+          identifier: currentIssue.identifier,
+          issueTitle: currentIssue.title,
+          ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
+          ...(interruptedRunId ? { interruptedRunId } : {}),
+        },
+      });
+    }
 
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
-    void (async () => {
+    if (comment) void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
@@ -2572,6 +2728,12 @@ export function issueRoutes(
           .catch((err) => logger.warn({ err, issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment"));
       }
     })();
+
+    if (!comment) {
+      logger.info({ issueId: id }, "skipping duplicate baseline CEO review request comment");
+      res.status(200).json({ skipped: "duplicate_baseline_review_request" });
+      return;
+    }
 
     res.status(201).json(comment);
   });

@@ -196,6 +196,49 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(resultIds.has(excludedIssueId)).toBe(false);
   });
 
+  it("paginates earlier comments in descending order from an anchor comment", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Comment pagination",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const base = Date.parse("2026-04-29T12:00:00.000Z");
+    const commentRows = Array.from({ length: 5 }, (_, index) => ({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      authorAgentId: null,
+      authorUserId: "board",
+      body: `Comment ${index + 1}`,
+      createdAt: new Date(base + index * 1000),
+      updatedAt: new Date(base + index * 1000),
+    }));
+    await db.insert(issueComments).values(commentRows);
+
+    const firstPage = await svc.listComments(issueId, { order: "desc", limit: 2 });
+    expect(firstPage.map((comment) => comment.body)).toEqual(["Comment 5", "Comment 4"]);
+
+    const secondPage = await svc.listComments(issueId, {
+      order: "desc",
+      limit: 2,
+      afterCommentId: firstPage[1]!.id,
+    });
+    expect(secondPage.map((comment) => comment.body)).toEqual(["Comment 3", "Comment 2"]);
+  });
+
   it("combines participation filtering with search", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

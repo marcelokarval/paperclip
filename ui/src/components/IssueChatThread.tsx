@@ -22,6 +22,7 @@ import {
   type ChangeEvent,
   type ErrorInfo,
   type Ref,
+  type RefObject,
   type ReactNode,
 } from "react";
 import { Link, useLocation } from "@/lib/router";
@@ -47,7 +48,7 @@ import {
 import { resolveIssueChatTranscriptRuns } from "../lib/issueChatTranscriptRuns";
 import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   Dialog,
   DialogContent,
@@ -70,10 +71,16 @@ import { AgentIcon } from "./AgentIconPicker";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
 import {
   captureComposerViewportSnapshot,
+  resolveIssueChatScrollTarget,
   restoreComposerViewportSnapshot,
   shouldPreserveComposerViewport,
+  type IssueChatScrollTarget,
 } from "../lib/issue-chat-scroll";
 import { formatAssigneeUserLabel } from "../lib/assignees";
+import {
+  parseBaselineReviewDecision,
+  stripBaselineReviewDecisionMarkers,
+} from "../lib/baseline-review-decision";
 import { timeAgo } from "../lib/timeAgo";
 import {
   describeToolInput,
@@ -85,10 +92,10 @@ import {
   summarizeToolResult,
 } from "../lib/transcriptPresentation";
 import { cn, formatDateTime, formatShortDate } from "../lib/utils";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
-import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, Search, Square, ThumbsDown, ThumbsUp } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowRight, ArrowUp, Brain, Check, ChevronDown, ChevronsDown, ChevronsUp, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, Search, Square, ThumbsDown, ThumbsUp } from "lucide-react";
 
 interface IssueChatMessageContext {
   feedbackVoteByTargetId: Map<string, FeedbackVoteValue>;
@@ -97,6 +104,7 @@ interface IssueChatMessageContext {
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
   currentUserName?: string | null;
+  currentUserImage?: string | null;
   activeRunIds: ReadonlySet<string>;
   onVote?: (
     commentId: string,
@@ -201,6 +209,7 @@ interface IssueChatComposerProps {
   mentions?: MentionOption[];
   agentMap?: Map<string, Agent>;
   composerDisabledReason?: string | null;
+  resolveSubmitDisabledReason?: (body: string) => string | null;
   issueStatus?: string;
 }
 
@@ -219,6 +228,7 @@ interface IssueChatThreadProps {
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
   currentUserName?: string | null;
+  currentUserImage?: string | null;
   onVote?: (
     commentId: string,
     vote: FeedbackVoteValue,
@@ -236,6 +246,7 @@ interface IssueChatThreadProps {
   suggestedAssigneeValue?: string;
   mentions?: MentionOption[];
   composerDisabledReason?: string | null;
+  resolveComposerSubmitDisabledReason?: (body: string) => string | null;
   showComposer?: boolean;
   showJumpToLatest?: boolean;
   emptyMessage?: string;
@@ -393,6 +404,12 @@ function IssueChatFallbackThread({
 
 const DRAFT_DEBOUNCE_MS = 800;
 const COMPOSER_FOCUS_SCROLL_PADDING_PX = 96;
+const CHAT_NAV_VIEWPORT_OFFSET_PX = 120;
+
+type IssueChatNavigationTarget = {
+  id: string;
+  label: string;
+};
 
 function toIsoString(value: string | Date | null | undefined): string | null {
   if (!value) return null;
@@ -456,17 +473,89 @@ function commentDateLabel(date: Date | string | undefined): string {
   return formatShortDate(date);
 }
 
+function BaselineReviewDecisionCard({
+  decision,
+}: {
+  decision: ReturnType<typeof parseBaselineReviewDecision>;
+}) {
+  if (!decision) return null;
+
+  const sufficient = decision.decision === "sufficient_for_first_cto";
+  const blocked = decision.decision === "insufficient_for_first_cto";
+
+  return (
+    <div
+      className={cn(
+        "rounded-lg border px-3 py-3 text-sm",
+        sufficient
+          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-950 dark:text-emerald-100"
+          : blocked
+            ? "border-amber-500/30 bg-amber-500/10 text-amber-950 dark:text-amber-100"
+            : "border-border bg-muted/30 text-foreground",
+      )}
+    >
+      <div className="flex items-start gap-2">
+        <span
+          className={cn(
+            "mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border",
+            sufficient
+              ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-700 dark:text-emerald-200"
+              : "border-amber-500/40 bg-amber-500/15 text-amber-700 dark:text-amber-200",
+          )}
+        >
+          {sufficient ? <Check className="h-3.5 w-3.5" /> : <AlertTriangle className="h-3.5 w-3.5" />}
+        </span>
+        <div className="min-w-0 space-y-1">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.14em] opacity-75">
+            Baseline review decision
+          </div>
+          {sufficient ? (
+            <>
+              <p className="font-medium">Repository context is sufficient for the first CTO hire.</p>
+              <p className="text-xs leading-5 opacity-80">
+                Next action: accept repository context from Project Intake, then generate the CTO hiring brief.
+              </p>
+              <p className="text-xs leading-5 opacity-80">
+                Runtime, verification, bootstrap, env, and local-only security questions travel as CTO onboarding clarifications.
+              </p>
+            </>
+          ) : blocked ? (
+            <>
+              <p className="font-medium">Repository context is not sufficient for the first CTO hire yet.</p>
+              <p className="text-xs leading-5 opacity-80">Resolve the blocking context called out in the review before staffing.</p>
+            </>
+          ) : (
+            <>
+              <p className="font-medium">Repository baseline review decision is inconclusive.</p>
+              <p className="text-xs leading-5 opacity-80">Review the agent notes before continuing the intake flow.</p>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function IssueChatTextPart({ text, recessed }: { text: string; recessed?: boolean }) {
   const { onImageClick } = useContext(IssueChatCtx);
+  const baselineReviewDecision = parseBaselineReviewDecision(text);
+  const displayText = baselineReviewDecision
+    ? stripBaselineReviewDecisionMarkers(text)
+    : text;
   return (
-    <MarkdownBody
-      className="text-sm leading-6"
-      style={recessed ? { opacity: 0.55 } : undefined}
-      softBreaks
-      onImageClick={onImageClick}
-    >
-      {text}
-    </MarkdownBody>
+    <div className="space-y-3">
+      <BaselineReviewDecisionCard decision={baselineReviewDecision} />
+      {displayText ? (
+        <MarkdownBody
+          className="text-sm leading-6"
+          style={recessed ? { opacity: 0.55 } : baselineReviewDecision ? { opacity: 0.78 } : undefined}
+          softBreaks
+          onImageClick={onImageClick}
+        >
+          {displayText}
+        </MarkdownBody>
+      ) : null}
+    </div>
   );
 }
 
@@ -909,7 +998,7 @@ function IssueChatToolPart({
 }
 
 function IssueChatUserMessage() {
-  const { onInterruptQueued, onCancelQueued, interruptingQueuedRunId } = useContext(IssueChatCtx);
+  const { currentUserName, currentUserImage, onInterruptQueued, onCancelQueued, interruptingQueuedRunId } = useContext(IssueChatCtx);
   const message = useMessage();
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -1009,7 +1098,8 @@ function IssueChatUserMessage() {
         </div>
 
         <Avatar size="sm" className="mt-1 shrink-0">
-          <AvatarFallback>You</AvatarFallback>
+          {currentUserImage ? <AvatarImage src={currentUserImage} alt={currentUserName ?? "You"} /> : null}
+          <AvatarFallback>{initialsForName(currentUserName ?? "You")}</AvatarFallback>
         </Avatar>
       </div>
     </MessagePrimitive.Root>
@@ -1466,7 +1556,7 @@ function IssueChatFeedbackButtons({
 }
 
 function IssueChatSystemMessage() {
-  const { agentMap, currentUserId, currentUserName } = useContext(IssueChatCtx);
+  const { agentMap, currentUserId, currentUserName, currentUserImage } = useContext(IssueChatCtx);
   const message = useMessage();
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -1538,6 +1628,10 @@ function IssueChatSystemMessage() {
         <MessagePrimitive.Root id={anchorId}>
           <div className="flex items-start justify-end gap-2 py-1">
             {eventContent}
+            <Avatar size="sm" className="mt-0.5 shrink-0">
+              {currentUserImage ? <AvatarImage src={currentUserImage} alt={actorName} /> : null}
+              <AvatarFallback>{initialsForName(actorName)}</AvatarFallback>
+            </Avatar>
           </div>
         </MessagePrimitive.Root>
       );
@@ -1549,7 +1643,8 @@ function IssueChatSystemMessage() {
           <Avatar size="sm" className="mt-0.5">
             {agentIcon ? (
               <AvatarFallback><AgentIcon icon={agentIcon} className="h-3.5 w-3.5" /></AvatarFallback>
-            ) : (
+            ) : null}
+            {agentIcon ? null : (
               <AvatarFallback>{initialsForName(actorName)}</AvatarFallback>
             )}
           </Avatar>
@@ -1606,6 +1701,197 @@ function IssueChatSystemMessage() {
   return null;
 }
 
+function readMessageNavigationTargets(
+  messages: readonly import("@assistant-ui/react").ThreadMessage[],
+): IssueChatNavigationTarget[] {
+  return messages.flatMap((message) => {
+    const custom = message.metadata?.custom as Record<string, unknown> | undefined;
+    const anchorId = typeof custom?.anchorId === "string" ? custom.anchorId : null;
+    if (custom?.kind !== "comment" || !anchorId?.startsWith("comment-")) return [];
+    const authorName = typeof custom.authorName === "string" ? custom.authorName : null;
+    return [{
+      id: anchorId,
+      label: authorName ? `Comment by ${authorName}` : "Comment",
+    }];
+  });
+}
+
+function findActiveNavigationIndex(
+  targets: readonly IssueChatNavigationTarget[],
+  scrollTarget: IssueChatScrollTarget,
+) {
+  const { top: viewportTop } = readIssueChatViewportBounds(scrollTarget);
+  const activationTop = viewportTop + CHAT_NAV_VIEWPORT_OFFSET_PX;
+  let activeIndex = -1;
+  for (let index = 0; index < targets.length; index += 1) {
+    const element = document.getElementById(targets[index]!.id);
+    if (!element) continue;
+    const rect = element.getBoundingClientRect();
+    if (rect.top <= activationTop) {
+      activeIndex = index;
+    } else {
+      break;
+    }
+  }
+  return activeIndex;
+}
+
+function readIssueChatViewportBounds(scrollTarget: IssueChatScrollTarget) {
+  if (scrollTarget.type === "element") {
+    const rect = scrollTarget.element.getBoundingClientRect();
+    return { top: rect.top, bottom: rect.bottom };
+  }
+  return { top: 0, bottom: window.innerHeight };
+}
+
+function isIssueChatAnchorAtTop(
+  element: HTMLElement | null,
+  scrollTarget: IssueChatScrollTarget,
+) {
+  if (!element) return true;
+  const { top: viewportTop } = readIssueChatViewportBounds(scrollTarget);
+  const rect = element.getBoundingClientRect();
+  return rect.top >= viewportTop - 8;
+}
+
+function isIssueChatAnchorAtBottom(
+  element: HTMLElement | null,
+  scrollTarget: IssueChatScrollTarget,
+) {
+  if (!element) return true;
+  const { top: viewportTop, bottom: viewportBottom } = readIssueChatViewportBounds(scrollTarget);
+  const rect = element.getBoundingClientRect();
+  return rect.top >= viewportTop - 8 && rect.bottom <= viewportBottom + 16;
+}
+
+function IssueChatThreadNavigation({
+  targets,
+  topAnchorRef,
+  bottomAnchorRef,
+}: {
+  targets: readonly IssueChatNavigationTarget[];
+  topAnchorRef: RefObject<HTMLDivElement | null>;
+  bottomAnchorRef: RefObject<HTMLDivElement | null>;
+}) {
+  const [state, setState] = useState({
+    activeIndex: -1,
+    atTop: true,
+    atBottom: false,
+  });
+
+  useEffect(() => {
+    let frame = 0;
+    const scrollTarget = resolveIssueChatScrollTarget();
+    const scrollEventTarget = scrollTarget.type === "element" ? scrollTarget.element : window;
+    const update = () => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const currentScrollTarget = resolveIssueChatScrollTarget();
+        setState({
+          activeIndex: findActiveNavigationIndex(targets, currentScrollTarget),
+          atTop: isIssueChatAnchorAtTop(topAnchorRef.current, currentScrollTarget),
+          atBottom: isIssueChatAnchorAtBottom(bottomAnchorRef.current, currentScrollTarget),
+        });
+      });
+    };
+
+    update();
+    scrollEventTarget.addEventListener("scroll", update, { passive: true });
+    window.addEventListener("resize", update);
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      scrollEventTarget.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+    };
+  }, [targets]);
+
+  function scrollToElement(element: Element | null | undefined, block: ScrollLogicalPosition = "start") {
+    element?.scrollIntoView({ behavior: "smooth", block });
+  }
+
+  function scrollToTarget(index: number) {
+    const target = targets[index];
+    if (!target) return;
+    scrollToElement(document.getElementById(target.id), "start");
+  }
+
+  const previousIndex = state.activeIndex > 0 ? state.activeIndex - 1 : -1;
+  const nextIndex = state.activeIndex < 0
+    ? 0
+    : state.activeIndex + 1 < targets.length
+      ? state.activeIndex + 1
+      : -1;
+  const hasTargets = targets.length > 0;
+
+  return (
+    <TooltipProvider>
+      <div className="sticky top-3 z-20 flex justify-end pointer-events-none">
+        <div className="pointer-events-auto inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/85 p-1 shadow-sm backdrop-blur">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-35"
+              aria-label="Go to top"
+              disabled={state.atTop}
+              onClick={() => scrollToElement(topAnchorRef.current, "start")}
+            >
+              <ChevronsUp className="h-4 w-4" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="text-xs">Top</TooltipContent>
+        </Tooltip>
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-35"
+              aria-label="Previous comment"
+              disabled={!hasTargets || previousIndex < 0}
+              onClick={() => scrollToTarget(previousIndex)}
+            >
+              <ArrowUp className="h-4 w-4" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="text-xs">Previous comment</TooltipContent>
+        </Tooltip>
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-35"
+              aria-label="Next comment"
+              disabled={!hasTargets || nextIndex < 0}
+              onClick={() => scrollToTarget(nextIndex)}
+            >
+              <ArrowDown className="h-4 w-4" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="text-xs">Next comment</TooltipContent>
+        </Tooltip>
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-35"
+              aria-label="Jump to latest"
+              disabled={state.atBottom}
+              onClick={() => scrollToElement(bottomAnchorRef.current, "end")}
+            >
+              <ChevronsDown className="h-4 w-4" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="text-xs">Latest</TooltipContent>
+        </Tooltip>
+        </div>
+      </div>
+    </TooltipProvider>
+  );
+}
+
 const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerProps>(function IssueChatComposer({
   onImageUpload,
   onAttachImage,
@@ -1617,6 +1903,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   mentions = [],
   agentMap,
   composerDisabledReason = null,
+  resolveSubmitDisabledReason,
   issueStatus,
 }, forwardedRef) {
   const api = useAui();
@@ -1748,6 +2035,10 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   }
 
   const canSubmit = !submitting && !!body.trim();
+  const submitDisabledReason = useMemo(
+    () => resolveSubmitDisabledReason?.(body) ?? null,
+    [body, resolveSubmitDisabledReason],
+  );
 
   if (composerDisabledReason) {
     return (
@@ -1774,6 +2065,12 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
         bordered
         contentClassName="min-h-[72px] max-h-[28dvh] overflow-y-auto pr-1 text-sm scrollbar-auto-hide"
       />
+
+      {submitDisabledReason ? (
+        <div className="rounded-md border border-amber-300/70 bg-amber-50/80 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+          {submitDisabledReason}
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap items-center justify-end gap-3">
         {(onImageUpload || onAttachImage) ? (
@@ -1836,7 +2133,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
           />
         ) : null}
 
-        <Button size="sm" disabled={!canSubmit} onClick={() => void handleSubmit()}>
+        <Button size="sm" disabled={!canSubmit || !!submitDisabledReason} onClick={() => void handleSubmit()}>
           {submitting ? "Posting..." : "Send"}
         </Button>
       </div>
@@ -1859,6 +2156,7 @@ export function IssueChatThread({
   agentMap,
   currentUserId,
   currentUserName,
+  currentUserImage,
   onVote,
   onAdd,
   onCancelRun,
@@ -1872,6 +2170,7 @@ export function IssueChatThread({
   suggestedAssigneeValue,
   mentions = [],
   composerDisabledReason = null,
+  resolveComposerSubmitDisabledReason,
   showComposer = true,
   showJumpToLatest,
   emptyMessage,
@@ -1889,6 +2188,7 @@ export function IssueChatThread({
 }: IssueChatThreadProps) {
   const location = useLocation();
   const hasScrolledRef = useRef(false);
+  const topAnchorRef = useRef<HTMLDivElement | null>(null);
   const bottomAnchorRef = useRef<HTMLDivElement | null>(null);
   const composerViewportAnchorRef = useRef<HTMLDivElement | null>(null);
   const composerViewportSnapshotRef = useRef<ReturnType<typeof captureComposerViewportSnapshot>>(null);
@@ -2023,10 +2323,6 @@ export function IssueChatThread({
     element.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [location.hash, messages]);
 
-  function handleJumpToLatest() {
-    bottomAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }
-
   const chatCtx = useMemo<IssueChatMessageContext>(
     () => ({
       feedbackVoteByTargetId,
@@ -2035,6 +2331,7 @@ export function IssueChatThread({
       agentMap,
       currentUserId,
       currentUserName,
+      currentUserImage,
       activeRunIds,
       onVote,
       onStopRun,
@@ -2051,6 +2348,7 @@ export function IssueChatThread({
       agentMap,
       currentUserId,
       currentUserName,
+      currentUserImage,
       activeRunIds,
       onVote,
       onStopRun,
@@ -2080,21 +2378,22 @@ export function IssueChatThread({
     () => messages.map((message) => `${message.id}:${message.role}:${message.content.length}:${message.status?.type ?? "none"}`).join("|"),
     [messages],
   );
+  const navigationTargets = useMemo(
+    () => readMessageNavigationTargets(messages),
+    [messages],
+  );
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <IssueChatCtx.Provider value={chatCtx}>
       <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
+        <div ref={topAnchorRef} data-testid="issue-chat-top-anchor" />
         {resolvedShowJumpToLatest ? (
-          <div className="flex justify-end">
-            <button
-              type="button"
-              onClick={handleJumpToLatest}
-              className="text-xs text-muted-foreground transition-colors hover:text-foreground"
-            >
-              Jump to latest
-            </button>
-          </div>
+          <IssueChatThreadNavigation
+            targets={navigationTargets}
+            topAnchorRef={topAnchorRef}
+            bottomAnchorRef={bottomAnchorRef}
+          />
         ) : null}
 
         <IssueChatErrorBoundary
@@ -2116,7 +2415,7 @@ export function IssueChatThread({
                 </div>
               </ThreadPrimitive.Empty>
               <ThreadPrimitive.Messages components={components} />
-              <div ref={bottomAnchorRef} />
+              <div ref={bottomAnchorRef} data-testid="issue-chat-bottom-anchor" />
             </ThreadPrimitive.Viewport>
           </ThreadPrimitive.Root>
         </IssueChatErrorBoundary>
@@ -2135,6 +2434,7 @@ export function IssueChatThread({
               mentions={mentions}
               agentMap={agentMap}
               composerDisabledReason={composerDisabledReason}
+              resolveSubmitDisabledReason={resolveComposerSubmitDisabledReason}
               issueStatus={issueStatus}
             />
           </div>

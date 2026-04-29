@@ -10,7 +10,7 @@ import type {
 } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { ArrowRight, Check, Copy, Paperclip } from "lucide-react";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { MarkdownBody } from "./MarkdownBody";
@@ -75,6 +75,7 @@ interface CommentThreadProps {
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
   currentUserName?: string | null;
+  currentUserImage?: string | null;
   imageUploadHandler?: (file: File) => Promise<string>;
   /** Callback to attach an image file to the parent issue (not inline in a comment). */
   onAttachImage?: (file: File) => Promise<void>;
@@ -290,7 +291,9 @@ function CopyMarkdownButton({ text }: { text: string }) {
 function CommentCard({
   comment,
   agentMap,
+  currentUserId,
   currentUserName,
+  currentUserImage,
   companyId,
   projectId,
   feedbackVote = null,
@@ -303,7 +306,9 @@ function CommentCard({
 }: {
   comment: CommentWithRunMeta;
   agentMap?: Map<string, Agent>;
+  currentUserId?: string | null;
   currentUserName?: string | null;
+  currentUserImage?: string | null;
   companyId?: string | null;
   projectId?: string | null;
   feedbackVote?: FeedbackVoteValue | null;
@@ -320,6 +325,7 @@ function CommentCard({
   const isHighlighted = highlightCommentId === comment.id;
   const isPending = comment.clientStatus === "pending";
   const isQueued = queued || comment.queueState === "queued" || comment.clientStatus === "queued";
+  const isCurrentUserComment = !comment.authorUserId || Boolean(currentUserId && comment.authorUserId === currentUserId);
 
   return (
     <div
@@ -342,7 +348,11 @@ function CommentCard({
             />
           </Link>
         ) : (
-          <Identity name={currentUserName ?? "You"} size="sm" />
+          <Identity
+            name={currentUserName ?? "You"}
+            avatarUrl={isCurrentUserComment ? currentUserImage : null}
+            size="sm"
+          />
         )}
         <span className="flex items-center gap-1.5">
           {isQueued ? (
@@ -452,17 +462,21 @@ function TimelineEventCard({
   agentMap,
   currentUserId,
   currentUserName,
+  currentUserImage,
 }: {
   event: IssueTimelineEvent;
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
   currentUserName?: string | null;
+  currentUserImage?: string | null;
 }) {
   const actorName = formatTimelineActorName(event.actorType, event.actorId, agentMap, currentUserId, currentUserName);
+  const isCurrentUser = event.actorType === "user" && Boolean(currentUserId && event.actorId === currentUserId);
 
   return (
     <div id={`activity-${event.id}`} className="flex items-start gap-2.5 py-1.5">
       <Avatar size="sm" className="mt-0.5">
+        {isCurrentUser && currentUserImage ? <AvatarImage src={currentUserImage} alt={actorName} /> : null}
         <AvatarFallback>{initialsForName(actorName)}</AvatarFallback>
       </Avatar>
 
@@ -517,6 +531,7 @@ const TimelineList = memo(function TimelineList({
   agentMap,
   currentUserId,
   currentUserName,
+  currentUserImage,
   companyId,
   projectId,
   onApproveApproval,
@@ -533,6 +548,7 @@ const TimelineList = memo(function TimelineList({
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
   currentUserName?: string | null;
+  currentUserImage?: string | null;
   companyId?: string | null;
   projectId?: string | null;
   onApproveApproval?: (approvalId: string) => Promise<void>;
@@ -567,6 +583,7 @@ const TimelineList = memo(function TimelineList({
               agentMap={agentMap}
               currentUserId={currentUserId}
               currentUserName={currentUserName}
+              currentUserImage={currentUserImage}
             />
           );
         }
@@ -631,7 +648,9 @@ const TimelineList = memo(function TimelineList({
             key={comment.id}
             comment={comment}
             agentMap={agentMap}
+            currentUserId={currentUserId}
             currentUserName={currentUserName}
+            currentUserImage={currentUserImage}
             companyId={companyId}
             projectId={projectId}
             feedbackVote={feedbackVoteByTargetId?.get(comment.id) ?? null}
@@ -667,6 +686,7 @@ export function CommentThread({
   agentMap,
   currentUserId,
   currentUserName,
+  currentUserImage,
   imageUploadHandler,
   onAttachImage,
   draftKey,
@@ -870,6 +890,7 @@ export function CommentThread({
         agentMap={agentMap}
         currentUserId={currentUserId}
         currentUserName={currentUserName}
+        currentUserImage={currentUserImage}
         companyId={companyId}
         projectId={projectId}
         onApproveApproval={onApproveApproval}
@@ -909,7 +930,9 @@ export function CommentThread({
                 key={comment.id}
                 comment={comment}
                 agentMap={agentMap}
+                currentUserId={currentUserId}
                 currentUserName={currentUserName}
+                currentUserImage={currentUserImage}
                 companyId={companyId}
                 projectId={projectId}
                 highlightCommentId={highlightCommentId}

@@ -8,6 +8,7 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
+  listComments: vi.fn(),
   findMentionedAgents: vi.fn(),
   getRelationSummaries: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
@@ -155,6 +156,7 @@ describe("issue update comment wakeups", () => {
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
     vi.resetAllMocks();
+    mockIssueService.listComments.mockResolvedValue([]);
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
@@ -251,5 +253,31 @@ describe("issue update comment wakeups", () => {
         }),
       }),
     );
+  });
+
+  it("skips duplicate baseline CEO review request comments for the same fingerprint", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(existing);
+    mockIssueService.listComments.mockResolvedValue([
+      {
+        id: "comment-existing",
+        body: "<!-- paperclip:baseline-ceo-review-request fingerprint=\"fp-1\" -->\nCEO baseline review request for PAP-999.",
+      },
+    ]);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        comment: "<!-- paperclip:baseline-ceo-review-request fingerprint=\"fp-1\" -->\nCEO baseline review request for PAP-999.",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 });

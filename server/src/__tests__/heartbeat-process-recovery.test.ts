@@ -625,6 +625,203 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it("dispatches assigned todo work that never had a heartbeat run", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Never started assigned todo",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.assignmentDispatched).toBe(1);
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.invocationSource).toBe("assignment");
+    expect((runs[0]?.contextSnapshot as Record<string, unknown>)?.mutation).toBe("assigned_todo_liveness_dispatch");
+    if (runs[0]) {
+      await heartbeat.cancelRun(runs[0].id).catch(() => null);
+      const settled = await waitForRunToSettle(heartbeat, runs[0].id, 10_000);
+      expect(settled?.status === "queued" || settled?.status === "running").toBe(false);
+    }
+  });
+
+  async function seedQueuedIssueWake(input: { assigneeAgentId: string | null; status?: "todo" | "done" | "cancelled" }) {
+    const companyId = randomUUID();
+    const oldAgentId = randomUUID();
+    const newAgentId = input.assigneeAgentId ?? randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const wakeupRequestId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const agentRows = [
+      {
+        id: oldAgentId,
+        companyId,
+        name: "OldAgent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ];
+    if (newAgentId !== oldAgentId) {
+      agentRows.push({
+        id: newAgentId,
+        companyId,
+        name: "NewAgent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+    }
+    await db.insert(agents).values(agentRows);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Reassigned before queued wake",
+      status: input.status ?? "todo",
+      priority: "medium",
+      assigneeAgentId: input.assigneeAgentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId: oldAgentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      status: "queued",
+      runId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: oldAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId,
+      contextSnapshot: { issueId, taskId: issueId },
+      updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+    });
+
+    return { runId, wakeupRequestId };
+  }
+
+  it("cancels a queued issue wake when the issue assignee changed before claim", async () => {
+    const { runId, wakeupRequestId } = await seedQueuedIssueWake({ assigneeAgentId: randomUUID() });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("cancelled");
+    expect(run?.error).toContain("issue assignee changed");
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("cancelled");
+  });
+
+  it("cancels a queued issue wake when the issue becomes unassigned before claim", async () => {
+    const { runId, wakeupRequestId } = await seedQueuedIssueWake({ assigneeAgentId: null });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("cancelled");
+    expect(run?.error).toContain("issue assignee changed");
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("cancelled");
+  });
+
+  it("cancels a queued issue wake when the issue is terminal before claim", async () => {
+    const { runId, wakeupRequestId } = await seedQueuedIssueWake({ assigneeAgentId: randomUUID(), status: "done" });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("cancelled");
+    expect(run?.error).toContain("issue is done");
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("cancelled");
+  });
+
+  it("cancels a queued issue wake when the issue is cancelled before claim", async () => {
+    const { runId, wakeupRequestId } = await seedQueuedIssueWake({
+      assigneeAgentId: randomUUID(),
+      status: "cancelled",
+    });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("cancelled");
+    expect(run?.error).toContain("issue is cancelled");
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("cancelled");
+  });
+
   it("blocks assigned todo work after the one automatic dispatch recovery was already used", async () => {
     const { issueId } = await seedStrandedIssueFixture({
       status: "todo",

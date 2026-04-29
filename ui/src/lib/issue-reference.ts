@@ -7,25 +7,45 @@ type MarkdownNode = {
 
 const BARE_ISSUE_IDENTIFIER_RE = /^[A-Z][A-Z0-9]+-\d+$/i;
 const ISSUE_SCHEME_RE = /^issue:\/\/:?([^?#\s]+)(?:[?#].*)?$/i;
-const ISSUE_REFERENCE_TOKEN_RE = /issue:\/\/:?[^\s<>()]+|https?:\/\/[^\s<>()]+|\b[A-Z][A-Z0-9]+-\d+\b/gi;
+const ISSUE_REFERENCE_TOKEN_RE = /issue:\/\/:?[^\s<>()]+|\/(?:[^\s<>()/]+\/)*issues\/[A-Z][A-Z0-9]+-\d+(?=$|[\s<>)\],.;!?:])|\b[A-Z][A-Z0-9]+-\d+\b/gi;
+
+function splitTrailingPunctuation(token: string) {
+  let core = token;
+  let trailing = "";
+
+  while (core.length > 0) {
+    const lastChar = core.at(-1);
+    if (!lastChar || !/[),.;!?:\]]/.test(lastChar)) break;
+    if (lastChar === ")") {
+      const openCount = (core.match(/\(/g) ?? []).length;
+      const closeCount = (core.match(/\)/g) ?? []).length;
+      if (closeCount <= openCount) break;
+    }
+    if (lastChar === "]") {
+      const openCount = (core.match(/\[/g) ?? []).length;
+      const closeCount = (core.match(/\]/g) ?? []).length;
+      if (closeCount <= openCount) break;
+    }
+    trailing = `${lastChar}${trailing}`;
+    core = core.slice(0, -1);
+  }
+
+  return { core, trailing };
+}
 
 export function parseIssuePathIdFromPath(pathOrUrl: string | null | undefined): string | null {
   if (!pathOrUrl) return null;
-  let pathname = pathOrUrl.trim();
+  const pathname = pathOrUrl.trim();
   if (!pathname) return null;
-
-  if (/^https?:\/\//i.test(pathname)) {
-    try {
-      pathname = new URL(pathname).pathname;
-    } catch {
-      return null;
-    }
-  }
+  if (/^https?:\/\//i.test(pathname)) return null;
 
   const segments = pathname.split("/").filter(Boolean);
   const issueIndex = segments.findIndex((segment) => segment === "issues");
   if (issueIndex === -1 || issueIndex === segments.length - 1) return null;
-  return decodeURIComponent(segments[issueIndex + 1] ?? "");
+  const rawIssuePathId = decodeURIComponent(segments[issueIndex + 1] ?? "");
+  const { core } = splitTrailingPunctuation(rawIssuePathId);
+  if (!core || core.startsWith(":") || /[{}]/.test(core)) return null;
+  return BARE_ISSUE_IDENTIFIER_RE.test(core) ? core.toUpperCase() : core;
 }
 
 export function parseIssueReferenceFromHref(href: string | null | undefined) {
@@ -54,25 +74,6 @@ export function parseIssueReferenceFromHref(href: string | null | undefined) {
     issuePathId: normalized,
     href: `/issues/${encodeURIComponent(normalized)}`,
   };
-}
-
-function splitTrailingPunctuation(token: string) {
-  let core = token;
-  let trailing = "";
-
-  while (core.length > 0) {
-    const lastChar = core.at(-1);
-    if (!lastChar || !/[),.;!?]/.test(lastChar)) break;
-    if (lastChar === ")") {
-      const openCount = (core.match(/\(/g) ?? []).length;
-      const closeCount = (core.match(/\)/g) ?? []).length;
-      if (closeCount <= openCount) break;
-    }
-    trailing = `${lastChar}${trailing}`;
-    core = core.slice(0, -1);
-  }
-
-  return { core, trailing };
 }
 
 function createIssueLinkNode(value: string, href: string, childType: "text" | "inlineCode" = "text"): MarkdownNode {

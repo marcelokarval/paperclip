@@ -6,6 +6,7 @@ import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { issuesApi } from "../api/issues";
 import { authApi } from "../api/auth";
 import { instanceSettingsApi } from "../api/instanceSettings";
+import { operatorProfileApi } from "../api/operatorProfile";
 import { queryKeys } from "../lib/queryKeys";
 import {
   shouldBlurPageSearchOnEnter,
@@ -267,13 +268,18 @@ export function IssuesList({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
   });
+  const { data: operatorProfile } = useQuery({
+    queryKey: queryKeys.operatorProfile,
+    queryFn: () => operatorProfileApi.get(),
+  });
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
     retry: false,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
-  const currentUserName = session?.user?.name ?? null;
+  const currentUserName = operatorProfile?.name ?? session?.user?.name ?? null;
+  const currentUserImage = operatorProfile?.image ?? session?.user?.image ?? null;
   const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
 
   // Scope the storage key per company so folding/view state is independent across companies.
@@ -892,12 +898,11 @@ export function IssuesList({
                                       {issue.assigneeAgentId && agentName(issue.assigneeAgentId) ? (
                                         <Identity name={agentName(issue.assigneeAgentId)!} size="sm" />
                                       ) : issue.assigneeUserId ? (
-                                        <span className="inline-flex items-center gap-1.5 text-xs">
-                                          <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-dashed border-muted-foreground/35 bg-muted/30">
-                                            <User className="h-3.5 w-3.5" />
-                                          </span>
-                                          {formatAssigneeUserLabel(issue.assigneeUserId, currentUserId, currentUserName) ?? "User"}
-                                        </span>
+                                        <Identity
+                                          name={formatAssigneeUserLabel(issue.assigneeUserId, currentUserId, currentUserName) ?? "User"}
+                                          avatarUrl={currentUserId && issue.assigneeUserId === currentUserId ? currentUserImage : null}
+                                          size="sm"
+                                        />
                                       ) : (
                                         <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
                                           <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-dashed border-muted-foreground/35 bg-muted/30">
@@ -947,8 +952,7 @@ export function IssuesList({
                                             assignIssue(issue.id, null, currentUserId);
                                           }}
                                         >
-                                          <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                                          <span>Me</span>
+                                          <Identity name={currentUserName ?? "Me"} avatarUrl={currentUserImage} size="sm" />
                                         </button>
                                       )}
                                       {(agents ?? [])

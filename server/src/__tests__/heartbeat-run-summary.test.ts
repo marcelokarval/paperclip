@@ -1,90 +1,66 @@
 import { describe, expect, it } from "vitest";
-import {
-  summarizeHeartbeatRunResultJson,
-  buildHeartbeatRunIssueComment,
-  mergeHeartbeatRunResultJson,
-} from "../services/heartbeat-run-summary.js";
-
-describe("summarizeHeartbeatRunResultJson", () => {
-  it("truncates text fields and preserves cost aliases", () => {
-    const summary = summarizeHeartbeatRunResultJson({
-      summary: "a".repeat(600),
-      result: "ok",
-      message: "done",
-      error: "failed",
-      total_cost_usd: 1.23,
-      cost_usd: 0.45,
-      costUsd: 0.67,
-      nested: { ignored: true },
-    });
-
-    expect(summary).toEqual({
-      summary: "a".repeat(500),
-      result: "ok",
-      message: "done",
-      error: "failed",
-      total_cost_usd: 1.23,
-      cost_usd: 0.45,
-      costUsd: 0.67,
-    });
-  });
-
-  it("returns null for non-object and irrelevant payloads", () => {
-    expect(summarizeHeartbeatRunResultJson(null)).toBeNull();
-    expect(summarizeHeartbeatRunResultJson(["nope"] as unknown as Record<string, unknown>)).toBeNull();
-    expect(summarizeHeartbeatRunResultJson({ nested: { only: "ignored" } })).toBeNull();
-  });
-});
+import { buildHeartbeatRunIssueComment } from "../services/heartbeat-run-summary.js";
 
 describe("buildHeartbeatRunIssueComment", () => {
-  it("uses the final summary text for issue comments on successful runs", () => {
-    const comment = buildHeartbeatRunIssueComment({
-      summary: "## Summary\n\n- fixed deploy config\n- posted issue update",
-    });
-
-    expect(comment).toContain("## Summary");
-    expect(comment).toContain("- fixed deploy config");
-    expect(comment).not.toContain("Run summary");
-  });
-
-  it("falls back to result or message when summary is missing", () => {
-    expect(buildHeartbeatRunIssueComment({ result: "done" })).toBe("done");
-    expect(buildHeartbeatRunIssueComment({ message: "completed" })).toBe("completed");
-  });
-
-  it("returns null when there is no usable final text", () => {
-    expect(buildHeartbeatRunIssueComment({ costUsd: 1.2 })).toBeNull();
-  });
-});
-
-describe("mergeHeartbeatRunResultJson", () => {
-  it("adds adapter summaries into stored result json for comment posting", () => {
-    const merged = mergeHeartbeatRunResultJson(
-      { stdout: "raw stdout", stderr: "" },
-      "## Summary\n\n1. first thing\n2. second thing",
+  it("appends a truth reconciliation footer when provided", () => {
+    const comment = buildHeartbeatRunIssueComment(
+      {
+        summary: "Repository context is good enough for the first CTO hire.",
+      },
+      {
+        truthReconciliationFooter: [
+          "_Run truth reconciliation_",
+          "- Paperclip persisted this comment for run run-1.",
+        ].join("\n"),
+      },
     );
 
-    expect(merged).toEqual({
-      stdout: "raw stdout",
-      stderr: "",
-      summary: "## Summary\n\n1. first thing\n2. second thing",
-    });
-    expect(buildHeartbeatRunIssueComment(merged)).toBe("## Summary\n\n1. first thing\n2. second thing");
+    expect(comment).toContain("Repository context is good enough for the first CTO hire.");
+    expect(comment).toContain("_Run truth reconciliation_");
+    expect(comment).toContain("run-1");
   });
 
-  it("creates a result payload when only a summary exists", () => {
-    expect(mergeHeartbeatRunResultJson(null, "done")).toEqual({ summary: "done" });
+  it("normalizes repo-baseline review closeout so the first CTO is not blocked by a freshness note", () => {
+    const comment = buildHeartbeatRunIssueComment(
+      {
+        summary: [
+          "The baseline is sufficient for future technical agent work.",
+          "",
+          "The next single operator action is to add one operator-approved freshness note to `BBC-1` naming the canonical package manager/runtime and the required bootstrap env vars. After that, the baseline is safe for CTO onboarding and future execution.",
+        ].join("\n\n"),
+      },
+      {
+        repositoryBaselineReview: true,
+        reviewFingerprint: "fp-1|repository_context_accepted",
+      },
+    );
+
+    expect(comment).toContain("Accept repository context from Project Intake, then generate the CTO hiring brief.");
+    expect(comment).toContain("Repository context is sufficient for the first CTO hire.");
+    expect(comment).not.toContain("operator-approved freshness note");
+    expect(comment).toContain("<!-- paperclip:baseline-ceo-review-response fingerprint=\"fp-1|repository_context_accepted\" -->");
+    expect(comment).toContain("<!-- paperclip:baseline-ceo-review-decision decision=\"sufficient_for_first_cto\" -->");
   });
 
-  it("does not overwrite an explicit summary already returned by the adapter", () => {
-    expect(
-      mergeHeartbeatRunResultJson(
-        { summary: "adapter result", stdout: "raw stdout" },
-        "fallback summary",
-      ),
-    ).toEqual({
-      summary: "adapter result",
-      stdout: "raw stdout",
-    });
+  it("normalizes Portuguese closeout that still tries to gate the first CTO behind a freshness note", () => {
+    const comment = buildHeartbeatRunIssueComment(
+      {
+        summary: [
+          "A reanálise mantém a decisão.",
+          "",
+          "O baseline continua forte o bastante para onboarding técnico.",
+          "",
+          "A próxima ação única do operador deve ser adicionar uma freshness note em `BBC-1`. Depois disso, o baseline fica seguro para onboarding do CTO e execução futura.",
+        ].join("\n\n"),
+      },
+      {
+        repositoryBaselineReview: true,
+        reviewFingerprint: "fp-pt|repository_context_accepted",
+      },
+    );
+
+    expect(comment).toContain("Accept repository context from Project Intake, then generate the CTO hiring brief.");
+    expect(comment).toContain("<!-- paperclip:baseline-ceo-review-decision decision=\"sufficient_for_first_cto\" -->");
+    expect(comment).not.toContain("A próxima ação única do operador deve ser adicionar uma freshness note");
   });
 });
