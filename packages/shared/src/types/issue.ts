@@ -50,8 +50,18 @@ export interface IssueLabel {
   companyId: string;
   name: string;
   color: string;
+  description?: string | null;
+  source?: "manual" | "repository_baseline" | "system";
+  metadata?: IssueLabelMetadata | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface IssueLabelMetadata {
+  baselineEvidence?: string[];
+  baselineConfidence?: "low" | "medium" | "high";
+  baselineProjectId?: string | null;
+  baselineWorkspaceId?: string | null;
 }
 
 export interface IssueAssigneeAdapterOverrides {

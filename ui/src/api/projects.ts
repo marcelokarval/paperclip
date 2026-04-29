@@ -1,8 +1,18 @@
 import type {
+  AcceptProjectSuggestedGoalRequest,
+  AcceptRepositoryBaselineRequest,
+  CreateHiringIssueRequest,
   Project,
   ProjectWorkspace,
+  GenerateHiringBriefRequest,
+  HiringBriefPreview,
+  Issue,
+  ApplyRepositoryBaselineRecommendationsRequest,
+  ApplyRepositoryBaselineRecommendationsResponse,
+  MarkExecutionContextReadyRequest,
   RefreshRepositoryDocumentationBaselineRequest,
   RefreshRepositoryDocumentationBaselineResponse,
+  UpdateExecutionContractRequest,
   WorkspaceOperation,
   WorkspaceRuntimeControlTarget,
 } from "@paperclipai/shared";
@@ -26,6 +36,16 @@ export const projectsApi = {
     api.post<Project>(`/companies/${companyId}/projects`, data),
   update: (id: string, data: Record<string, unknown>, companyId?: string) =>
     api.patch<Project>(projectPath(id, companyId), data),
+  acceptSuggestedGoal: (id: string, key: string, data: AcceptProjectSuggestedGoalRequest = {}, companyId?: string) =>
+    api.post<Project>(
+      projectPath(id, companyId, `/operating-context/suggested-goals/${encodeURIComponent(key)}/accept`),
+      data,
+    ),
+  rejectSuggestedGoal: (id: string, key: string, companyId?: string) =>
+    api.post<Project>(
+      projectPath(id, companyId, `/operating-context/suggested-goals/${encodeURIComponent(key)}/reject`),
+      {},
+    ),
   listWorkspaces: (projectId: string, companyId?: string) =>
     api.get<ProjectWorkspace[]>(projectPath(projectId, companyId, "/workspaces")),
   createWorkspace: (projectId: string, data: Record<string, unknown>, companyId?: string) =>
@@ -47,6 +67,66 @@ export const projectsApi = {
   ) =>
     api.post<RefreshRepositoryDocumentationBaselineResponse>(
       projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}/repository-baseline`),
+      request,
+    ),
+  applyRepositoryBaselineRecommendations: (
+    projectId: string,
+    workspaceId: string,
+    companyId?: string,
+    request: ApplyRepositoryBaselineRecommendationsRequest = {},
+  ) =>
+    api.post<ApplyRepositoryBaselineRecommendationsResponse>(
+      projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}/repository-baseline/apply-recommendations`),
+      request,
+    ),
+  acceptRepositoryBaseline: (
+    projectId: string,
+    workspaceId: string,
+    request: AcceptRepositoryBaselineRequest = {},
+    companyId?: string,
+  ) =>
+    api.post<{ baseline: unknown; workspace: ProjectWorkspace; project: Project }>(
+      projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}/repository-baseline/accept`),
+      request,
+    ),
+  markExecutionContextReady: (
+    projectId: string,
+    workspaceId: string,
+    request: MarkExecutionContextReadyRequest = {},
+    companyId?: string,
+  ) =>
+    api.post<{ project: Project }>(
+      projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}/repository-baseline/execution-ready`),
+      request,
+    ),
+  updateExecutionContract: (
+    projectId: string,
+    workspaceId: string,
+    request: UpdateExecutionContractRequest,
+    companyId?: string,
+  ) =>
+    api.post<{ project: Project }>(
+      projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}/repository-baseline/execution-contract`),
+      request,
+    ),
+  previewHiringBrief: (
+    projectId: string,
+    workspaceId: string,
+    request: GenerateHiringBriefRequest,
+    companyId?: string,
+  ) =>
+    api.post<{ preview: HiringBriefPreview }>(
+      projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}/staffing/hiring-brief-preview`),
+      request,
+    ),
+  createHiringIssue: (
+    projectId: string,
+    workspaceId: string,
+    request: CreateHiringIssueRequest,
+    companyId?: string,
+  ) =>
+    api.post<{ issue: Issue }>(
+      projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}/staffing/hiring-issues`),
       request,
     ),
   controlWorkspaceRuntimeServices: (

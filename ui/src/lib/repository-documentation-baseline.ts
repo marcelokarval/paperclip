@@ -1,5 +1,6 @@
 import {
   REPOSITORY_DOCUMENTATION_BASELINE_DEFAULT_GUARDRAILS,
+  type RepositoryBaselineAnalyzerResult,
   type RepositoryDocumentationBaseline,
   type RepositoryDocumentationBaselineStatus,
   readRepositoryDocumentationBaselineFromMetadata,
@@ -34,6 +35,22 @@ export function splitBaselineLines(value: string): string[] {
 
 function joinBaselineLines(values: string[]) {
   return values.join("\n");
+}
+
+export function describeRepositoryBaselineAnalyzerOutcome(
+  analysis: RepositoryBaselineAnalyzerResult | null | undefined,
+): string | null {
+  if (!analysis) return null;
+  if (analysis.status !== "succeeded") {
+    return `Analyzer ${analysis.status}.`;
+  }
+  if (analysis.changes.appliedChanges.length > 0) {
+    return `Analyzer applied ${analysis.changes.appliedChanges.length} baseline change${analysis.changes.appliedChanges.length === 1 ? "" : "s"}.`;
+  }
+  if (analysis.changes.noOpReason) {
+    return analysis.changes.noOpReason;
+  }
+  return "Analyzer completed without reported baseline changes.";
 }
 
 export function readRepositoryDocumentationBaseline(
@@ -77,6 +94,14 @@ export function writeRepositoryDocumentationBaselineMetadata(input: {
       stack: splitBaselineLines(input.form.stack),
       documentationFiles: splitBaselineLines(input.form.documentationFiles),
       guardrails: splitBaselineLines(input.form.guardrails),
+      repository: existingBaseline?.repository,
+      docs: existingBaseline?.docs,
+      gaps: existingBaseline?.gaps,
+      constraints: existingBaseline?.constraints,
+      recommendations: existingBaseline?.recommendations,
+      analysis: existingBaseline?.analysis ?? null,
+      acceptedGuidance: existingBaseline?.acceptedGuidance ?? null,
+      recommendationDecisions: existingBaseline?.recommendationDecisions ?? [],
       trackingIssueId: existingBaseline?.trackingIssueId ?? null,
       trackingIssueIdentifier: existingBaseline?.trackingIssueIdentifier ?? null,
     },

@@ -1,15 +1,29 @@
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { projects, projectGoals, goals, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
+import { projects, projectGoals, goals, projectWorkspaces, workspaceRuntimeServices, issues, issueApprovals, approvals } from "@paperclipai/db";
 import {
   PROJECT_COLORS,
   deriveProjectUrlKey,
   hasNonAsciiContent,
   isUuidLike,
   normalizeProjectUrlKey,
+  projectIssueSystemGuidanceSchema,
+  projectOperatingContextSchema,
+  projectStaffingStateSchema,
+  readRepositoryDocumentationBaselineFromMetadata,
+  type ExecutiveProjectPacket,
   type ProjectCodebase,
+  type ProjectExecutionContract,
   type ProjectExecutionWorkspacePolicy,
   type ProjectGoalRef,
+  type ProjectIssueSystemGuidance,
+  type ProjectOperatingContext,
+  type ProjectOperatingContextSuggestedGoal,
+  type HiringBriefPreview,
+  type ProjectStaffingState,
+  type RepositoryBaselineAcceptedGuidance,
+  type RepositoryDocumentationBaseline,
+  type TechnicalProjectPacket,
   type ProjectWorkspaceRuntimeConfig,
   type ProjectWorkspace,
   type WorkspaceRuntimeService,
@@ -42,11 +56,14 @@ type CreateWorkspaceInput = {
 };
 type UpdateWorkspaceInput = Partial<CreateWorkspaceInput>;
 
-interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy"> {
+interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy" | "issueSystemGuidance" | "operatingContext"> {
   urlKey: string;
   goalIds: string[];
   goals: ProjectGoalRef[];
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;
+  issueSystemGuidance: ProjectIssueSystemGuidance | null;
+  operatingContext: ProjectOperatingContext | null;
+  staffingState: ProjectStaffingState | null;
   codebase: ProjectCodebase;
   workspaces: ProjectWorkspace[];
   primaryWorkspace: ProjectWorkspace | null;
@@ -59,6 +76,472 @@ interface ProjectShortnameRow {
 
 interface ResolveProjectNameOptions {
   excludeProjectId?: string | null;
+}
+
+function readProjectIssueSystemGuidance(value: unknown): ProjectIssueSystemGuidance | null {
+  if (!value) return null;
+  const parsed = projectIssueSystemGuidanceSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+function readProjectOperatingContext(value: unknown): ProjectOperatingContext | null {
+  if (!value) return null;
+  const parsed = projectOperatingContextSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+function readProjectStaffingState(value: unknown): ProjectStaffingState | null {
+  if (!value) return null;
+  const parsed = projectStaffingStateSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+function applyWorkspaceBaselineRefsToOperatingContext(input: {
+  operatingContext: ProjectOperatingContext | null;
+  primaryWorkspace: ProjectWorkspace | null;
+  workspaces: ProjectWorkspace[];
+}): ProjectOperatingContext | null {
+  const operatingContext = input.operatingContext ?? null;
+  if (!operatingContext) return null;
+  if (operatingContext.baselineTrackingIssueId && operatingContext.baselineTrackingIssueIdentifier) {
+    return operatingContext;
+  }
+
+  const workspaceCandidates = input.primaryWorkspace
+    ? [input.primaryWorkspace, ...input.workspaces.filter((workspace) => workspace.id !== input.primaryWorkspace?.id)]
+    : input.workspaces;
+  for (const workspace of workspaceCandidates) {
+    const baseline = readRepositoryDocumentationBaselineFromMetadata(workspace.metadata);
+    if (!baseline) continue;
+    if (!baseline.trackingIssueId && !baseline.trackingIssueIdentifier) continue;
+    return {
+      ...operatingContext,
+      baselineTrackingIssueId: operatingContext.baselineTrackingIssueId ?? baseline.trackingIssueId ?? null,
+      baselineTrackingIssueIdentifier:
+        operatingContext.baselineTrackingIssueIdentifier ?? baseline.trackingIssueIdentifier ?? null,
+    };
+  }
+
+  return operatingContext;
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  return [...new Set(
+    values
+      .map((value) => typeof value === "string" ? value.trim() : "")
+      .filter(Boolean),
+  )];
+}
+
+function buildSuggestedGoalsFromBaseline(input: {
+  baseline: RepositoryDocumentationBaseline;
+  acceptedGuidance: RepositoryBaselineAcceptedGuidance;
+}): ProjectOperatingContextSuggestedGoal[] {
+  const suggestions: ProjectOperatingContextSuggestedGoal[] = [];
+  const pushSuggestion = (suggestion: ProjectOperatingContextSuggestedGoal) => {
+    if (suggestions.some((entry) => entry.key === suggestion.key)) return;
+    suggestions.push(suggestion);
+  };
+
+  const verificationCommands = input.acceptedGuidance.projectDefaults.suggestedVerificationCommands;
+  const ownershipAreas = input.acceptedGuidance.projectDefaults.ownershipAreas;
+  const canonicalDocs = input.acceptedGuidance.projectDefaults.canonicalDocs;
+  const docsOrGaps = uniqueStrings([...(input.baseline.gaps ?? []), ...canonicalDocs]);
+
+  if (verificationCommands.length > 0) {
+    pushSuggestion({
+      key: "stabilize-verification-workflow",
+      title: "Stabilize project verification workflow",
+      description: "Confirm and document the canonical verification commands the project should use during issue execution.",
+      reason: "The baseline detected repository-specific verification commands that should become stable operator and issue defaults.",
+      recommendedLabels: ["documentation"],
+      suggestedVerificationCommands: verificationCommands,
+      source: "repository_baseline",
+      status: "pending",
+      acceptedGoalId: null,
+    });
+  }
+
+  if (ownershipAreas.length > 0) {
+    pushSuggestion({
+      key: "document-ownership-areas",
+      title: "Document ownership areas and routing conventions",
+      description: "Capture repository ownership areas so issue routing and future hiring follow the actual project structure.",
+      reason: "The baseline detected concrete ownership areas that can improve project coordination without decomposing work.",
+      recommendedLabels: uniqueStrings(ownershipAreas.flatMap((area) => area.recommendedLabels)).slice(0, 6),
+      suggestedVerificationCommands: verificationCommands.slice(0, 5),
+      source: "repository_baseline",
+      status: "pending",
+      acceptedGoalId: null,
+    });
+  }
+
+  if (docsOrGaps.length > 0) {
+    pushSuggestion({
+      key: "consolidate-canonical-docs",
+      title: "Consolidate canonical engineering docs",
+      description: "Align the project's canonical documentation list and close the highest-value repository documentation gaps.",
+      reason: "The baseline found repository docs and/or gaps that should become explicit project operating context.",
+      recommendedLabels: ["documentation"],
+      suggestedVerificationCommands: verificationCommands.slice(0, 5),
+      source: "repository_baseline",
+      status: "pending",
+      acceptedGoalId: null,
+    });
+  }
+
+  return suggestions.slice(0, 3);
+}
+
+function buildExecutiveProjectPacket(input: {
+  baseline: RepositoryDocumentationBaseline;
+  acceptedGuidance: RepositoryBaselineAcceptedGuidance;
+  operatingGuidance: string[];
+}): ExecutiveProjectPacket {
+  const topRisks = uniqueStrings(input.baseline.analysis?.risks ?? []).slice(0, 5);
+  const topGaps = uniqueStrings(input.baseline.gaps ?? []).slice(0, 5);
+  const stackSummary = uniqueStrings(input.baseline.stack).slice(0, 8);
+  const docsToReadFirst = uniqueStrings([
+    ...input.acceptedGuidance.projectDefaults.canonicalDocs,
+    ...input.baseline.documentationFiles,
+  ]).slice(0, 8);
+  const hasTechnicalSurface =
+    stackSummary.length > 0
+    || docsToReadFirst.length > 0
+    || input.acceptedGuidance.projectDefaults.ownershipAreas.length > 0
+    || input.acceptedGuidance.projectDefaults.suggestedVerificationCommands.length > 0;
+
+  return {
+    projectSummary: input.baseline.summary?.trim() || "Existing repository baseline accepted.",
+    baselineTrackingIssueIdentifier: input.baseline.trackingIssueIdentifier ?? null,
+    topRisks,
+    topGaps,
+    stackSummary,
+    docsToReadFirst,
+    operatingGuidance: input.operatingGuidance,
+    hiringSignals: hasTechnicalSurface ? ["cto"] : [],
+  };
+}
+
+function buildTechnicalProjectPacket(input: {
+  baseline: RepositoryDocumentationBaseline;
+  acceptedGuidance: RepositoryBaselineAcceptedGuidance;
+  issueSystemGuidance: ProjectIssueSystemGuidance | null;
+}): TechnicalProjectPacket {
+  return {
+    projectSummary: input.baseline.summary?.trim() || "Existing repository technical context accepted.",
+    stackSignals: uniqueStrings(input.baseline.stack),
+    canonicalDocs: uniqueStrings(input.acceptedGuidance.projectDefaults.canonicalDocs),
+    verificationCommands: uniqueStrings(input.acceptedGuidance.projectDefaults.suggestedVerificationCommands),
+    ownershipAreas: input.acceptedGuidance.projectDefaults.ownershipAreas.map((area) => ({
+      name: area.name,
+      paths: uniqueStrings(area.paths),
+      recommendedLabels: uniqueStrings(area.recommendedLabels),
+    })),
+    labelCatalog: input.acceptedGuidance.labels.map((label) => ({
+      name: label.name,
+      description: label.description,
+    })),
+    issueGuidance: uniqueStrings([
+      ...(input.issueSystemGuidance?.labelUsageGuidance ?? []),
+      ...(input.issueSystemGuidance?.parentChildGuidance ?? []),
+      ...(input.issueSystemGuidance?.blockingGuidance ?? []),
+      ...(input.issueSystemGuidance?.reviewGuidance ?? []),
+      ...(input.issueSystemGuidance?.approvalGuidance ?? []),
+    ]),
+  };
+}
+
+export function buildProjectOperatingContextFromBaseline(input: {
+  baseline: RepositoryDocumentationBaseline;
+  acceptedGuidance: RepositoryBaselineAcceptedGuidance | null;
+  issueSystemGuidance: ProjectIssueSystemGuidance | null;
+  projectDescription?: string | null;
+  baselineStatus?: ProjectOperatingContext["baselineStatus"];
+  executionReadiness?: NonNullable<ProjectOperatingContext["executionReadiness"]>;
+}): ProjectOperatingContext | null {
+  if (!input.acceptedGuidance) return null;
+
+  const canonicalDocs = uniqueStrings(input.acceptedGuidance.projectDefaults.canonicalDocs);
+  const verificationCommands = uniqueStrings(input.acceptedGuidance.projectDefaults.suggestedVerificationCommands);
+  const ownershipAreas = input.acceptedGuidance.projectDefaults.ownershipAreas.map((area) => ({
+    name: area.name,
+    paths: uniqueStrings(area.paths),
+    recommendedLabels: uniqueStrings(area.recommendedLabels),
+  }));
+  const operatingGuidance = uniqueStrings([
+    "For repo-first projects, review the baseline tracking issue before creating implementation issues.",
+    "Treat baseline-derived suggestions as project context, not automatic backlog decomposition.",
+    ...input.acceptedGuidance.issuePolicy.labelUsageGuidance,
+    ...input.acceptedGuidance.issuePolicy.reviewGuidance,
+    ...input.acceptedGuidance.issuePolicy.approvalGuidance,
+    ...(input.baseline.analysis?.agentGuidance ?? []),
+  ]);
+
+  const descriptionSource = typeof input.projectDescription === "string" && input.projectDescription.trim().length > 0
+    ? "manual"
+    : "none";
+  const baselineStatus = input.baselineStatus ?? "accepted";
+  const executionReadiness = input.executionReadiness ?? (baselineStatus === "accepted"
+    ? "needs_operator_contract"
+    : "unknown");
+
+  return {
+    baselineStatus,
+    baselineAcceptedAt: baselineStatus === "accepted" ? input.acceptedGuidance.acceptedAt : null,
+    executionReadiness,
+    executionReadinessUpdatedAt: baselineStatus === "accepted" ? input.acceptedGuidance.acceptedAt : null,
+    executionContract: null,
+    baselineTrackingIssueId: input.baseline.trackingIssueId ?? null,
+    baselineTrackingIssueIdentifier: input.baseline.trackingIssueIdentifier ?? null,
+    baselineFingerprint: input.baseline.updatedAt?.trim() ? `${input.baseline.status}:${input.baseline.updatedAt}` : null,
+    overviewSummary: input.baseline.summary?.trim() || null,
+    configurationDescriptionSuggestion: input.baseline.summary?.trim() || null,
+    descriptionSource,
+    labelCatalog: input.acceptedGuidance.labels.map((label) => ({
+      name: label.name,
+      color: label.color,
+      description: label.description,
+      source: "repository_baseline",
+      evidence: uniqueStrings(label.evidence),
+      confidence: label.confidence,
+    })),
+    canonicalDocs,
+    verificationCommands,
+    ownershipAreas,
+    operatingGuidance,
+    suggestedGoals: buildSuggestedGoalsFromBaseline({
+      baseline: input.baseline,
+      acceptedGuidance: input.acceptedGuidance,
+    }),
+    executiveProjectPacket: buildExecutiveProjectPacket({
+      baseline: input.baseline,
+      acceptedGuidance: input.acceptedGuidance,
+      operatingGuidance,
+    }),
+    technicalProjectPacket: buildTechnicalProjectPacket({
+      baseline: input.baseline,
+      acceptedGuidance: input.acceptedGuidance,
+      issueSystemGuidance: input.issueSystemGuidance,
+    }),
+  };
+}
+
+export function isExecutionContractComplete(contract: ProjectExecutionContract | null | undefined): boolean {
+  if (!contract) return false;
+  return Boolean(
+    contract.packageManager?.trim()
+    && contract.installCommand?.trim()
+    && contract.verificationCommands.length > 0
+    && contract.envHandoff?.trim()
+    && contract.designAuthority?.trim(),
+  );
+}
+
+export function buildProjectStaffingState(input: {
+  operatingContext: ProjectOperatingContext | null;
+  existing?: ProjectStaffingState | null;
+}): ProjectStaffingState | null {
+  const existing = readProjectStaffingState(input.existing ?? null);
+  const operatingContext = input.operatingContext ?? null;
+  if (!operatingContext) return existing;
+
+  const recommendedRole = operatingContext.executiveProjectPacket?.hiringSignals[0] ?? null;
+  const status = existing?.status ?? "not_started";
+
+  const hasSurface =
+    Boolean(recommendedRole)
+    || Boolean(operatingContext.baselineTrackingIssueId)
+    || Boolean(operatingContext.baselineTrackingIssueIdentifier);
+  if (!hasSurface) return existing ?? null;
+
+  return {
+    recommendedRole,
+    status,
+    baselineIssueId: operatingContext.baselineTrackingIssueId ?? null,
+    baselineIssueIdentifier: operatingContext.baselineTrackingIssueIdentifier ?? null,
+    hiringIssueId: existing?.hiringIssueId ?? null,
+    hiringIssueIdentifier: existing?.hiringIssueIdentifier ?? null,
+    lastBriefGeneratedAt: existing?.lastBriefGeneratedAt ?? null,
+  };
+}
+
+function buildHiringIssueDescription(preview: HiringBriefPreview): string {
+  const section = (title: string, items: string[]) => {
+    if (items.length === 0) return null;
+    return [`## ${title}`, ...items.map((item) => `- ${item}`)].join("\n");
+  };
+
+  return [
+    preview.summary,
+    "",
+    section("Source signals", preview.sourceSignals),
+    section("Why this hire exists", preview.rationale),
+    section("Project context", preview.projectContext),
+    section("Known risks and gaps", preview.risks),
+    section("Expected first output", preview.expectedFirstOutput),
+    section("Guardrails", preview.guardrails),
+    section("Success criteria", preview.successCriteria),
+    preview.canonicalReferences.length > 0
+      ? [
+          "## Canonical references",
+          ...preview.canonicalReferences.map((reference) => `- ${reference.label}: ${reference.value}`),
+        ].join("\n")
+      : null,
+  ].filter(Boolean).join("\n\n");
+}
+
+export function buildHiringBriefPreview(input: {
+  projectName: string;
+  operatingContext: ProjectOperatingContext | null;
+}): HiringBriefPreview | null {
+  const operatingContext = input.operatingContext ?? null;
+  if (!operatingContext || operatingContext.baselineStatus !== "accepted") return null;
+
+  const executivePacket = operatingContext.executiveProjectPacket ?? null;
+  const technicalPacket = operatingContext.technicalProjectPacket ?? null;
+  const recommendedRole = executivePacket?.hiringSignals[0] ?? null;
+  if (recommendedRole !== "cto") return null;
+  const executionContract = operatingContext.executionContract ?? null;
+  const executionClarifications = uniqueStrings([
+    executionContract?.packageManager?.trim()
+      ? null
+      : "Confirm the canonical package manager and runtime for this repository.",
+    executionContract?.installCommand?.trim()
+      ? null
+      : "Confirm the canonical install/bootstrap command before implementation begins.",
+    executionContract?.verificationCommands.length
+      ? null
+      : "Confirm the canonical verification command set and precedence.",
+    executionContract?.envHandoff?.trim()
+      ? null
+      : "Confirm env/bootstrap handoff, secret source, and startup assumptions.",
+    executionContract?.designAuthority?.trim()
+      ? null
+      : "Confirm the design authority rule and how premium direction applies.",
+  ]);
+
+  const sourceSignals = uniqueStrings([
+    "Accepted repository baseline",
+    operatingContext.baselineTrackingIssueIdentifier ? `Baseline issue ${operatingContext.baselineTrackingIssueIdentifier}` : null,
+    executivePacket ? "Executive project packet" : null,
+    technicalPacket ? "Technical project packet" : null,
+    operatingContext.canonicalDocs.length > 0 ? "Canonical docs" : null,
+    operatingContext.verificationCommands.length > 0 ? "Verification defaults" : null,
+    operatingContext.ownershipAreas.length > 0 ? "Ownership areas" : null,
+    executionClarifications.length > 0 ? "Open execution clarifications" : null,
+  ]);
+
+  const rationale = uniqueStrings([
+    "This project already has an accepted technical baseline and now needs a technical owner who can turn that context into an execution-ready plan.",
+    executivePacket?.projectSummary ?? null,
+    executivePacket?.topGaps[0] ?? null,
+    technicalPacket?.stackSignals.length ? `Detected stack: ${technicalPacket.stackSignals.slice(0, 6).join(", ")}.` : null,
+  ]).slice(0, 6);
+
+  const projectContext = uniqueStrings([
+    technicalPacket?.stackSignals.length ? `Stack signals: ${technicalPacket.stackSignals.slice(0, 8).join(", ")}` : null,
+    operatingContext.canonicalDocs.length ? `Canonical docs: ${operatingContext.canonicalDocs.slice(0, 6).join(", ")}` : null,
+    operatingContext.verificationCommands.length ? `Verification commands: ${operatingContext.verificationCommands.slice(0, 5).join(", ")}` : null,
+    operatingContext.ownershipAreas.length
+      ? `Ownership areas: ${operatingContext.ownershipAreas.slice(0, 4).map((area) => area.name).join(", ")}`
+      : null,
+    executionClarifications.length
+      ? `Open execution clarifications: ${executionClarifications.join(" ")}`
+      : null,
+    operatingContext.operatingGuidance[0] ?? null,
+  ]).slice(0, 8);
+
+  const risks = uniqueStrings([
+    ...(executivePacket?.topRisks ?? []),
+    ...(executivePacket?.topGaps ?? []),
+    ...executionClarifications,
+  ]).slice(0, 8);
+
+  const expectedFirstOutput = uniqueStrings([
+    "Read the canonical baseline issue and confirm the current technical shape of the project.",
+    "Publish a concise technical onboarding and framing comment before implementation begins.",
+    "Validate stack signals, canonical docs, verification commands, and ownership areas against the real repository.",
+    executionClarifications.length
+      ? "Close the open execution clarifications as part of the first technical framing pass."
+      : null,
+    "Propose the first technical execution plan only after the framing is stable.",
+  ]);
+
+  const guardrails = uniqueStrings([
+    "Do not start implementation before publishing an initial technical framing comment.",
+    "Treat the baseline issue as the canonical technical source of truth for this repository.",
+    "Use the hiring issue as the operational entrypoint for the role, not as a replacement for the baseline issue.",
+    "Do not decompose work or create sub-issues unless that decomposition is explicitly justified after onboarding.",
+  ]);
+
+  const canonicalReferences = [
+    ...(operatingContext.baselineTrackingIssueIdentifier
+      ? [{
+          type: "issue" as const,
+          label: "Canonical baseline issue",
+          value: operatingContext.baselineTrackingIssueIdentifier,
+        }]
+      : []),
+    {
+      type: "project" as const,
+      label: "Project",
+      value: input.projectName,
+    },
+    ...operatingContext.canonicalDocs.slice(0, 8).map((doc) => ({
+      type: "doc" as const,
+      label: "Canonical doc",
+      value: doc,
+    })),
+  ];
+
+  const successCriteria = uniqueStrings([
+    "A grounded technical onboarding comment is published in the first response.",
+    "The role confirms the repository's current stack, docs, verification defaults, and ownership signals.",
+    "The first technical plan stays aligned with the accepted baseline and avoids premature decomposition.",
+  ]);
+
+  return {
+    role: "cto",
+    title: `Hire CTO for ${input.projectName}`,
+    summary: executivePacket?.projectSummary
+      ?? operatingContext.overviewSummary
+      ?? `Technical hiring brief for ${input.projectName}.`,
+    sourceSignals,
+    rationale,
+    projectContext,
+    risks,
+    expectedFirstOutput,
+    guardrails,
+    canonicalReferences,
+    successCriteria,
+  };
+}
+
+export function buildHiringIssueCreateInput(input: {
+  projectId: string;
+  projectWorkspaceId: string;
+  baselineIssueId: string;
+  preview: HiringBriefPreview;
+  actorUserId: string | null;
+  actorAgentId: string | null;
+}) {
+  return {
+    projectId: input.projectId,
+    projectWorkspaceId: input.projectWorkspaceId,
+    parentId: input.baselineIssueId,
+    title: input.preview.title,
+    description: buildHiringIssueDescription(input.preview),
+    status: "backlog" as const,
+    priority: "high" as const,
+    assigneeAgentId: null,
+    assigneeUserId: null,
+    requestDepth: 0,
+    originKind: "staffing_hiring",
+    originId: input.baselineIssueId,
+    createdByAgentId: input.actorAgentId,
+    createdByUserId: input.actorUserId,
+  };
 }
 
 /** Batch-load goal refs for a set of projects. */
@@ -88,14 +571,89 @@ async function attachGoals(db: Db, rows: ProjectRow[]): Promise<ProjectWithGoals
     arr.push({ id: link.goalId, title: link.goalTitle });
   }
 
+  const hiringIssueRows = await db
+    .select({
+      id: issues.id,
+      projectId: issues.projectId,
+      identifier: issues.identifier,
+      createdAt: issues.createdAt,
+    })
+    .from(issues)
+    .where(
+      and(
+        inArray(issues.projectId, projectIds),
+        eq(issues.originKind, "staffing_hiring"),
+        isNull(issues.hiddenAt),
+      ),
+    )
+    .orderBy(desc(issues.createdAt), desc(issues.id));
+
+  const hiringIssueByProjectId = new Map<string, { id: string; identifier: string | null; createdAt: Date }>();
+  for (const row of hiringIssueRows) {
+    if (!row.projectId || hiringIssueByProjectId.has(row.projectId)) continue;
+    hiringIssueByProjectId.set(row.projectId, row);
+  }
+
+  const hiringApprovalRows = hiringIssueRows.length === 0
+    ? []
+    : await db
+      .select({
+        issueId: issues.id,
+        approvalStatus: approvals.status,
+      })
+      .from(issues)
+      .innerJoin(issueApprovals, eq(issueApprovals.issueId, issues.id))
+      .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+      .where(
+        and(
+          inArray(issues.id, hiringIssueRows.map((row) => row.id)),
+          eq(approvals.type, "hire_agent"),
+        ),
+      )
+      .orderBy(desc(issueApprovals.createdAt));
+
+  const latestHiringApprovalStatusByIssueId = new Map<string, string>();
+  for (const row of hiringApprovalRows) {
+    if (!latestHiringApprovalStatusByIssueId.has(row.issueId)) {
+      latestHiringApprovalStatusByIssueId.set(row.issueId, row.approvalStatus);
+    }
+  }
+
   return rows.map((r) => {
     const g = map.get(r.id) ?? [];
+    const operatingContext = readProjectOperatingContext(r.operatingContext);
+    const hiringIssue = hiringIssueByProjectId.get(r.id) ?? null;
+    const approvalStatus = hiringIssue ? latestHiringApprovalStatusByIssueId.get(hiringIssue.id) ?? null : null;
+    const staffingStatus =
+      approvalStatus === "approved"
+        ? "hire_approved"
+        : approvalStatus === "pending" || approvalStatus === "revision_requested"
+          ? "approval_pending"
+          : hiringIssue
+            ? "issue_created"
+            : "not_started";
     return {
       ...r,
       urlKey: deriveProjectUrlKey(r.name, r.id),
       goalIds: g.map((x) => x.id),
       goals: g,
       executionWorkspacePolicy: parseProjectExecutionWorkspacePolicy(r.executionWorkspacePolicy),
+      issueSystemGuidance: readProjectIssueSystemGuidance(r.issueSystemGuidance),
+      operatingContext,
+      staffingState: buildProjectStaffingState({
+        operatingContext,
+        existing: hiringIssue
+          ? {
+              recommendedRole: "cto",
+              status: staffingStatus,
+              baselineIssueId: operatingContext?.baselineTrackingIssueId ?? null,
+              baselineIssueIdentifier: operatingContext?.baselineTrackingIssueIdentifier ?? null,
+              hiringIssueId: hiringIssue.id,
+              hiringIssueIdentifier: hiringIssue.identifier,
+              lastBriefGeneratedAt: hiringIssue.createdAt.toISOString(),
+            }
+          : null,
+      }),
     } as ProjectWithGoals;
   });
 }
@@ -254,8 +812,18 @@ async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<Proje
       ),
     );
     const primaryWorkspace = pickPrimaryWorkspace(projectWorkspaceRows, sharedRuntimeServicesByWorkspaceId);
+    const operatingContext = applyWorkspaceBaselineRefsToOperatingContext({
+      operatingContext: row.operatingContext,
+      primaryWorkspace,
+      workspaces,
+    });
     return {
       ...row,
+      operatingContext,
+      staffingState: buildProjectStaffingState({
+        operatingContext,
+        existing: row.staffingState,
+      }),
       codebase: deriveProjectCodebase({
         companyId: row.companyId,
         projectId: row.id,

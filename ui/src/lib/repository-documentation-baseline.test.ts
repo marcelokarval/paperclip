@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  describeRepositoryBaselineAnalyzerOutcome,
   REPOSITORY_DOCUMENTATION_BASELINE_DEFAULT_GUARDRAILS,
   readRepositoryDocumentationBaseline,
   repositoryDocumentationBaselineFormFromMetadata,
@@ -64,7 +65,32 @@ describe("repository documentation baseline metadata", () => {
     const metadata = writeRepositoryDocumentationBaselineMetadata({
       metadata: {
         workspaceRuntime: { commands: [{ id: "web" }] },
-      },
+        repositoryDocumentationBaseline: {
+          status: "ready",
+          source: "scan",
+          updatedAt: "2026-04-20T12:00:00.000Z",
+          summary: "Analyzer context",
+          stack: ["React"],
+          documentationFiles: ["AGENTS.md"],
+          guardrails: ["Documentation only"],
+          analysis: {
+            status: "succeeded",
+            provider: "codex_local",
+            command: "codex",
+            model: null,
+            ranAt: "2026-04-20T13:00:00.000Z",
+            durationMs: 1234,
+            summary: "Analyzer summary",
+            risks: [],
+            agentGuidance: [],
+            error: null,
+            changes: {
+              appliedChanges: ["Added stack signals: React Server Components"],
+              noOpReason: null,
+            },
+          },
+        },
+      } as Record<string, unknown>,
       updatedAt: "2026-04-20T12:00:00.000Z",
       form: {
         status: "ready",
@@ -76,7 +102,7 @@ describe("repository documentation baseline metadata", () => {
     });
 
     expect(metadata.workspaceRuntime).toEqual({ commands: [{ id: "web" }] });
-    expect(metadata.repositoryDocumentationBaseline).toEqual({
+    expect(metadata.repositoryDocumentationBaseline).toMatchObject({
       status: "ready",
       source: "manual",
       updatedAt: "2026-04-20T12:00:00.000Z",
@@ -84,6 +110,13 @@ describe("repository documentation baseline metadata", () => {
       stack: ["TypeScript", "React", "Express"],
       documentationFiles: ["AGENTS.md", "README.md"],
       guardrails: ["Documentation only"],
+      analysis: expect.objectContaining({
+        status: "succeeded",
+        changes: {
+          appliedChanges: ["Added stack signals: React Server Components"],
+          noOpReason: null,
+        },
+      }),
     });
   });
 
@@ -93,5 +126,65 @@ describe("repository documentation baseline metadata", () => {
       "README.md",
       "doc/PRODUCT.md",
     ]);
+  });
+
+  it("describes successful analyzer outcomes with applied changes", () => {
+    expect(describeRepositoryBaselineAnalyzerOutcome({
+      status: "succeeded",
+      provider: "codex_local",
+      command: "codex",
+      model: null,
+      ranAt: "2026-04-20T12:00:00.000Z",
+      durationMs: 1500,
+      summary: "Analyzer summary",
+      risks: [],
+      agentGuidance: [],
+      error: null,
+      changes: {
+        appliedChanges: ["Added suggested labels: runtime"],
+        noOpReason: null,
+      },
+      rawOutput: null,
+    })).toBe("Analyzer applied 1 baseline change.");
+  });
+
+  it("describes analyzer no-op outcomes explicitly", () => {
+    expect(describeRepositoryBaselineAnalyzerOutcome({
+      status: "succeeded",
+      provider: "codex_local",
+      command: "codex",
+      model: null,
+      ranAt: "2026-04-20T12:00:00.000Z",
+      durationMs: 1500,
+      summary: null,
+      risks: [],
+      agentGuidance: [],
+      error: null,
+      changes: {
+        appliedChanges: [],
+        noOpReason: "Analyzer completed but did not produce any material baseline changes.",
+      },
+      rawOutput: null,
+    })).toBe("Analyzer completed but did not produce any material baseline changes.");
+  });
+
+  it("describes analyzer failures with the persisted status", () => {
+    expect(describeRepositoryBaselineAnalyzerOutcome({
+      status: "invalid_output",
+      provider: "codex_local",
+      command: "codex",
+      model: null,
+      ranAt: "2026-04-20T12:00:00.000Z",
+      durationMs: 1500,
+      summary: null,
+      risks: [],
+      agentGuidance: [],
+      error: "bad output",
+      changes: {
+        appliedChanges: [],
+        noOpReason: null,
+      },
+      rawOutput: null,
+    })).toBe("Analyzer invalid_output.");
   });
 });

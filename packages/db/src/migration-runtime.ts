@@ -22,10 +22,20 @@ type EmbeddedPostgresCtor = new (opts: {
   onError?: (message: unknown) => void;
 }) => EmbeddedPostgresInstance;
 
+type EmbeddedPostgresCredentials = {
+  user: string;
+  password: string;
+};
+
 export type MigrationConnection = {
   connectionString: string;
   source: string;
   stop: () => Promise<void>;
+};
+
+const LEGACY_EMBEDDED_POSTGRES_CREDENTIALS: EmbeddedPostgresCredentials = {
+  user: "paperclip",
+  password: "paperclip",
 };
 
 function readRunningPostmasterPid(postmasterPidFile: string): number | null {
@@ -87,8 +97,35 @@ async function loadEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
   }
 }
 
-function buildEmbeddedPostgresAdminConnectionString(port: number): string {
-  return `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
+function buildEmbeddedPostgresConnectionString(
+  port: number,
+  databaseName: string,
+  credentials: EmbeddedPostgresCredentials,
+): string {
+  return `postgres://${encodeURIComponent(credentials.user)}:${encodeURIComponent(credentials.password)}@127.0.0.1:${port}/${databaseName}`;
+}
+
+function buildEmbeddedPostgresAdminConnectionString(
+  port: number,
+  credentials: EmbeddedPostgresCredentials = LEGACY_EMBEDDED_POSTGRES_CREDENTIALS,
+): string {
+  return buildEmbeddedPostgresConnectionString(port, "postgres", credentials);
+}
+
+function readEmbeddedPostgresCredentials(dataDir: string): EmbeddedPostgresCredentials {
+  const credentialsPath = path.resolve(dataDir, ".paperclip-embedded-postgres-credentials.json");
+  if (!existsSync(credentialsPath)) return LEGACY_EMBEDDED_POSTGRES_CREDENTIALS;
+
+  try {
+    const parsed = JSON.parse(readFileSync(credentialsPath, "utf8")) as Partial<EmbeddedPostgresCredentials>;
+    if (typeof parsed.user === "string" && parsed.user && typeof parsed.password === "string" && parsed.password) {
+      return { user: parsed.user, password: parsed.password };
+    }
+  } catch {
+    // Old local databases used the embedded-postgres default credentials.
+  }
+
+  return LEGACY_EMBEDDED_POSTGRES_CREDENTIALS;
 }
 
 async function ensureEmbeddedPostgresConnection(
@@ -96,6 +133,7 @@ async function ensureEmbeddedPostgresConnection(
   preferredPort: number,
 ): Promise<MigrationConnection> {
   const EmbeddedPostgres = await loadEmbeddedPostgresCtor();
+  const credentials = readEmbeddedPostgresCredentials(dataDir);
   const postmasterPidFile = path.resolve(dataDir, "postmaster.pid");
   const pgVersionFile = path.resolve(dataDir, "PG_VERSION");
   const runningPid = readRunningPostmasterPid(postmasterPidFile);
@@ -107,7 +145,7 @@ async function ensureEmbeddedPostgresConnection(
     actualDataDir: string | null;
   }> {
     const actualDataDir = await getPostgresDataDirectory(
-      buildEmbeddedPostgresAdminConnectionString(preferredPort),
+      buildEmbeddedPostgresAdminConnectionString(preferredPort, credentials),
     );
     return {
       matchesDataDir:
@@ -129,14 +167,14 @@ async function ensureEmbeddedPostgresConnection(
     }
 
     await ensurePostgresDatabase(
-      buildEmbeddedPostgresAdminConnectionString(preferredPort),
+      buildEmbeddedPostgresAdminConnectionString(preferredPort, credentials),
       "paperclip",
     );
     process.emitWarning(
       `Adopting an existing PostgreSQL instance on port ${preferredPort} for embedded data dir ${dataDir} because postmaster.pid is missing.`,
     );
     return {
-      connectionString: `postgres://paperclip:paperclip@127.0.0.1:${preferredPort}/paperclip`,
+      connectionString: buildEmbeddedPostgresConnectionString(preferredPort, "paperclip", credentials),
       source: `embedded-postgres@${preferredPort}`,
       stop: async () => {},
     };
@@ -149,14 +187,14 @@ async function ensureEmbeddedPostgresConnection(
         throw new Error("reachable postgres does not use the expected embedded data directory");
       }
       await ensurePostgresDatabase(
-        buildEmbeddedPostgresAdminConnectionString(preferredPort),
+        buildEmbeddedPostgresAdminConnectionString(preferredPort, credentials),
         "paperclip",
       );
       process.emitWarning(
         `Adopting an existing PostgreSQL instance on port ${preferredPort} for embedded data dir ${dataDir} because postmaster.pid is missing.`,
       );
       return {
-        connectionString: `postgres://paperclip:paperclip@127.0.0.1:${preferredPort}/paperclip`,
+        connectionString: buildEmbeddedPostgresConnectionString(preferredPort, "paperclip", credentials),
         source: `embedded-postgres@${preferredPort}`,
         stop: async () => {},
       };
@@ -167,10 +205,10 @@ async function ensureEmbeddedPostgresConnection(
 
   if (runningPid) {
     const port = runningPort ?? preferredPort;
-    const adminConnectionString = buildEmbeddedPostgresAdminConnectionString(port);
+    const adminConnectionString = buildEmbeddedPostgresAdminConnectionString(port, credentials);
     await ensurePostgresDatabase(adminConnectionString, "paperclip");
     return {
-      connectionString: `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`,
+      connectionString: buildEmbeddedPostgresConnectionString(port, "paperclip", credentials),
       source: `embedded-postgres@${port}`,
       stop: async () => {},
     };
@@ -179,8 +217,8 @@ async function ensureEmbeddedPostgresConnection(
   const selectedPort = await findAvailablePort(preferredPort);
   const instance = new EmbeddedPostgres({
     databaseDir: dataDir,
-    user: "paperclip",
-    password: "paperclip",
+    user: credentials.user,
+    password: credentials.password,
     port: selectedPort,
     persistent: true,
     initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
@@ -211,11 +249,11 @@ async function ensureEmbeddedPostgresConnection(
     });
   }
 
-  const adminConnectionString = buildEmbeddedPostgresAdminConnectionString(selectedPort);
+  const adminConnectionString = buildEmbeddedPostgresAdminConnectionString(selectedPort, credentials);
   await ensurePostgresDatabase(adminConnectionString, "paperclip");
 
   return {
-    connectionString: `postgres://paperclip:paperclip@127.0.0.1:${selectedPort}/paperclip`,
+    connectionString: buildEmbeddedPostgresConnectionString(selectedPort, "paperclip", credentials),
     source: `embedded-postgres@${selectedPort}`,
     stop: async () => {
       await instance.stop();

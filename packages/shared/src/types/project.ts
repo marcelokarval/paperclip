@@ -52,6 +52,168 @@ export interface ProjectCodebase {
   origin: ProjectCodebaseOrigin;
 }
 
+export interface ProjectIssueSystemGuidance {
+  labelUsageGuidance: string[];
+  parentChildGuidance: string[];
+  blockingGuidance: string[];
+  reviewGuidance: string[];
+  approvalGuidance: string[];
+  canonicalDocs: string[];
+  suggestedVerificationCommands: string[];
+}
+
+export interface ProjectOperatingContextLabelCatalogEntry {
+  name: string;
+  color: string;
+  description: string;
+  source: "repository_baseline" | "manual" | "system";
+  evidence: string[];
+  confidence: "low" | "medium" | "high";
+}
+
+export interface ProjectOperatingContextOwnershipArea {
+  name: string;
+  paths: string[];
+  recommendedLabels: string[];
+}
+
+export interface ProjectExecutionContract {
+  packageManager: string | null;
+  installCommand: string | null;
+  verificationCommands: string[];
+  envHandoff: string | null;
+  designAuthority: string | null;
+  updatedAt: string | null;
+}
+
+export interface ProjectOperatingContextSuggestedGoal {
+  key: string;
+  title: string;
+  description: string;
+  reason: string;
+  recommendedLabels: string[];
+  suggestedVerificationCommands: string[];
+  source: "repository_baseline";
+  status: "pending" | "accepted" | "rejected";
+  acceptedGoalId: string | null;
+}
+
+export interface ExecutiveProjectPacket {
+  projectSummary: string;
+  baselineTrackingIssueIdentifier: string | null;
+  topRisks: string[];
+  topGaps: string[];
+  stackSummary: string[];
+  docsToReadFirst: string[];
+  operatingGuidance: string[];
+  hiringSignals: Array<"cto" | "ux" | "marketing" | "ops">;
+}
+
+export interface TechnicalProjectPacket {
+  projectSummary: string;
+  stackSignals: string[];
+  canonicalDocs: string[];
+  verificationCommands: string[];
+  ownershipAreas: ProjectOperatingContextOwnershipArea[];
+  labelCatalog: Array<{
+    name: string;
+    description: string;
+  }>;
+  issueGuidance: string[];
+}
+
+export interface ProjectOperatingContext {
+  baselineStatus: "none" | "available" | "accepted";
+  baselineAcceptedAt: string | null;
+  executionReadiness?: "unknown" | "needs_operator_contract" | "ready";
+  executionReadinessUpdatedAt?: string | null;
+  executionContract?: ProjectExecutionContract | null;
+  baselineTrackingIssueId: string | null;
+  baselineTrackingIssueIdentifier: string | null;
+  baselineFingerprint: string | null;
+  overviewSummary: string | null;
+  configurationDescriptionSuggestion: string | null;
+  descriptionSource: "manual" | "baseline" | "none";
+  labelCatalog: ProjectOperatingContextLabelCatalogEntry[];
+  canonicalDocs: string[];
+  verificationCommands: string[];
+  ownershipAreas: ProjectOperatingContextOwnershipArea[];
+  operatingGuidance: string[];
+  suggestedGoals: ProjectOperatingContextSuggestedGoal[];
+  executiveProjectPacket: ExecutiveProjectPacket | null;
+  technicalProjectPacket: TechnicalProjectPacket | null;
+}
+
+export type ProjectStaffingRecommendedRole = "cto" | "ux" | "marketing" | "ops";
+export type ProjectStaffingStatus =
+  | "not_started"
+  | "brief_generated"
+  | "issue_created"
+  | "approval_pending"
+  | "hire_approved"
+  | "role_onboarded";
+
+export interface ProjectStaffingState {
+  recommendedRole: ProjectStaffingRecommendedRole | null;
+  status: ProjectStaffingStatus;
+  baselineIssueId: string | null;
+  baselineIssueIdentifier: string | null;
+  hiringIssueId: string | null;
+  hiringIssueIdentifier: string | null;
+  lastBriefGeneratedAt: string | null;
+}
+
+export interface AcceptRepositoryBaselineRequest {
+  acceptIssueGuidance?: boolean;
+}
+
+export interface MarkExecutionContextReadyRequest {
+  ready?: boolean;
+}
+
+export interface UpdateExecutionContractRequest {
+  packageManager?: string | null;
+  installCommand?: string | null;
+  verificationCommands?: string[];
+  envHandoff?: string | null;
+  designAuthority?: string | null;
+}
+
+export interface GenerateHiringBriefRequest {
+  role: "cto";
+  sourceIssueId?: string | null;
+}
+
+export interface CreateHiringIssueRequest {
+  role: "cto";
+  sourceIssueId?: string | null;
+}
+
+export interface HiringBriefCanonicalReference {
+  type: "issue" | "doc" | "project";
+  label: string;
+  value: string;
+}
+
+export interface HiringBriefPreview {
+  role: "cto";
+  title: string;
+  summary: string;
+  sourceSignals: string[];
+  rationale: string[];
+  projectContext: string[];
+  risks: string[];
+  expectedFirstOutput: string[];
+  guardrails: string[];
+  canonicalReferences: HiringBriefCanonicalReference[];
+  successCriteria: string[];
+}
+
+export interface AcceptProjectSuggestedGoalRequest {
+  title?: string | null;
+  description?: string | null;
+}
+
 export interface Project {
   id: string;
   companyId: string;
@@ -70,6 +232,9 @@ export interface Project {
   pauseReason: PauseReason | null;
   pausedAt: Date | null;
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;
+  issueSystemGuidance?: ProjectIssueSystemGuidance | null;
+  operatingContext?: ProjectOperatingContext | null;
+  staffingState?: ProjectStaffingState | null;
   codebase: ProjectCodebase;
   workspaces: ProjectWorkspace[];
   primaryWorkspace: ProjectWorkspace | null;

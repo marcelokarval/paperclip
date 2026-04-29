@@ -7,6 +7,9 @@ import {
   ISSUE_PRIORITIES,
   ISSUE_STATUSES,
 } from "../constants.js";
+import { normalizeHumanTextInput } from "../text-normalization.js";
+
+const humanTextSchema = z.string().transform(normalizeHumanTextInput);
 
 export const ISSUE_EXECUTION_WORKSPACE_PREFERENCES = [
   "inherit",
@@ -128,7 +131,7 @@ export const createIssueSchema = z.object({
   blockedByIssueIds: z.array(z.string().uuid()).optional(),
   inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
   title: z.string().min(1),
-  description: z.string().optional().nullable(),
+  description: humanTextSchema.optional().nullable(),
   status: z.enum(ISSUE_STATUSES).optional().default("backlog"),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
   assigneeAgentId: z.string().uuid().optional().nullable(),
@@ -148,13 +151,20 @@ export type CreateIssue = z.infer<typeof createIssueSchema>;
 export const createIssueLabelSchema = z.object({
   name: z.string().trim().min(1).max(48),
   color: z.string().regex(/^#(?:[0-9a-fA-F]{6})$/, "Color must be a 6-digit hex value"),
+  description: z.string().trim().max(500).optional().nullable(),
+  source: z.enum(["manual", "repository_baseline", "system"]).optional(),
+  metadata: z.record(z.unknown()).optional().nullable(),
 });
 
 export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 
+export const updateIssueLabelSchema = createIssueLabelSchema.partial();
+
+export type UpdateIssueLabel = z.infer<typeof updateIssueLabelSchema>;
+
 export const updateIssueSchema = createIssueSchema.partial().extend({
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),
-  comment: z.string().min(1).optional(),
+  comment: humanTextSchema.pipe(z.string().min(1)).optional(),
   reopen: z.boolean().optional(),
   interrupt: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
@@ -171,7 +181,7 @@ export const checkoutIssueSchema = z.object({
 export type CheckoutIssue = z.infer<typeof checkoutIssueSchema>;
 
 export const addIssueCommentSchema = z.object({
-  body: z.string().min(1),
+  body: humanTextSchema.pipe(z.string().min(1)),
   reopen: z.boolean().optional(),
   interrupt: z.boolean().optional(),
 });

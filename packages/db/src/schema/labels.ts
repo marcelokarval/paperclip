@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, index, uniqueIndex, jsonb } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 
 export const labels = pgTable(
@@ -8,6 +8,9 @@ export const labels = pgTable(
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     color: text("color").notNull(),
+    description: text("description"),
+    source: text("source").notNull().default("manual"),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
