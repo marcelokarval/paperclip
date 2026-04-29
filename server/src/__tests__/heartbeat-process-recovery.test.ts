@@ -862,6 +862,84 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeup?.status).toBe("cancelled");
   });
 
+  it("does not claim queued runs when maxConcurrentRuns is already saturated", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runningRunId = randomUUID();
+    const queuedRunId = randomUUID();
+    const wakeupRequestId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          enabled: true,
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId,
+      source: "on_demand",
+      triggerDetail: "system",
+      reason: "queued_after_running",
+      status: "queued",
+      runId: queuedRunId,
+    });
+    await db.insert(heartbeatRuns).values([
+      {
+        id: runningRunId,
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        triggerDetail: "system",
+        status: "running",
+        startedAt: new Date("2026-04-29T12:00:00.000Z"),
+      },
+      {
+        id: queuedRunId,
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        triggerDetail: "system",
+        status: "queued",
+        wakeupRequestId,
+        contextSnapshot: { taskId: "queued-after-running" },
+        updatedAt: new Date("2026-04-29T12:01:00.000Z"),
+      },
+    ]);
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+
+    const queuedRun = await heartbeat.getRun(queuedRunId);
+    expect(queuedRun?.status).toBe("queued");
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("queued");
+  });
+
   it("blocks assigned todo work after the one automatic dispatch recovery was already used", async () => {
     const { issueId } = await seedStrandedIssueFixture({
       status: "todo",
