@@ -51,3 +51,13 @@ tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
 .superset/
 .claude/worktrees/
+
+# Local runtime/proof artifacts
+.codex
+.runtime/
+.playwright-mcp/
+.tmp-playwright-proof/
+server/ui-dist/
+test-results/
+proof-*.png
+baseline-panel-snapshot.md
