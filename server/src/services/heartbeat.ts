@@ -2110,16 +2110,28 @@ export function heartbeatService(db: Db) {
     const existing = await getRuntimeState(agent.id);
     if (existing) return existing;
 
-    return db
-      .insert(agentRuntimeState)
-      .values({
-        agentId: agent.id,
-        companyId: agent.companyId,
-        adapterType: agent.adapterType,
-        stateJson: {},
-      })
-      .returning()
-      .then((rows) => rows[0]);
+    try {
+      return await db
+        .insert(agentRuntimeState)
+        .values({
+          agentId: agent.id,
+          companyId: agent.companyId,
+          adapterType: agent.adapterType,
+          stateJson: {},
+        })
+        .returning()
+        .then((rows) => rows[0] ?? null);
+    } catch (error) {
+      const maybePostgresError = error as { code?: string; constraint_name?: string };
+      if (
+        maybePostgresError.code === "23503" &&
+        maybePostgresError.constraint_name === "agent_runtime_state_agent_id_agents_id_fk"
+      ) {
+        logger.warn({ agentId: agent.id }, "skipped runtime state creation because agent no longer exists");
+        return null;
+      }
+      throw error;
+    }
   }
 
   async function setRunStatus(
@@ -2187,18 +2199,30 @@ export function heartbeatService(db: Db) {
       ? redactCurrentUserValue(event.payload, currentUserRedactionOptions)
       : event.payload;
 
-    await db.insert(heartbeatRunEvents).values({
-      companyId: run.companyId,
-      runId: run.id,
-      agentId: run.agentId,
-      seq,
-      eventType: event.eventType,
-      stream: event.stream,
-      level: event.level,
-      color: event.color,
-      message: sanitizedMessage,
-      payload: sanitizedPayload,
-    });
+    try {
+      await db.insert(heartbeatRunEvents).values({
+        companyId: run.companyId,
+        runId: run.id,
+        agentId: run.agentId,
+        seq,
+        eventType: event.eventType,
+        stream: event.stream,
+        level: event.level,
+        color: event.color,
+        message: sanitizedMessage,
+        payload: sanitizedPayload,
+      });
+    } catch (error) {
+      const maybePostgresError = error as { code?: string; constraint_name?: string };
+      if (
+        maybePostgresError.code === "23503" &&
+        maybePostgresError.constraint_name === "heartbeat_run_events_run_id_heartbeat_runs_id_fk"
+      ) {
+        logger.warn({ runId: run.id }, "skipped heartbeat run event because run no longer exists");
+        return;
+      }
+      throw error;
+    }
 
     publishLiveEvent({
       companyId: run.companyId,
@@ -3438,7 +3462,8 @@ export function heartbeatService(db: Db) {
     session: { legacySessionId: string | null },
     normalizedUsage?: UsageTotals | null,
   ) {
-    await ensureRuntimeState(agent);
+    const runtimeState = await ensureRuntimeState(agent);
+    if (!runtimeState) return;
     const usage = normalizedUsage ?? normalizeUsageTotals(result.usage);
     const inputTokens = usage?.inputTokens ?? 0;
     const outputTokens = usage?.outputTokens ?? 0;
@@ -3450,21 +3475,33 @@ export function heartbeatService(db: Db) {
     const biller = resolveLedgerBiller(result);
     const ledgerScope = await resolveLedgerScopeForRun(db, agent.companyId, run);
 
-    await db
-      .update(agentRuntimeState)
-      .set({
-        adapterType: agent.adapterType,
-        sessionId: session.legacySessionId,
-        lastRunId: run.id,
-        lastRunStatus: run.status,
-        lastError: result.errorMessage ?? null,
-        totalInputTokens: sql`${agentRuntimeState.totalInputTokens} + ${inputTokens}`,
-        totalOutputTokens: sql`${agentRuntimeState.totalOutputTokens} + ${outputTokens}`,
-        totalCachedInputTokens: sql`${agentRuntimeState.totalCachedInputTokens} + ${cachedInputTokens}`,
-        totalCostCents: sql`${agentRuntimeState.totalCostCents} + ${additionalCostCents}`,
-        updatedAt: new Date(),
-      })
-      .where(eq(agentRuntimeState.agentId, agent.id));
+    try {
+      await db
+        .update(agentRuntimeState)
+        .set({
+          adapterType: agent.adapterType,
+          sessionId: session.legacySessionId,
+          lastRunId: run.id,
+          lastRunStatus: run.status,
+          lastError: result.errorMessage ?? null,
+          totalInputTokens: sql`${agentRuntimeState.totalInputTokens} + ${inputTokens}`,
+          totalOutputTokens: sql`${agentRuntimeState.totalOutputTokens} + ${outputTokens}`,
+          totalCachedInputTokens: sql`${agentRuntimeState.totalCachedInputTokens} + ${cachedInputTokens}`,
+          totalCostCents: sql`${agentRuntimeState.totalCostCents} + ${additionalCostCents}`,
+          updatedAt: new Date(),
+        })
+        .where(eq(agentRuntimeState.agentId, agent.id));
+    } catch (error) {
+      const maybePostgresError = error as { code?: string; constraint_name?: string };
+      if (
+        maybePostgresError.code === "23503" &&
+        maybePostgresError.constraint_name === "agent_runtime_state_agent_id_agents_id_fk"
+      ) {
+        logger.warn({ agentId: agent.id, runId: run.id }, "skipped runtime state update because agent no longer exists");
+        return;
+      }
+      throw error;
+    }
 
     if (additionalCostCents > 0 || hasTokenUsage) {
       const costs = costService(db, budgetHooks);
@@ -3556,6 +3593,7 @@ export function heartbeatService(db: Db) {
     }
 
     const runtime = await ensureRuntimeState(agent);
+    if (!runtime) return;
     const context = parseObject(run.contextSnapshot);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
@@ -5479,6 +5517,7 @@ export function heartbeatService(db: Db) {
       const agent = await getAgent(agentId);
       if (!agent) return null;
       const ensured = state ?? (await ensureRuntimeState(agent));
+      if (!ensured) return null;
       const latestTaskSession = await db
         .select()
         .from(agentTaskSessions)
@@ -5507,7 +5546,8 @@ export function heartbeatService(db: Db) {
     resetRuntimeSession: async (agentId: string, opts?: { taskKey?: string | null }) => {
       const agent = await getAgent(agentId);
       if (!agent) throw notFound("Agent not found");
-      await ensureRuntimeState(agent);
+      const ensured = await ensureRuntimeState(agent);
+      if (!ensured) throw notFound("Agent not found");
       const taskKey = readNonEmptyString(opts?.taskKey);
       const clearedTaskSessions = await clearTaskSessions(
         agent.companyId,

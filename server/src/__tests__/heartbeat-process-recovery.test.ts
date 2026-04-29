@@ -205,6 +205,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
     }
+    await db.delete(companySkills);
     await db.delete(companies);
   });
 
