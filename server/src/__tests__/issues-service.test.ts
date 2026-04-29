@@ -1399,7 +1399,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
 
     expect(await svc.listWakeableBlockedDependents(blockerA)).toEqual([]);
 
-    await svc.update(blockerB, { status: "done" });
+    await svc.update(blockerB, { status: "cancelled" });
 
     await expect(svc.listWakeableBlockedDependents(blockerA)).resolves.toEqual([
       expect.objectContaining({
