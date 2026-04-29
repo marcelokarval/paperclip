@@ -3257,14 +3257,29 @@ export function heartbeatService(db: Db) {
     };
 
     for (const issue of candidates) {
-      const agentId = issue.assigneeAgentId;
+      const currentIssue = await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (
+        !currentIssue ||
+        currentIssue.assigneeUserId ||
+        !currentIssue.assigneeAgentId ||
+        (currentIssue.status !== "todo" && currentIssue.status !== "in_progress")
+      ) {
+        result.skipped += 1;
+        continue;
+      }
+
+      const agentId = currentIssue.assigneeAgentId;
       if (!agentId) {
         result.skipped += 1;
         continue;
       }
 
       const agent = await getAgent(agentId);
-      if (!agent || agent.companyId !== issue.companyId) {
+      if (!agent || agent.companyId !== currentIssue.companyId) {
         result.skipped += 1;
         continue;
       }
@@ -3273,29 +3288,29 @@ export function heartbeatService(db: Db) {
         continue;
       }
 
-      if (await hasActiveExecutionPath(issue.companyId, issue.id)) {
+      if (await hasActiveExecutionPath(currentIssue.companyId, currentIssue.id)) {
         result.skipped += 1;
         continue;
       }
 
-      const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+      const latestRun = await getLatestIssueRun(currentIssue.companyId, currentIssue.id);
       const latestContext = parseObject(latestRun?.contextSnapshot);
       const latestRetryReason = readNonEmptyString(latestContext.retryReason);
 
-      if (issue.status === "todo") {
+      if (currentIssue.status === "todo") {
         if (!latestRun) {
-          if (await hasQueuedIssueWake(issue.companyId, issue.id)) {
+          if (await hasQueuedIssueWake(currentIssue.companyId, currentIssue.id)) {
             result.skipped += 1;
             continue;
           }
-          if (await isInvocationBudgetBlocked(issue, agentId)) {
+          if (await isInvocationBudgetBlocked(currentIssue, agentId)) {
             result.skipped += 1;
             continue;
           }
-          const queued = await enqueueInitialAssignedTodoDispatch(issue, agentId);
+          const queued = await enqueueInitialAssignedTodoDispatch(currentIssue, agentId);
           if (queued) {
             result.assignmentDispatched += 1;
-            result.issueIds.push(issue.id);
+            result.issueIds.push(currentIssue.id);
           } else {
             result.skipped += 1;
           }
@@ -3309,7 +3324,7 @@ export function heartbeatService(db: Db) {
 
         if (latestRetryReason === "assignment_recovery") {
           const updated = await escalateStrandedAssignedIssue({
-            issue,
+            issue: currentIssue,
             previousStatus: "todo",
             latestRun,
             comment:
@@ -3318,19 +3333,19 @@ export function heartbeatService(db: Db) {
           });
           if (updated) {
             result.escalated += 1;
-            result.issueIds.push(issue.id);
+            result.issueIds.push(currentIssue.id);
           } else {
             result.skipped += 1;
           }
           continue;
         }
 
-        if (await isInvocationBudgetBlocked(issue, agentId)) {
+        if (await isInvocationBudgetBlocked(currentIssue, agentId)) {
           result.skipped += 1;
           continue;
         }
         const queued = await enqueueStrandedIssueRecovery({
-          issueId: issue.id,
+          issueId: currentIssue.id,
           agentId,
           reason: "issue_assignment_recovery",
           retryReason: "assignment_recovery",
@@ -3339,16 +3354,21 @@ export function heartbeatService(db: Db) {
         });
         if (queued) {
           result.dispatchRequeued += 1;
-          result.issueIds.push(issue.id);
+          result.issueIds.push(currentIssue.id);
         } else {
           result.skipped += 1;
         }
         continue;
       }
 
+      if (latestRun?.status === "succeeded") {
+        result.skipped += 1;
+        continue;
+      }
+
       if (latestRetryReason === "issue_continuation_needed") {
         const updated = await escalateStrandedAssignedIssue({
-          issue,
+          issue: currentIssue,
           previousStatus: "in_progress",
           latestRun,
           comment:
@@ -3358,28 +3378,28 @@ export function heartbeatService(db: Db) {
         });
         if (updated) {
           result.escalated += 1;
-          result.issueIds.push(issue.id);
+          result.issueIds.push(currentIssue.id);
         } else {
           result.skipped += 1;
         }
         continue;
       }
 
-      if (await isInvocationBudgetBlocked(issue, agentId)) {
+      if (await isInvocationBudgetBlocked(currentIssue, agentId)) {
         result.skipped += 1;
         continue;
       }
       const queued = await enqueueStrandedIssueRecovery({
-        issueId: issue.id,
+        issueId: currentIssue.id,
         agentId,
         reason: "issue_continuation_needed",
         retryReason: "issue_continuation_needed",
         source: "issue.continuation_recovery",
-        retryOfRunId: latestRun?.id ?? issue.checkoutRunId ?? null,
+        retryOfRunId: latestRun?.id ?? currentIssue.checkoutRunId ?? null,
       });
       if (queued) {
         result.continuationRequeued += 1;
-        result.issueIds.push(issue.id);
+        result.issueIds.push(currentIssue.id);
       } else {
         result.skipped += 1;
       }
