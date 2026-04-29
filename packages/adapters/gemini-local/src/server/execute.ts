@@ -11,9 +11,15 @@ import {
   asStringArray,
   buildPaperclipEnv,
   buildInvocationEnvForLogs,
+  applyPaperclipWorkspaceEnv,
+  resolvePaperclipWorkspaceBranch,
+  applyDirectPaperclipApiPolicy,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
+  buildInstructionsPromptPrefix,
+  buildInstructionSupplementalEnv,
+  resolveAllowedInstructionsFilePath,
   joinPromptSections,
   ensurePathInEnv,
   readPaperclipRuntimeSkillEntries,
@@ -23,6 +29,7 @@ import {
   parseObject,
   renderTemplate,
   renderPaperclipWakePrompt,
+  shouldDisableDirectPaperclipApiForRun,
   stringifyPaperclipWakePayload,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -65,14 +72,15 @@ function renderPaperclipEnvNote(env: Record<string, string>): string {
 
 function renderApiAccessNote(env: Record<string, string>, approvalMode: string): string {
   if (approvalMode !== "yolo") return "";
-  if (!hasNonEmptyEnvValue(env, "PAPERCLIP_API_URL") || !hasNonEmptyEnvValue(env, "PAPERCLIP_API_KEY")) return "";
+  if (!hasNonEmptyEnvValue(env, "PAPERCLIP_API_BASE") || !hasNonEmptyEnvValue(env, "PAPERCLIP_API_KEY")) return "";
   return [
     "Paperclip API access note:",
     "Use run_shell_command with curl to make Paperclip API requests.",
+    "Do not treat the bare PAPERCLIP_API_URL root as an API-health probe; use PAPERCLIP_HEALTH_URL or a specific API endpoint.",
     "GET example:",
-    `  run_shell_command({ command: "curl -s -H \\"Authorization: Bearer $PAPERCLIP_API_KEY\\" \\"$PAPERCLIP_API_URL/api/agents/me\\"" })`,
+    `  run_shell_command({ command: "curl -s -H \\"Authorization: Bearer $PAPERCLIP_API_KEY\\" \\"$PAPERCLIP_API_BASE/agents/me\\"" })`,
     "POST/PATCH example:",
-    `  run_shell_command({ command: "curl -s -X POST -H \\"Authorization: Bearer $PAPERCLIP_API_KEY\\" -H 'Content-Type: application/json' -H \\"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\\" -d '{...}' \\"$PAPERCLIP_API_URL/api/issues/{id}/checkout\\"" })`,
+    `  run_shell_command({ command: "curl -s -X POST -H \\"Authorization: Bearer $PAPERCLIP_API_KEY\\" -H 'Content-Type: application/json' -H \\"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\\" -d '{...}' \\"$PAPERCLIP_API_BASE/issues/{id}/checkout\\"" })`,
     "",
     "",
   ].join("\n");
@@ -151,9 +159,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
   const workspaceSource = asString(workspaceContext.source, "");
+  const workspaceStrategy = asString(workspaceContext.strategy, "");
   const workspaceId = asString(workspaceContext.workspaceId, "");
   const workspaceRepoUrl = asString(workspaceContext.repoUrl, "");
   const workspaceRepoRef = asString(workspaceContext.repoRef, "");
+  const workspaceBranch = resolvePaperclipWorkspaceBranch(workspaceContext);
+  const workspaceWorktreePath = asString(workspaceContext.worktreePath, "");
   const agentHome = asString(workspaceContext.agentHome, "");
   const workspaceHints = Array.isArray(context.paperclipWorkspaces)
     ? context.paperclipWorkspaces.filter(
@@ -205,30 +216,44 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (approvalStatus) env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
   if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
   if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
-  if (effectiveWorkspaceCwd) env.PAPERCLIP_WORKSPACE_CWD = effectiveWorkspaceCwd;
-  if (workspaceSource) env.PAPERCLIP_WORKSPACE_SOURCE = workspaceSource;
-  if (workspaceId) env.PAPERCLIP_WORKSPACE_ID = workspaceId;
-  if (workspaceRepoUrl) env.PAPERCLIP_WORKSPACE_REPO_URL = workspaceRepoUrl;
-  if (workspaceRepoRef) env.PAPERCLIP_WORKSPACE_REPO_REF = workspaceRepoRef;
-  if (agentHome) env.AGENT_HOME = agentHome;
+  applyPaperclipWorkspaceEnv(env, {
+    workspaceCwd: effectiveWorkspaceCwd,
+    workspaceSource,
+    workspaceStrategy,
+    workspaceId,
+    workspaceRepoUrl,
+    workspaceRepoRef,
+    workspaceBranch,
+    workspaceWorktreePath,
+    agentHome,
+  });
   if (workspaceHints.length > 0) env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(workspaceHints);
+  const disableDirectPaperclipApi = shouldDisableDirectPaperclipApiForRun({
+    truthLedger: context.paperclipTruthLedger,
+  });
 
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
-  if (!hasExplicitApiKey && authToken) {
+  if (!disableDirectPaperclipApi && !hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
+  const policyAdjustedEnv = applyDirectPaperclipApiPolicy(env, {
+    disableDirectApi: disableDirectPaperclipApi,
+  });
   const effectiveEnv = Object.fromEntries(
-    Object.entries({ ...process.env, ...env }).filter(
+    Object.entries({ ...process.env, ...policyAdjustedEnv }).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
+  if (disableDirectPaperclipApi) {
+    delete effectiveEnv.PAPERCLIP_API_KEY;
+  }
   const billingType = resolveGeminiBillingType(effectiveEnv);
   const runtimeEnv = ensurePathInEnv(effectiveEnv);
   await ensureCommandResolvable(command, cwd, runtimeEnv);
   const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
-  const loggedEnv = buildInvocationEnvForLogs(env, {
+  let loggedEnv = buildInvocationEnvForLogs(policyAdjustedEnv, {
     runtimeEnv,
     includeRuntimeKeys: ["HOME"],
     resolvedCommand,
@@ -257,34 +282,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
-  const resolvedInstructionsFilePath = instructionsFilePath
-    ? path.resolve(cwd, instructionsFilePath)
-    : "";
-  const instructionsPathRelativeToCwd = resolvedInstructionsFilePath
-    ? path.relative(cwd, resolvedInstructionsFilePath)
-    : "";
-  const isInstructionsPathWithinCwd =
-    instructionsPathRelativeToCwd.length === 0 ||
-    (!path.isAbsolute(instructionsPathRelativeToCwd) &&
-      instructionsPathRelativeToCwd !== ".." &&
-      !instructionsPathRelativeToCwd.startsWith(`..${path.sep}`));
-  if (instructionsFilePath && !isInstructionsPathWithinCwd) {
-    await onLog(
-      "stdout",
-      `[paperclip] Warning: instructionsFilePath must stay within cwd "${cwd}"; ignoring "${resolvedInstructionsFilePath}".\n`,
-    );
+  const {
+    resolvedInstructionsFilePath,
+    effectiveInstructionsFilePath,
+    warning: instructionsPathWarning,
+  } = resolveAllowedInstructionsFilePath({
+    cwd,
+    instructionsFilePath,
+    instructionsBundleMode: asString(config.instructionsBundleMode, ""),
+    instructionsRootPath: asString(config.instructionsRootPath, ""),
+  });
+  if (instructionsPathWarning) {
+    await onLog("stdout", instructionsPathWarning);
   }
-  const effectiveInstructionsFilePath =
-    instructionsFilePath && isInstructionsPathWithinCwd ? resolvedInstructionsFilePath : "";
   const instructionsDir = effectiveInstructionsFilePath ? `${path.dirname(effectiveInstructionsFilePath)}/` : "";
   let instructionsPrefix = "";
+  let instructionSupplementalEnv: Record<string, string> = {};
   if (effectiveInstructionsFilePath) {
     try {
-      const instructionsContents = await fs.readFile(effectiveInstructionsFilePath, "utf8");
-      instructionsPrefix =
-        `${instructionsContents}\n\n` +
-        `The above agent instructions were loaded from ${effectiveInstructionsFilePath}. ` +
-        `Resolve any relative file references from ${instructionsDir}.\n\n`;
+      const loadedInstructions = await buildInstructionsPromptPrefix({
+        instructionsFilePath: effectiveInstructionsFilePath,
+        supplementalFileNames: ["PROJECT_PACKET.md"],
+      });
+      instructionsPrefix = loadedInstructions.prefix;
+      instructionSupplementalEnv = buildInstructionSupplementalEnv({
+        effectiveInstructionsFilePath,
+        includedSupplementalPaths: loadedInstructions.includedSupplementalPaths,
+      });
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       await onLog(
@@ -293,6 +317,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
   }
+  Object.assign(policyAdjustedEnv, instructionSupplementalEnv);
+  loggedEnv = buildInvocationEnvForLogs(policyAdjustedEnv, {
+    runtimeEnv,
+    includeRuntimeKeys: ["HOME"],
+    resolvedCommand,
+  });
   const commandNotes = (() => {
     const notes: string[] = ["Prompt is passed to Gemini via --prompt for non-interactive execution."];
     if (approvalMode !== "default") notes.push(`Added --approval-mode ${approvalMode}.`);
@@ -324,12 +354,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     !sessionId && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
+  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
+    resumedSession: Boolean(sessionId),
+    truthLedger: context.paperclipTruthLedger,
+  });
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
-  const paperclipEnvNote = renderPaperclipEnvNote(env);
-  const apiAccessNote = renderApiAccessNote(env, approvalMode);
+  const paperclipEnvNote = renderPaperclipEnvNote(policyAdjustedEnv);
+  const apiAccessNote = renderApiAccessNote(policyAdjustedEnv, approvalMode);
   const prompt = joinPromptSections([
     instructionsPrefix,
     renderedBootstrapPrompt,
@@ -384,7 +417,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const proc = await runChildProcess(runId, command, args, {
       cwd,
-      env,
+      env: policyAdjustedEnv,
       timeoutSec,
       graceSec,
       onSpawn,

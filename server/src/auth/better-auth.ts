@@ -42,27 +42,40 @@ function headersFromExpressRequest(req: Request): Headers {
   return headersFromNodeHeaders(req.headers);
 }
 
-export function deriveAuthTrustedOrigins(config: Config): string[] {
+export function deriveAuthTrustedOrigins(config: Config, opts?: { listenPort?: number }): string[] {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
   const trustedOrigins = new Set<string>();
-  let allowedHostnameProtocol: "http" | "https" = "https";
+  const allowedHostnameProtocols = new Set<"http" | "https">();
 
   if (baseUrl) {
     try {
       const parsedBaseUrl = new URL(baseUrl);
       trustedOrigins.add(parsedBaseUrl.origin);
       if (parsedBaseUrl.protocol === "http:") {
-        allowedHostnameProtocol = "http";
+        allowedHostnameProtocols.add("http");
+      } else if (parsedBaseUrl.protocol === "https:") {
+        allowedHostnameProtocols.add("https");
       }
     } catch {
       // Better Auth will surface invalid base URL separately.
     }
   }
+  if (allowedHostnameProtocols.size === 0) {
+    allowedHostnameProtocols.add("https");
+    allowedHostnameProtocols.add("http");
+  }
   if (config.deploymentMode === "authenticated") {
+    const port = opts?.listenPort ?? config.port;
+    const needsPortVariants = port !== 80 && port !== 443;
     for (const hostname of config.allowedHostnames) {
       const trimmed = hostname.trim().toLowerCase();
       if (!trimmed) continue;
-      trustedOrigins.add(`${allowedHostnameProtocol}://${trimmed}`);
+      for (const protocol of allowedHostnameProtocols) {
+        trustedOrigins.add(`${protocol}://${trimmed}`);
+        if (needsPortVariants) {
+          trustedOrigins.add(`${protocol}://${trimmed}:${port}`);
+        }
+      }
     }
   }
 

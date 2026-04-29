@@ -53,6 +53,7 @@ describe("pi_local environment diagnostics", () => {
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "pi_local",
+      probe: "live",
       config: {
         command: "pi",
         cwd,

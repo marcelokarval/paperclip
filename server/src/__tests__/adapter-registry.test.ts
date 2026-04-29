@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import type { ServerAdapterModule } from "../adapters/index.js";
+import type { AdapterSessionManagement } from "@paperclipai/adapter-utils/session-compaction";
 import {
   detectAdapterModel,
   findActiveServerAdapter,
@@ -9,7 +10,18 @@ import {
   requireServerAdapter,
   unregisterServerAdapter,
 } from "../adapters/index.js";
-import { setOverridePaused } from "../adapters/registry.js";
+import { resolveExternalAdapterRegistration, setOverridePaused } from "../adapters/registry.js";
+
+const customSessionManagement: AdapterSessionManagement = {
+  supportsSessionResume: true,
+  nativeContextManagement: "likely",
+  defaultSessionCompaction: {
+    enabled: true,
+    maxSessionRuns: 7,
+    maxRawInputTokens: 12345,
+    maxSessionAgeHours: 12,
+  },
+};
 
 const externalAdapter: ServerAdapterModule = {
   type: "external_test",
@@ -50,6 +62,35 @@ describe("server adapter registry", () => {
     expect(await listAdapterModels("external_test")).toEqual([
       { id: "external-model", label: "External Model" },
     ]);
+  });
+
+  it("preserves module-provided external adapter session management", () => {
+    const resolved = resolveExternalAdapterRegistration({
+      ...externalAdapter,
+      sessionManagement: customSessionManagement,
+    });
+
+    expect(resolved.sessionManagement).toBe(customSessionManagement);
+  });
+
+  it("falls back to host adapter session management when an external adapter omits it", () => {
+    const resolved = resolveExternalAdapterRegistration({
+      ...externalAdapter,
+      type: "claude_local",
+      sessionManagement: undefined,
+    });
+
+    expect(resolved.sessionManagement?.nativeContextManagement).toBe("confirmed");
+  });
+
+  it("leaves session management undefined when neither module nor host provides it", () => {
+    const resolved = resolveExternalAdapterRegistration({
+      ...externalAdapter,
+      type: "unknown_external",
+      sessionManagement: undefined,
+    });
+
+    expect(resolved.sessionManagement).toBeUndefined();
   });
 
   it("removes external adapters when unregistered", () => {

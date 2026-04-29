@@ -13,29 +13,35 @@ function createConfig(overrides: Partial<Config>): Config {
 }
 
 describe("deriveAuthTrustedOrigins", () => {
-  it("does not trust HTTP origins for allowed hostnames in HTTPS deployments", () => {
+  it("trusts only the explicit base URL protocol for allowed hostname port variants", () => {
     const trustedOrigins = deriveAuthTrustedOrigins(
       createConfig({
         authBaseUrlMode: "explicit",
         authPublicBaseUrl: "https://example.com",
         allowedHostnames: ["example.com"],
       }),
+      { listenPort: 3101 },
     );
 
     expect(trustedOrigins).toContain("https://example.com");
+    expect(trustedOrigins).toContain("https://example.com:3101");
     expect(trustedOrigins).not.toContain("http://example.com");
+    expect(trustedOrigins).not.toContain("http://example.com:3101");
   });
 
-  it("trusts HTTP origins for allowed hostnames when the explicit base URL is HTTP", () => {
+  it("does not add default-port variants", () => {
     const trustedOrigins = deriveAuthTrustedOrigins(
       createConfig({
         authBaseUrlMode: "explicit",
         authPublicBaseUrl: "http://example.com",
         allowedHostnames: ["example.com"],
       }),
+      { listenPort: 443 },
     );
 
     expect(trustedOrigins).toContain("http://example.com");
+    expect(trustedOrigins).not.toContain("http://example.com:443");
     expect(trustedOrigins).not.toContain("https://example.com");
+    expect(trustedOrigins).not.toContain("https://example.com:443");
   });
 });

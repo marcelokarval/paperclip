@@ -36,6 +36,10 @@ export function boardMutationGuard(options: BoardMutationGuardOptions = {}): Req
       .map((value) => parseOrigin(value))
       .filter((value): value is string => value !== null),
   );
+  const publicUrlOrigin = parseOrigin(process.env.PAPERCLIP_PUBLIC_URL);
+  if (publicUrlOrigin) {
+    allowedOrigins.add(publicUrlOrigin);
+  }
 
   return (req, res, next) => {
     if (SAFE_METHODS.has(req.method.toUpperCase())) {

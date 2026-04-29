@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolvePaperclipConfigPath, resolvePaperclipEnvPath } from "./paths.js";
 import type { BindMode, DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import { resolveLocalAgentJwtSecret } from "./agent-auth-jwt.js";
 
 import { parse as parseEnvFileContents } from "dotenv";
 
@@ -89,6 +90,14 @@ function resolveAgentJwtSecretStatus(
         message: `found in ${envFilePath} but not loaded`,
       };
     }
+  }
+
+  const localFallback = resolveLocalAgentJwtSecret({ createIfMissing: false });
+  if (localFallback) {
+    return {
+      status: "pass",
+      message: "instance-local fallback active",
+    };
   }
 
   return {

@@ -11,8 +11,14 @@ import {
   parseObject,
   parseJson,
   buildPaperclipEnv,
+  applyDirectPaperclipApiPolicy,
   readPaperclipRuntimeSkillEntries,
   joinPromptSections,
+  buildInstructionsPromptPrefix,
+  buildInstructionSupplementalEnv,
+  applyPaperclipWorkspaceEnv,
+  resolvePaperclipWorkspaceBranch,
+  resolveAllowedInstructionsFilePath,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
@@ -20,6 +26,7 @@ import {
   resolveCommandForLogs,
   renderTemplate,
   renderPaperclipWakePrompt,
+  shouldDisableDirectPaperclipApiForRun,
   stringifyPaperclipWakePayload,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -55,6 +62,7 @@ interface ClaudeRuntimeConfig {
   loggedEnv: Record<string, string>;
   timeoutSec: number;
   graceSec: number;
+  terminalResultCleanupGraceMs: number;
   extraArgs: string[];
 }
 
@@ -101,7 +109,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   const workspaceId = asString(workspaceContext.workspaceId, "") || null;
   const workspaceRepoUrl = asString(workspaceContext.repoUrl, "") || null;
   const workspaceRepoRef = asString(workspaceContext.repoRef, "") || null;
-  const workspaceBranch = asString(workspaceContext.branchName, "") || null;
+  const workspaceBranch = resolvePaperclipWorkspaceBranch(workspaceContext) || null;
   const workspaceWorktreePath = asString(workspaceContext.worktreePath, "") || null;
   const agentHome = asString(workspaceContext.agentHome, "") || null;
   const workspaceHints = Array.isArray(context.paperclipWorkspaces)
@@ -178,33 +186,17 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   if (wakePayloadJson) {
     env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
   }
-  if (effectiveWorkspaceCwd) {
-    env.PAPERCLIP_WORKSPACE_CWD = effectiveWorkspaceCwd;
-  }
-  if (workspaceSource) {
-    env.PAPERCLIP_WORKSPACE_SOURCE = workspaceSource;
-  }
-  if (workspaceStrategy) {
-    env.PAPERCLIP_WORKSPACE_STRATEGY = workspaceStrategy;
-  }
-  if (workspaceId) {
-    env.PAPERCLIP_WORKSPACE_ID = workspaceId;
-  }
-  if (workspaceRepoUrl) {
-    env.PAPERCLIP_WORKSPACE_REPO_URL = workspaceRepoUrl;
-  }
-  if (workspaceRepoRef) {
-    env.PAPERCLIP_WORKSPACE_REPO_REF = workspaceRepoRef;
-  }
-  if (workspaceBranch) {
-    env.PAPERCLIP_WORKSPACE_BRANCH = workspaceBranch;
-  }
-  if (workspaceWorktreePath) {
-    env.PAPERCLIP_WORKSPACE_WORKTREE_PATH = workspaceWorktreePath;
-  }
-  if (agentHome) {
-    env.AGENT_HOME = agentHome;
-  }
+  applyPaperclipWorkspaceEnv(env, {
+    workspaceCwd: effectiveWorkspaceCwd,
+    workspaceSource,
+    workspaceStrategy,
+    workspaceId,
+    workspaceRepoUrl,
+    workspaceRepoRef,
+    workspaceBranch,
+    workspaceWorktreePath,
+    agentHome,
+  });
   if (workspaceHints.length > 0) {
     env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(workspaceHints);
   }
@@ -217,19 +209,28 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   if (runtimePrimaryUrl) {
     env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
   }
+  const disableDirectPaperclipApi = shouldDisableDirectPaperclipApiForRun({
+    truthLedger: context.paperclipTruthLedger,
+  });
 
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
 
-  if (!hasExplicitApiKey && authToken) {
+  if (!disableDirectPaperclipApi && !hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
+  const policyAdjustedEnv = applyDirectPaperclipApiPolicy(env, {
+    disableDirectApi: disableDirectPaperclipApi,
+  });
 
-  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const runtimeEnv = ensurePathInEnv({ ...process.env, ...policyAdjustedEnv });
+  if (disableDirectPaperclipApi) {
+    delete runtimeEnv.PAPERCLIP_API_KEY;
+  }
   await ensureCommandResolvable(command, cwd, runtimeEnv);
   const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
-  const loggedEnv = buildInvocationEnvForLogs(env, {
+  let loggedEnv = buildInvocationEnvForLogs(policyAdjustedEnv, {
     runtimeEnv,
     includeRuntimeKeys: ["HOME", "CLAUDE_CONFIG_DIR"],
     resolvedCommand,
@@ -237,6 +238,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
 
   const timeoutSec = asNumber(config.timeoutSec, 1_800);
   const graceSec = asNumber(config.graceSec, 20);
+  const terminalResultCleanupGraceMs = asNumber(config.terminalResultCleanupGraceMs, 5_000);
   const extraArgs = (() => {
     const fromExtraArgs = asStringArray(config.extraArgs);
     if (fromExtraArgs.length > 0) return fromExtraArgs;
@@ -250,10 +252,11 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     workspaceId,
     workspaceRepoUrl,
     workspaceRepoRef,
-    env,
+    env: policyAdjustedEnv,
     loggedEnv,
     timeoutSec,
     graceSec,
+    terminalResultCleanupGraceMs,
     extraArgs,
   };
 }
@@ -326,27 +329,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     loggedEnv,
     timeoutSec,
     graceSec,
+    terminalResultCleanupGraceMs,
     extraArgs,
   } = runtimeConfig;
-  const resolvedInstructionsFilePath = instructionsFilePath
-    ? path.resolve(cwd, instructionsFilePath)
-    : "";
-  const instructionsPathRelativeToCwd = resolvedInstructionsFilePath
-    ? path.relative(cwd, resolvedInstructionsFilePath)
-    : "";
-  const isInstructionsPathWithinCwd =
-    instructionsPathRelativeToCwd.length === 0 ||
-    (!path.isAbsolute(instructionsPathRelativeToCwd) &&
-      instructionsPathRelativeToCwd !== ".." &&
-      !instructionsPathRelativeToCwd.startsWith(`..${path.sep}`));
-  if (instructionsFilePath && !isInstructionsPathWithinCwd) {
-    await onLog(
-      "stderr",
-      `[paperclip] Warning: instructionsFilePath must stay within cwd "${cwd}"; ignoring "${resolvedInstructionsFilePath}".\n`,
-    );
+  const {
+    resolvedInstructionsFilePath,
+    effectiveInstructionsFilePath: validatedInstructionsFilePath,
+    warning: instructionsPathWarning,
+  } = resolveAllowedInstructionsFilePath({
+    cwd,
+    instructionsFilePath,
+    instructionsBundleMode: asString(config.instructionsBundleMode, ""),
+    instructionsRootPath: asString(config.instructionsRootPath, ""),
+  });
+  if (instructionsPathWarning) {
+    await onLog("stderr", instructionsPathWarning);
   }
-  const validatedInstructionsFilePath =
-    instructionsFilePath && isInstructionsPathWithinCwd ? resolvedInstructionsFilePath : "";
   const instructionsFileDir = validatedInstructionsFilePath
     ? `${path.dirname(validatedInstructionsFilePath)}/`
     : "";
@@ -362,15 +360,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // file that includes both the file content and the path directive, so we only
   // need --append-system-prompt-file (Claude CLI forbids using both flags together).
   let combinedInstructionsContents: string | null = null;
+  let instructionSupplementalEnv: Record<string, string> = {};
   if (validatedInstructionsFilePath) {
     try {
-      const instructionsContent = await fs.readFile(validatedInstructionsFilePath, "utf-8");
-      const pathDirective =
-        `\nThe above agent instructions were loaded from ${validatedInstructionsFilePath}. ` +
-        `Resolve any relative file references from ${instructionsFileDir}. ` +
-        `This base directory is authoritative for sibling instruction files such as ` +
-        `./HEARTBEAT.md, ./SOUL.md, and ./TOOLS.md; do not resolve those from the parent agent directory.`;
-      combinedInstructionsContents = instructionsContent + pathDirective;
+      const loadedInstructions = await buildInstructionsPromptPrefix({
+        instructionsFilePath: validatedInstructionsFilePath,
+        supplementalFileNames: ["PROJECT_PACKET.md"],
+      });
+      instructionSupplementalEnv = buildInstructionSupplementalEnv({
+        effectiveInstructionsFilePath: validatedInstructionsFilePath,
+        includedSupplementalPaths: loadedInstructions.includedSupplementalPaths,
+      });
+      combinedInstructionsContents =
+        loadedInstructions.prefix.trimEnd() +
+        "\n\nThis base directory is authoritative for sibling instruction files such as " +
+        "./HEARTBEAT.md, ./SOUL.md, and ./TOOLS.md; do not resolve those from the parent agent directory.";
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       await onLog(
@@ -379,6 +383,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
   }
+  Object.assign(env, instructionSupplementalEnv);
   const promptBundle = await prepareClaudePromptBundle({
     companyId: agent.companyId,
     skills: claudeSkillEntries.filter((entry) => desiredSkillNames.has(entry.key)),
@@ -428,7 +433,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     !sessionId && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
+  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
+    resumedSession: Boolean(sessionId),
+    truthLedger: context.paperclipTruthLedger,
+  });
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
@@ -523,6 +531,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       graceSec,
       onSpawn,
       onLog,
+      terminalResultCleanup: {
+        graceMs: terminalResultCleanupGraceMs,
+        hasTerminalResult: (output) => parseClaudeStreamJson(output).resultJson !== null,
+      },
     });
 
     const parsedStream = parseClaudeStreamJson(proc.stdout);

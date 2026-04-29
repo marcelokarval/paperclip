@@ -111,6 +111,7 @@ function registerModuleMocks() {
     issueApprovalService: () => mockIssueApprovalService,
     issueService: () => mockIssueService,
     logActivity: mockLogActivity,
+    projectService: () => ({}),
     secretService: () => mockSecretService,
     syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
     workspaceOperationService: () => mockWorkspaceOperationService,

@@ -11,9 +11,14 @@ import {
   buildPaperclipEnv,
   joinPromptSections,
   buildInvocationEnvForLogs,
+  applyPaperclipWorkspaceEnv,
+  resolvePaperclipWorkspaceBranch,
+  applyDirectPaperclipApiPolicy,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
+  buildInstructionsPromptPrefix,
+  buildInstructionSupplementalEnv,
   ensurePathInEnv,
   readPaperclipRuntimeSkillEntries,
   resolveCommandForLogs,
@@ -21,6 +26,7 @@ import {
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
   renderPaperclipWakePrompt,
+  shouldDisableDirectPaperclipApiForRun,
   stringifyPaperclipWakePayload,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -40,6 +46,33 @@ function resolvePiSessionsDir(): string {
 
 function resolvePiAgentSkillsDir(): string {
   return path.join(resolvePiHomeDir(), ".pi", "agent", "skills");
+}
+
+function prependPiSkillBinDirsToEnv(
+  env: Record<string, string | undefined>,
+  skillsEntries: Array<{ key: string; source: string }>,
+  desiredSkillNames: string[],
+): Record<string, string | undefined> {
+  const desiredSet = new Set(desiredSkillNames);
+  const pathKey = process.platform === "win32" && "Path" in env ? "Path" : "PATH";
+  const currentPath = env[pathKey] ?? "";
+  const currentParts = currentPath.split(path.delimiter).filter(Boolean);
+  const seen = new Set(currentParts);
+  const skillBinDirs: string[] = [];
+
+  for (const entry of skillsEntries) {
+    if (!desiredSet.has(entry.key)) continue;
+    const binDir = path.join(entry.source, "bin");
+    if (seen.has(binDir)) continue;
+    seen.add(binDir);
+    skillBinDirs.push(binDir);
+  }
+
+  if (skillBinDirs.length === 0) return env;
+  return {
+    ...env,
+    [pathKey]: [...skillBinDirs, ...currentParts].join(path.delimiter),
+  };
 }
 
 function firstNonEmptyLine(text: string): string {
@@ -138,9 +171,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
   const workspaceSource = asString(workspaceContext.source, "");
+  const workspaceStrategy = asString(workspaceContext.strategy, "");
   const workspaceId = asString(workspaceContext.workspaceId, "");
   const workspaceRepoUrl = asString(workspaceContext.repoUrl, "");
   const workspaceRepoRef = asString(workspaceContext.repoRef, "");
+  const workspaceBranch = resolvePaperclipWorkspaceBranch(workspaceContext);
+  const workspaceWorktreePath = asString(workspaceContext.worktreePath, "");
   const agentHome = asString(workspaceContext.agentHome, "");
   const workspaceHints = Array.isArray(context.paperclipWorkspaces)
     ? context.paperclipWorkspaces.filter(
@@ -200,33 +236,61 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (approvalStatus) env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
   if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
   if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
-  if (workspaceCwd) env.PAPERCLIP_WORKSPACE_CWD = workspaceCwd;
-  if (workspaceSource) env.PAPERCLIP_WORKSPACE_SOURCE = workspaceSource;
-  if (workspaceId) env.PAPERCLIP_WORKSPACE_ID = workspaceId;
-  if (workspaceRepoUrl) env.PAPERCLIP_WORKSPACE_REPO_URL = workspaceRepoUrl;
-  if (workspaceRepoRef) env.PAPERCLIP_WORKSPACE_REPO_REF = workspaceRepoRef;
-  if (agentHome) env.AGENT_HOME = agentHome;
+  applyPaperclipWorkspaceEnv(env, {
+    workspaceCwd,
+    workspaceSource,
+    workspaceStrategy,
+    workspaceId,
+    workspaceRepoUrl,
+    workspaceRepoRef,
+    workspaceBranch,
+    workspaceWorktreePath,
+    agentHome,
+  });
   if (workspaceHints.length > 0) env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(workspaceHints);
+  const disableDirectPaperclipApi = shouldDisableDirectPaperclipApiForRun({
+    truthLedger: context.paperclipTruthLedger,
+  });
 
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
-  if (!hasExplicitApiKey && authToken) {
+  if (!disableDirectPaperclipApi && !hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
+  const policyAdjustedEnv = applyDirectPaperclipApiPolicy(env, {
+    disableDirectApi: disableDirectPaperclipApi,
+  });
   
   const runtimeEnv = Object.fromEntries(
-    Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
+    Object.entries(
+      prependPiSkillBinDirsToEnv(
+        ensurePathInEnv({ ...process.env, ...policyAdjustedEnv }),
+        piSkillEntries,
+        desiredPiSkillNames,
+      ),
+    ).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
+  if (disableDirectPaperclipApi) {
+    delete runtimeEnv.PAPERCLIP_API_KEY;
+  }
   await ensureCommandResolvable(command, cwd, runtimeEnv);
   const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
-  const loggedEnv = buildInvocationEnvForLogs(env, {
-    runtimeEnv,
-    includeRuntimeKeys: ["HOME"],
-    resolvedCommand,
-  });
+  const buildLoggedEnv = () =>
+    buildInvocationEnvForLogs(
+      {
+        ...policyAdjustedEnv,
+        PATH: runtimeEnv.PATH,
+      },
+      {
+        runtimeEnv,
+        includeRuntimeKeys: ["HOME", "PATH"],
+        resolvedCommand,
+      },
+    );
+  let loggedEnv = buildLoggedEnv();
 
   // Validate model is available before execution
   await ensurePiModelConfiguredAndAvailable({
@@ -283,13 +347,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   
   let systemPromptExtension = "";
   let instructionsReadFailed = false;
+  let instructionSupplementalEnv: Record<string, string> = {};
   if (resolvedInstructionsFilePath) {
     try {
-      const instructionsContents = await fs.readFile(resolvedInstructionsFilePath, "utf8");
+      const loadedInstructions = await buildInstructionsPromptPrefix({
+        instructionsFilePath: resolvedInstructionsFilePath,
+        supplementalFileNames: ["PROJECT_PACKET.md"],
+      });
+      instructionSupplementalEnv = buildInstructionSupplementalEnv({
+        effectiveInstructionsFilePath: resolvedInstructionsFilePath,
+        includedSupplementalPaths: loadedInstructions.includedSupplementalPaths,
+      });
       systemPromptExtension =
-        `${instructionsContents}\n\n` +
-        `The above agent instructions were loaded from ${resolvedInstructionsFilePath}. ` +
-        `Resolve any relative file references from ${instructionsFileDir}.\n\n` +
+        `${loadedInstructions.prefix}` +
         `You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.`;
     } catch (err) {
       instructionsReadFailed = true;
@@ -304,6 +374,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   } else {
     systemPromptExtension = promptTemplate;
   }
+  Object.assign(policyAdjustedEnv, instructionSupplementalEnv);
+  loggedEnv = buildLoggedEnv();
 
   const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
   const templateData = {
@@ -320,7 +392,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     !canResumeSession && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: canResumeSession });
+  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
+    resumedSession: canResumeSession,
+    truthLedger: context.paperclipTruthLedger,
+  });
   const shouldUseResumeDeltaPrompt = canResumeSession && wakePrompt.length > 0;
   const renderedHeartbeatPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();

@@ -41,6 +41,7 @@ import {
   issueApprovalService,
   issueService,
   logActivity,
+  projectService,
   secretService,
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
@@ -66,6 +67,7 @@ import {
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import {
+  buildProjectPacketInstructionsBundle,
   loadDefaultAgentInstructionsBundle,
   resolveDefaultAgentInstructionsBundleRole,
 } from "../services/default-agent-instructions.js";
@@ -104,6 +106,8 @@ export function agentRoutes(db: Db) {
   const companySkills = companySkillService(db);
   const workspaceOperations = workspaceOperationService(db);
   const instanceSettings = instanceSettingsService(db);
+  const issuesSvc = issueService(db);
+  const projectsSvc = projectService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
   async function getCurrentUserRedactionOptions() {
@@ -541,7 +545,7 @@ export function agentRoutes(db: Db) {
     role: string;
     adapterType: string;
     adapterConfig: unknown;
-  }>(agent: T): Promise<T> {
+  }>(agent: T, options?: { bootstrapProjectName?: string | null; bootstrapOperatingContext?: import("@paperclipai/shared").ProjectOperatingContext | null }): Promise<T> {
     if (!DEFAULT_MANAGED_INSTRUCTIONS_ADAPTER_TYPES.has(agent.adapterType)) {
       return agent;
     }
@@ -560,9 +564,29 @@ export function agentRoutes(db: Db) {
     const promptTemplate = typeof adapterConfig.promptTemplate === "string"
       ? adapterConfig.promptTemplate
       : "";
-    const files = promptTemplate.trim().length === 0
-      ? await loadDefaultAgentInstructionsBundle(resolveDefaultAgentInstructionsBundleRole(agent.role))
-      : { "AGENTS.md": promptTemplate };
+    const defaultBundle = await loadDefaultAgentInstructionsBundle(
+      resolveDefaultAgentInstructionsBundleRole(agent.role),
+    );
+    const defaultFiles = promptTemplate.trim().length === 0
+      ? defaultBundle
+      : {
+          ...defaultBundle,
+          "AGENTS.md": [
+            defaultBundle["AGENTS.md"]?.trimEnd() ?? "",
+            "## Custom role directives",
+            promptTemplate.trim(),
+          ]
+            .filter(Boolean)
+            .join("\n\n") + "\n",
+        };
+    const files = options?.bootstrapProjectName && options.bootstrapOperatingContext
+      ? buildProjectPacketInstructionsBundle({
+          role: agent.role,
+          projectName: options.bootstrapProjectName,
+          operatingContext: options.bootstrapOperatingContext,
+          files: defaultFiles,
+        })
+      : defaultFiles;
     const materialized = await instructions.materializeManagedBundle(
       agent,
       files,
@@ -573,6 +597,71 @@ export function agentRoutes(db: Db) {
 
     const updated = await svc.update(agent.id, { adapterConfig: nextAdapterConfig });
     return (updated as T | null) ?? { ...agent, adapterConfig: nextAdapterConfig };
+  }
+
+  async function resolveBootstrapProjectContextForSourceIssues(input: {
+    companyId: string;
+    sourceIssueIds: string[];
+  }) {
+    for (const issueId of input.sourceIssueIds) {
+      const issue = await issuesSvc.getById(issueId);
+      if (!issue || issue.companyId !== input.companyId || !issue.projectId) continue;
+      const project = await projectsSvc.getById(issue.projectId);
+      if (!project || project.companyId !== input.companyId) continue;
+      if (project.operatingContext?.baselineStatus !== "accepted") continue;
+      return {
+        projectName: project.name,
+        operatingContext: project.operatingContext,
+      };
+    }
+    return null;
+  }
+
+  async function assignStaffingSourceIssuesForPendingHireApproval(input: {
+    companyId: string;
+    sourceIssueIds: string[];
+    reviewerAgentId: string | null;
+    approvalId: string;
+    actor: ReturnType<typeof getActorInfo>;
+  }) {
+    if (!input.reviewerAgentId) return;
+
+    const uniqueSourceIssueIds = Array.from(new Set(input.sourceIssueIds));
+    for (const issueId of uniqueSourceIssueIds) {
+      const issue = await issuesSvc.getById(issueId);
+      if (!issue || issue.companyId !== input.companyId) continue;
+      if (issue.originKind !== "staffing_hiring") continue;
+
+      const nextStatus =
+        issue.status === "backlog" || issue.status === "todo"
+          ? "in_review"
+          : issue.status;
+      if (issue.assigneeAgentId === input.reviewerAgentId && issue.status === nextStatus) {
+        continue;
+      }
+
+      await issuesSvc.update(issue.id, {
+        status: nextStatus,
+        assigneeAgentId: input.reviewerAgentId,
+        assigneeUserId: null,
+        actorAgentId: input.actor.actorType === "agent" ? input.actor.agentId : null,
+        actorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
+      });
+      await logActivity(db, {
+        companyId: input.companyId,
+        actorType: input.actor.actorType,
+        actorId: input.actor.actorId,
+        agentId: input.actor.agentId,
+        runId: input.actor.runId,
+        action: "issue.staffing_approval_requested",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          approvalId: input.approvalId,
+          reviewerAgentId: input.reviewerAgentId,
+        },
+      });
+    }
   }
 
   async function assertCanManageInstructionsPath(req: Request, targetAgent: { id: string; companyId: string }) {
@@ -1350,7 +1439,14 @@ export function agentRoutes(db: Db) {
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     });
-    const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent);
+    const bootstrapProjectContext = await resolveBootstrapProjectContextForSourceIssues({
+      companyId,
+      sourceIssueIds,
+    });
+    const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, {
+      bootstrapProjectName: bootstrapProjectContext?.projectName ?? null,
+      bootstrapOperatingContext: bootstrapProjectContext?.operatingContext ?? null,
+    });
 
     let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
     const actor = getActorInfo(req);
@@ -1409,6 +1505,16 @@ export function agentRoutes(db: Db) {
         await issueApprovalsSvc.linkManyForApproval(approval.id, sourceIssueIds, {
           agentId: actor.actorType === "agent" ? actor.actorId : null,
           userId: actor.actorType === "user" ? actor.actorId : null,
+        });
+        await assignStaffingSourceIssuesForPendingHireApproval({
+          companyId,
+          sourceIssueIds,
+          reviewerAgentId:
+            typeof normalizedHireInput.reportsTo === "string"
+              ? normalizedHireInput.reportsTo
+              : null,
+          approvalId: approval.id,
+          actor,
         });
       }
     }

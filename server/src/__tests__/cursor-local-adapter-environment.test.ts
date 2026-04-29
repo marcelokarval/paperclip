@@ -148,6 +148,7 @@ describe("cursor environment diagnostics", () => {
       const result = await testEnvironment({
         companyId: "company-1",
         adapterType: "cursor",
+        probe: "live",
         config: {
           command: process.execPath,
           cwd,
@@ -165,6 +166,7 @@ describe("cursor environment diagnostics", () => {
   });
 
   it("emits cursor_api_key_missing when neither env var nor native auth exists", async () => {
+    const originalCursorApiKey = process.env.CURSOR_API_KEY;
     const root = path.join(
       os.tmpdir(),
       `paperclip-cursor-noauth-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -173,12 +175,14 @@ describe("cursor environment diagnostics", () => {
     const cwd = path.join(root, "workspace");
 
     try {
+      delete process.env.CURSOR_API_KEY;
       await fs.mkdir(cursorHome, { recursive: true });
       // No cli-config.json written
 
       const result = await testEnvironment({
         companyId: "company-1",
         adapterType: "cursor",
+        probe: "live",
         config: {
           command: process.execPath,
           cwd,
@@ -189,6 +193,11 @@ describe("cursor environment diagnostics", () => {
       expect(result.checks.some((check) => check.code === "cursor_api_key_missing")).toBe(true);
       expect(result.checks.some((check) => check.code === "cursor_native_auth_present")).toBe(false);
     } finally {
+      if (originalCursorApiKey === undefined) {
+        delete process.env.CURSOR_API_KEY;
+      } else {
+        process.env.CURSOR_API_KEY = originalCursorApiKey;
+      }
       await fs.rm(root, { recursive: true, force: true });
     }
   });

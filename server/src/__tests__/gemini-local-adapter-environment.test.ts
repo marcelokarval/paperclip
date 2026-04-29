@@ -54,6 +54,7 @@ describe("gemini_local environment diagnostics", () => {
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "gemini_local",
+      probe: "live",
       config: {
         command: process.execPath,
         cwd,
@@ -81,6 +82,7 @@ describe("gemini_local environment diagnostics", () => {
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "gemini_local",
+      probe: "live",
       config: {
         command: "gemini",
         cwd,
@@ -117,6 +119,7 @@ describe("gemini_local environment diagnostics", () => {
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "gemini_local",
+      probe: "live",
       config: {
         command: "gemini",
         cwd,

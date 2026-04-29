@@ -1,4 +1,7 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { resolvePaperclipInstanceRoot } from "./home-paths.js";
 
 interface JwtHeader {
   alg: string;
@@ -18,6 +21,14 @@ export interface LocalAgentJwtClaims {
 }
 
 const JWT_ALGORITHM = "HS256";
+const LOCAL_AGENT_JWT_FALLBACK_BASENAME = "local-agent-jwt-secret";
+
+type JwtConfig = {
+  secret: string;
+  ttlSeconds: number;
+  issuer: string;
+  audience: string;
+};
 
 function parseNumber(value: string | undefined, fallback: number) {
   const parsed = Number(value);
@@ -25,8 +36,39 @@ function parseNumber(value: string | undefined, fallback: number) {
   return Math.floor(parsed);
 }
 
-function jwtConfig() {
-  const secret = process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim() || process.env.BETTER_AUTH_SECRET?.trim();
+function fallbackSecretPath() {
+  return path.resolve(resolvePaperclipInstanceRoot(), "secrets", LOCAL_AGENT_JWT_FALLBACK_BASENAME);
+}
+
+function isLocalTrustedMode() {
+  return (process.env.PAPERCLIP_DEPLOYMENT_MODE ?? "").trim() === "local_trusted";
+}
+
+export function resolveLocalAgentJwtSecret(options: { createIfMissing?: boolean } = {}): string | null {
+  const envSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim() || process.env.BETTER_AUTH_SECRET?.trim();
+  if (envSecret) return envSecret;
+  if (!isLocalTrustedMode()) return null;
+
+  const secretPath = fallbackSecretPath();
+  if (existsSync(secretPath)) {
+    try {
+      const value = readFileSync(secretPath, "utf8").trim();
+      if (value) return value;
+    } catch {
+      // Fall through to regeneration when allowed.
+    }
+  }
+
+  if (options.createIfMissing !== true) return null;
+
+  const generated = randomBytes(32).toString("base64url");
+  mkdirSync(path.dirname(secretPath), { recursive: true });
+  writeFileSync(secretPath, `${generated}\n`, { encoding: "utf8", mode: 0o600 });
+  return generated;
+}
+
+function jwtConfig(): JwtConfig | null {
+  const secret = resolveLocalAgentJwtSecret({ createIfMissing: true });
   if (!secret) return null;
 
   return {

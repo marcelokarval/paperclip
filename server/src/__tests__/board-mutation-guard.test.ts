@@ -1,7 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
 import { boardMutationGuard } from "../middleware/board-mutation-guard.js";
+
+const ORIGINAL_PUBLIC_URL = process.env.PAPERCLIP_PUBLIC_URL;
+
+afterEach(() => {
+  if (ORIGINAL_PUBLIC_URL === undefined) delete process.env.PAPERCLIP_PUBLIC_URL;
+  else process.env.PAPERCLIP_PUBLIC_URL = ORIGINAL_PUBLIC_URL;
+});
 
 function createApp(
   actorType: "board" | "agent",
@@ -119,6 +126,16 @@ describe("boardMutationGuard", () => {
     const res = await request(app)
       .post("/mutate")
       .set("Origin", "https://board.paperclip.local")
+      .send({ ok: true });
+    expect([200, 204]).toContain(res.status);
+  });
+
+  it("allows board mutations from PAPERCLIP_PUBLIC_URL origin", async () => {
+    process.env.PAPERCLIP_PUBLIC_URL = "https://public.paperclip.example/app";
+    const app = createApp("board");
+    const res = await request(app)
+      .post("/mutate")
+      .set("Origin", "https://public.paperclip.example")
       .send({ ok: true });
     expect([200, 204]).toContain(res.status);
   });

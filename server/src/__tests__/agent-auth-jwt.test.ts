@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createLocalAgentJwt, verifyLocalAgentJwt } from "../agent-auth-jwt.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { createLocalAgentJwt, resolveLocalAgentJwtSecret, verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 
 describe("agent local JWT", () => {
   const secretEnv = "PAPERCLIP_AGENT_JWT_SECRET";
@@ -7,6 +10,8 @@ describe("agent local JWT", () => {
   const ttlEnv = "PAPERCLIP_AGENT_JWT_TTL_SECONDS";
   const issuerEnv = "PAPERCLIP_AGENT_JWT_ISSUER";
   const audienceEnv = "PAPERCLIP_AGENT_JWT_AUDIENCE";
+  const homeEnv = "PAPERCLIP_HOME";
+  const modeEnv = "PAPERCLIP_DEPLOYMENT_MODE";
 
   const originalEnv = {
     secret: process.env[secretEnv],
@@ -14,6 +19,8 @@ describe("agent local JWT", () => {
     ttl: process.env[ttlEnv],
     issuer: process.env[issuerEnv],
     audience: process.env[audienceEnv],
+    home: process.env[homeEnv],
+    mode: process.env[modeEnv],
   };
 
   beforeEach(() => {
@@ -22,6 +29,8 @@ describe("agent local JWT", () => {
     process.env[ttlEnv] = "3600";
     delete process.env[issuerEnv];
     delete process.env[audienceEnv];
+    delete process.env[homeEnv];
+    delete process.env[modeEnv];
     vi.useFakeTimers();
   });
 
@@ -37,6 +46,10 @@ describe("agent local JWT", () => {
     else process.env[issuerEnv] = originalEnv.issuer;
     if (originalEnv.audience === undefined) delete process.env[audienceEnv];
     else process.env[audienceEnv] = originalEnv.audience;
+    if (originalEnv.home === undefined) delete process.env[homeEnv];
+    else process.env[homeEnv] = originalEnv.home;
+    if (originalEnv.mode === undefined) delete process.env[modeEnv];
+    else process.env[modeEnv] = originalEnv.mode;
   });
 
   it("creates and verifies a token", () => {
@@ -76,6 +89,34 @@ describe("agent local JWT", () => {
       adapter_type: "claude_local",
       run_id: "run-1",
     });
+  });
+
+  it("uses a persisted instance-local fallback secret in local_trusted mode", () => {
+    delete process.env[secretEnv];
+    delete process.env[betterAuthSecretEnv];
+    process.env[modeEnv] = "local_trusted";
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-local-jwt-"));
+    process.env[homeEnv] = tempHome;
+
+    const first = resolveLocalAgentJwtSecret({ createIfMissing: true });
+    const second = resolveLocalAgentJwtSecret({ createIfMissing: false });
+
+    expect(typeof first).toBe("string");
+    expect(first).toBe(second);
+    expect(
+      fs.existsSync(path.join(tempHome, "instances", "default", "secrets", "local-agent-jwt-secret")),
+    ).toBe(true);
+
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const token = createLocalAgentJwt("agent-1", "company-1", "codex_local", "run-1");
+    expect(verifyLocalAgentJwt(token!)).toMatchObject({
+      sub: "agent-1",
+      company_id: "company-1",
+      adapter_type: "codex_local",
+      run_id: "run-1",
+    });
+
+    fs.rmSync(tempHome, { recursive: true, force: true });
   });
 
   it("rejects expired tokens", () => {

@@ -28,6 +28,7 @@ function registerModuleMocks() {
     issueApprovalService: () => ({}),
     issueService: () => mockIssueService,
     logActivity: vi.fn(),
+    projectService: () => ({}),
     secretService: () => ({}),
     syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
     workspaceOperationService: () => ({}),

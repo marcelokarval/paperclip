@@ -168,7 +168,7 @@ export function rewriteLocalUrlPort(rawUrl: string | undefined, port: number): s
   if (!rawUrl) return undefined;
   try {
     const parsed = new URL(rawUrl);
-    if (!isLoopbackHost(parsed.hostname)) return rawUrl;
+    if (!parsed.port) return rawUrl;
     parsed.port = String(port);
     return parsed.toString();
   } catch {

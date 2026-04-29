@@ -227,8 +227,17 @@ registerBuiltInAdapters();
 // Load external adapter plugins (e.g. droid_local)
 //
 // External adapter packages export createServerAdapter() which returns a
-// ServerAdapterModule. The host fills in sessionManagement.
+// ServerAdapterModule. External modules may declare sessionManagement; the host
+// only fills it from built-in defaults when the module omits it.
 // ---------------------------------------------------------------------------
+
+export function resolveExternalAdapterRegistration(adapter: ServerAdapterModule): ServerAdapterModule {
+  return {
+    ...adapter,
+    sessionManagement:
+      adapter.sessionManagement ?? getAdapterSessionManagement(adapter.type) ?? undefined,
+  };
+}
 
 /** Cached sync wrapper — the store is a simple JSON file read, safe to call frequently. */
 function getDisabledAdapterTypesFromStore(): string[] {
@@ -256,13 +265,7 @@ const externalAdaptersReady: Promise<void> = (async () => {
           builtinFallbacks.set(externalAdapter.type, existing);
         }
       }
-      adaptersByType.set(
-        externalAdapter.type,
-        {
-          ...externalAdapter,
-          sessionManagement: getAdapterSessionManagement(externalAdapter.type) ?? undefined,
-        },
-      );
+      adaptersByType.set(externalAdapter.type, resolveExternalAdapterRegistration(externalAdapter));
     }
   } catch (err) {
     console.error("[paperclip] Failed to load external adapters:", err);

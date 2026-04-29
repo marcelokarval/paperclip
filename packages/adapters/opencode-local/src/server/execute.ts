@@ -11,13 +11,19 @@ import {
   buildPaperclipEnv,
   joinPromptSections,
   buildInvocationEnvForLogs,
+  applyPaperclipWorkspaceEnv,
+  resolvePaperclipWorkspaceBranch,
+  applyDirectPaperclipApiPolicy,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
+  buildInstructionsPromptPrefix,
+  buildInstructionSupplementalEnv,
   ensurePathInEnv,
   resolveCommandForLogs,
   renderTemplate,
   renderPaperclipWakePrompt,
+  shouldDisableDirectPaperclipApiForRun,
   stringifyPaperclipWakePayload,
   runChildProcess,
   readPaperclipRuntimeSkillEntries,
@@ -106,9 +112,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
   const workspaceSource = asString(workspaceContext.source, "");
+  const workspaceStrategy = asString(workspaceContext.strategy, "");
   const workspaceId = asString(workspaceContext.workspaceId, "");
   const workspaceRepoUrl = asString(workspaceContext.repoUrl, "");
   const workspaceRepoRef = asString(workspaceContext.repoRef, "");
+  const workspaceBranch = resolvePaperclipWorkspaceBranch(workspaceContext);
+  const workspaceWorktreePath = asString(workspaceContext.worktreePath, "");
   const agentHome = asString(workspaceContext.agentHome, "");
   const workspaceHints = Array.isArray(context.paperclipWorkspaces)
     ? context.paperclipWorkspaces.filter(
@@ -164,13 +173,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (approvalStatus) env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
   if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
   if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
-  if (effectiveWorkspaceCwd) env.PAPERCLIP_WORKSPACE_CWD = effectiveWorkspaceCwd;
-  if (workspaceSource) env.PAPERCLIP_WORKSPACE_SOURCE = workspaceSource;
-  if (workspaceId) env.PAPERCLIP_WORKSPACE_ID = workspaceId;
-  if (workspaceRepoUrl) env.PAPERCLIP_WORKSPACE_REPO_URL = workspaceRepoUrl;
-  if (workspaceRepoRef) env.PAPERCLIP_WORKSPACE_REPO_REF = workspaceRepoRef;
-  if (agentHome) env.AGENT_HOME = agentHome;
+  applyPaperclipWorkspaceEnv(env, {
+    workspaceCwd: effectiveWorkspaceCwd,
+    workspaceSource,
+    workspaceStrategy,
+    workspaceId,
+    workspaceRepoUrl,
+    workspaceRepoRef,
+    workspaceBranch,
+    workspaceWorktreePath,
+    agentHome,
+  });
   if (workspaceHints.length > 0) env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(workspaceHints);
+  const disableDirectPaperclipApi = shouldDisableDirectPaperclipApiForRun({
+    truthLedger: context.paperclipTruthLedger,
+  });
 
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
@@ -180,19 +197,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // selection is already handled via the --model CLI flag.  Set after the
   // envConfig loop so user overrides cannot disable this guard.
   env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
-  if (!hasExplicitApiKey && authToken) {
+  if (!disableDirectPaperclipApi && !hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
-  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
+  const policyAdjustedEnv = applyDirectPaperclipApiPolicy(env, {
+    disableDirectApi: disableDirectPaperclipApi,
+  });
+  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env: policyAdjustedEnv, config });
   try {
     const runtimeEnv = Object.fromEntries(
       Object.entries(ensurePathInEnv({ ...process.env, ...preparedRuntimeConfig.env })).filter(
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
+    if (disableDirectPaperclipApi) {
+      delete runtimeEnv.PAPERCLIP_API_KEY;
+    }
     await ensureCommandResolvable(command, cwd, runtimeEnv);
     const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
-    const loggedEnv = buildInvocationEnvForLogs(preparedRuntimeConfig.env, {
+    let loggedEnv = buildInvocationEnvForLogs(preparedRuntimeConfig.env, {
       runtimeEnv,
       includeRuntimeKeys: ["HOME"],
       resolvedCommand,
@@ -232,13 +255,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : "";
     const instructionsDir = resolvedInstructionsFilePath ? `${path.dirname(resolvedInstructionsFilePath)}/` : "";
     let instructionsPrefix = "";
+    let instructionSupplementalEnv: Record<string, string> = {};
     if (resolvedInstructionsFilePath) {
       try {
-        const instructionsContents = await fs.readFile(resolvedInstructionsFilePath, "utf8");
-        instructionsPrefix =
-          `${instructionsContents}\n\n` +
-          `The above agent instructions were loaded from ${resolvedInstructionsFilePath}. ` +
-          `Resolve any relative file references from ${instructionsDir}.\n\n`;
+        const loadedInstructions = await buildInstructionsPromptPrefix({
+          instructionsFilePath: resolvedInstructionsFilePath,
+          supplementalFileNames: ["PROJECT_PACKET.md"],
+        });
+        instructionsPrefix = loadedInstructions.prefix;
+        instructionSupplementalEnv = buildInstructionSupplementalEnv({
+          effectiveInstructionsFilePath: resolvedInstructionsFilePath,
+          includedSupplementalPaths: loadedInstructions.includedSupplementalPaths,
+        });
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         await onLog(
@@ -247,6 +275,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         );
       }
     }
+    Object.assign(preparedRuntimeConfig.env, instructionSupplementalEnv);
+    loggedEnv = buildInvocationEnvForLogs(preparedRuntimeConfig.env, {
+      runtimeEnv,
+      includeRuntimeKeys: ["HOME"],
+      resolvedCommand,
+    });
 
     const commandNotes = (() => {
       const notes = [...preparedRuntimeConfig.notes];
@@ -278,7 +312,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       !sessionId && bootstrapPromptTemplate.trim().length > 0
         ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
         : "";
-    const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
+    const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
+      resumedSession: Boolean(sessionId),
+      truthLedger: context.paperclipTruthLedger,
+    });
     const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
     const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
     const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();

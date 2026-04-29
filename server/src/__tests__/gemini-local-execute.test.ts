@@ -106,6 +106,8 @@ describe("gemini execute", () => {
         expect.arrayContaining([
           "PAPERCLIP_AGENT_ID",
           "PAPERCLIP_API_KEY",
+          "PAPERCLIP_API_BASE",
+          "PAPERCLIP_HEALTH_URL",
           "PAPERCLIP_API_URL",
           "PAPERCLIP_COMPANY_ID",
           "PAPERCLIP_RUN_ID",
@@ -113,6 +115,7 @@ describe("gemini execute", () => {
       );
       expect(invocationPrompt).toContain("Paperclip runtime note:");
       expect(invocationPrompt).toContain("PAPERCLIP_API_URL");
+      expect(invocationPrompt).toContain("PAPERCLIP_API_BASE");
       expect(invocationPrompt).not.toContain("Paperclip API access note:");
       expect(invocationPrompt).not.toContain("run_shell_command");
       expect(result.question).toBeNull();

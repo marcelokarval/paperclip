@@ -1129,7 +1129,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (ctx.authToken && ctx.authToken.trim().length > 0) {
     await writeClaimedApiKeyFile(claimedApiKeyPath, ctx.authToken.trim());
   }
-  const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake);
+  const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake, {
+    truthLedger: ctx.context.paperclipTruthLedger,
+  });
   const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
   const wakeText = buildWakeText(
     wakePayload,

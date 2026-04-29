@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,15 +9,22 @@ import {
   parseObject,
   buildPaperclipEnv,
   buildInvocationEnvForLogs,
+  applyPaperclipWorkspaceEnv,
+  resolvePaperclipWorkspaceBranch,
+  applyDirectPaperclipApiPolicy,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
+  buildInstructionsPromptPrefix,
+  buildInstructionSupplementalEnv,
+  resolveAllowedInstructionsFilePath,
   readPaperclipRuntimeSkillEntries,
   resolveCommandForLogs,
   resolvePaperclipDesiredSkillNames,
   renderTemplate,
   renderPaperclipWakePrompt,
+  shouldDisableDirectPaperclipApiForRun,
   stringifyPaperclipWakePayload,
   joinPromptSections,
   runChildProcess,
@@ -27,8 +35,10 @@ import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { buildCodexExecArgs } from "./codex-args.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
-const CODEX_ROLLOUT_NOISE_RE =
-  /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i;
+const CODEX_ROLLOUT_NOISE_RES = [
+  /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i,
+  /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::session:\s+failed to record rollout items:\s+thread\s+[a-z0-9-]+\s+not found$/i,
+] as const;
 
 function stripCodexRolloutNoise(text: string): string {
   const parts = text.split(/\r?\n/);
@@ -39,7 +49,7 @@ function stripCodexRolloutNoise(text: string): string {
       kept.push(part);
       continue;
     }
-    if (CODEX_ROLLOUT_NOISE_RE.test(trimmed)) continue;
+    if (CODEX_ROLLOUT_NOISE_RES.some((pattern) => pattern.test(trimmed))) continue;
     kept.push(part);
   }
   return kept.join("\n");
@@ -52,6 +62,17 @@ function firstNonEmptyLine(text: string): string {
       .map((line) => line.trim())
       .find(Boolean) ?? ""
   );
+}
+
+function buildInstructionsFingerprint(input: {
+  effectiveInstructionsFilePath: string | null;
+  instructionsPrefix: string;
+}) {
+  const source =
+    input.effectiveInstructionsFilePath && input.instructionsPrefix.length > 0
+      ? `${input.effectiveInstructionsFilePath}\n${input.instructionsPrefix}`
+      : "";
+  return createHash("sha256").update(source).digest("hex");
 }
 
 function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
@@ -230,7 +251,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const workspaceId = asString(workspaceContext.workspaceId, "");
   const workspaceRepoUrl = asString(workspaceContext.repoUrl, "");
   const workspaceRepoRef = asString(workspaceContext.repoRef, "");
-  const workspaceBranch = asString(workspaceContext.branchName, "");
+  const workspaceBranch = resolvePaperclipWorkspaceBranch(workspaceContext);
   const workspaceWorktreePath = asString(workspaceContext.worktreePath, "");
   const agentHome = asString(workspaceContext.agentHome, "");
   const workspaceHints = Array.isArray(context.paperclipWorkspaces)
@@ -327,33 +348,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (wakePayloadJson) {
     env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
   }
-  if (effectiveWorkspaceCwd) {
-    env.PAPERCLIP_WORKSPACE_CWD = effectiveWorkspaceCwd;
-  }
-  if (workspaceSource) {
-    env.PAPERCLIP_WORKSPACE_SOURCE = workspaceSource;
-  }
-  if (workspaceStrategy) {
-    env.PAPERCLIP_WORKSPACE_STRATEGY = workspaceStrategy;
-  }
-  if (workspaceId) {
-    env.PAPERCLIP_WORKSPACE_ID = workspaceId;
-  }
-  if (workspaceRepoUrl) {
-    env.PAPERCLIP_WORKSPACE_REPO_URL = workspaceRepoUrl;
-  }
-  if (workspaceRepoRef) {
-    env.PAPERCLIP_WORKSPACE_REPO_REF = workspaceRepoRef;
-  }
-  if (workspaceBranch) {
-    env.PAPERCLIP_WORKSPACE_BRANCH = workspaceBranch;
-  }
-  if (workspaceWorktreePath) {
-    env.PAPERCLIP_WORKSPACE_WORKTREE_PATH = workspaceWorktreePath;
-  }
-  if (agentHome) {
-    env.AGENT_HOME = agentHome;
-  }
+  applyPaperclipWorkspaceEnv(env, {
+    workspaceCwd: effectiveWorkspaceCwd,
+    workspaceSource,
+    workspaceStrategy,
+    workspaceId,
+    workspaceRepoUrl,
+    workspaceRepoRef,
+    workspaceBranch,
+    workspaceWorktreePath,
+    agentHome,
+  });
   if (workspaceHints.length > 0) {
     env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(workspaceHints);
   }
@@ -366,22 +371,37 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (runtimePrimaryUrl) {
     env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
   }
+  const disableDirectPaperclipApi = shouldDisableDirectPaperclipApiForRun({
+    truthLedger: context.paperclipTruthLedger,
+  });
   for (const [k, v] of Object.entries(envConfig)) {
     if (typeof v === "string") env[k] = v;
   }
-  if (!hasExplicitApiKey && authToken) {
+  if (!disableDirectPaperclipApi && !hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
+  const policyAdjustedEnv = applyDirectPaperclipApiPolicy(env, {
+    disableDirectApi: disableDirectPaperclipApi,
+  });
+  const requiresDirectPaperclipApi =
+    !disableDirectPaperclipApi &&
+    typeof policyAdjustedEnv.PAPERCLIP_API_KEY === "string" &&
+    policyAdjustedEnv.PAPERCLIP_API_KEY.length > 0 &&
+    typeof policyAdjustedEnv.PAPERCLIP_API_BASE === "string" &&
+    policyAdjustedEnv.PAPERCLIP_API_BASE.length > 0;
   const effectiveEnv = Object.fromEntries(
-    Object.entries({ ...process.env, ...env }).filter(
+    Object.entries({ ...process.env, ...policyAdjustedEnv }).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
+  if (disableDirectPaperclipApi) {
+    delete effectiveEnv.PAPERCLIP_API_KEY;
+  }
   const billingType = resolveCodexBillingType(effectiveEnv);
   const runtimeEnv = ensurePathInEnv(effectiveEnv);
   await ensureCommandResolvable(command, cwd, runtimeEnv);
   const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
-  const loggedEnv = buildInvocationEnvForLogs(env, {
+  let loggedEnv = buildInvocationEnvForLogs(policyAdjustedEnv, {
     runtimeEnv,
     includeRuntimeKeys: ["HOME"],
     resolvedCommand,
@@ -391,51 +411,38 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const graceSec = asNumber(config.graceSec, 20);
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);
-  const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
-  const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
-  const canResumeSession =
-    runtimeSessionId.length > 0 &&
-    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
-  const sessionId = canResumeSession ? runtimeSessionId : null;
-  if (runtimeSessionId && !canResumeSession) {
-    await onLog(
-      "stdout",
-      `[paperclip] Codex session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
-    );
-  }
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
-  const resolvedInstructionsFilePath = instructionsFilePath
-    ? path.resolve(cwd, instructionsFilePath)
-    : "";
-  const instructionsPathRelativeToCwd = resolvedInstructionsFilePath
-    ? path.relative(cwd, resolvedInstructionsFilePath)
-    : "";
-  const isInstructionsPathWithinCwd =
-    instructionsPathRelativeToCwd.length === 0 ||
-    (!path.isAbsolute(instructionsPathRelativeToCwd) &&
-      instructionsPathRelativeToCwd !== ".." &&
-      !instructionsPathRelativeToCwd.startsWith(`..${path.sep}`));
-  if (instructionsFilePath && !isInstructionsPathWithinCwd) {
-    await onLog(
-      "stdout",
-      `[paperclip] Warning: instructionsFilePath must stay within cwd \"${cwd}\"; ignoring \"${resolvedInstructionsFilePath}\".\n`,
-    );
+  const {
+    resolvedInstructionsFilePath,
+    effectiveInstructionsFilePath,
+    warning: instructionsPathWarning,
+  } = resolveAllowedInstructionsFilePath({
+    cwd,
+    instructionsFilePath,
+    instructionsBundleMode: asString(config.instructionsBundleMode, ""),
+    instructionsRootPath: asString(config.instructionsRootPath, ""),
+  });
+  if (instructionsPathWarning) {
+    await onLog("stdout", instructionsPathWarning);
   }
-  const effectiveInstructionsFilePath =
-    instructionsFilePath && isInstructionsPathWithinCwd ? resolvedInstructionsFilePath : "";
   const instructionsDir = effectiveInstructionsFilePath
     ? `${path.dirname(effectiveInstructionsFilePath)}/`
     : "";
   let instructionsPrefix = "";
   let instructionsChars = 0;
+  let instructionSupplementalEnv: Record<string, string> = {};
   if (effectiveInstructionsFilePath) {
     try {
-      const instructionsContents = await fs.readFile(effectiveInstructionsFilePath, "utf8");
-      instructionsPrefix =
-        `${instructionsContents}\n\n` +
-        `The above agent instructions were loaded from ${effectiveInstructionsFilePath}. ` +
-        `Resolve any relative file references from ${instructionsDir}.\n\n`;
+      const loadedInstructions = await buildInstructionsPromptPrefix({
+        instructionsFilePath: effectiveInstructionsFilePath,
+        supplementalFileNames: ["PROJECT_PACKET.md"],
+      });
+      instructionsPrefix = loadedInstructions.prefix;
       instructionsChars = instructionsPrefix.length;
+      instructionSupplementalEnv = buildInstructionSupplementalEnv({
+        effectiveInstructionsFilePath,
+        includedSupplementalPaths: loadedInstructions.includedSupplementalPaths,
+      });
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       await onLog(
@@ -443,6 +450,34 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[paperclip] Warning: could not read agent instructions file "${effectiveInstructionsFilePath}": ${reason}\n`,
       );
     }
+  }
+  const instructionsFingerprint = buildInstructionsFingerprint({
+    effectiveInstructionsFilePath,
+    instructionsPrefix,
+  });
+  Object.assign(policyAdjustedEnv, instructionSupplementalEnv);
+  loggedEnv = buildInvocationEnvForLogs(policyAdjustedEnv, {
+    runtimeEnv,
+    includeRuntimeKeys: ["HOME"],
+    resolvedCommand,
+  });
+  const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
+  const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
+  const runtimeInstructionsFingerprint = asString(runtimeSessionParams.instructionsFingerprint, "");
+  const hasInstructionsFingerprintMismatch =
+    runtimeSessionId.length > 0 &&
+    runtimeInstructionsFingerprint.length > 0 &&
+    runtimeInstructionsFingerprint !== instructionsFingerprint;
+  const canResumeSession =
+    runtimeSessionId.length > 0 &&
+    !hasInstructionsFingerprintMismatch &&
+    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
+  const sessionId = canResumeSession ? runtimeSessionId : null;
+  if (runtimeSessionId && !canResumeSession) {
+    const warning = hasInstructionsFingerprintMismatch
+      ? `[paperclip] Codex session "${runtimeSessionId}" will not be resumed because managed instructions changed since the session was saved.\n`
+      : `[paperclip] Codex session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`;
+    await onLog("stdout", warning);
   }
   const repoAgentsNote =
     "Codex exec automatically applies repo-scoped AGENTS.md instructions from the current workspace; Paperclip does not currently suppress that discovery.";
@@ -460,7 +495,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     !sessionId && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
+  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
+    resumedSession: Boolean(sessionId),
+    truthLedger: context.paperclipTruthLedger,
+  });
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
   const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
   instructionsChars = promptInstructionsPrefix.length;
@@ -506,18 +544,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const runAttempt = async (resumeSessionId: string | null) => {
-    const execArgs = buildCodexExecArgs(config, { resumeSessionId });
+    const execArgs = buildCodexExecArgs(
+      requiresDirectPaperclipApi
+        ? {
+          ...config,
+          dangerouslyBypassApprovalsAndSandbox: true,
+        }
+        : config,
+      { resumeSessionId },
+    );
     const args = execArgs.args;
     const commandNotesWithFastMode =
       execArgs.fastModeIgnoredReason == null
         ? commandNotes
         : [...commandNotes, execArgs.fastModeIgnoredReason];
+    const commandNotesWithPolicy =
+      requiresDirectPaperclipApi
+        ? [
+          ...commandNotesWithFastMode,
+          "Enabled Codex approvals/sandbox bypass because this run has direct Paperclip API credentials and must reach the local control plane.",
+        ]
+        : commandNotesWithFastMode;
     if (onMeta) {
       await onMeta({
         adapterType: "codex_local",
         command: resolvedCommand,
         cwd,
-        commandNotes: commandNotesWithFastMode,
+        commandNotes: commandNotesWithPolicy,
         commandArgs: args.map((value, idx) => {
           if (idx === args.length - 1 && value !== "-") return `<prompt ${prompt.length} chars>`;
           return value;
@@ -531,7 +584,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const proc = await runChildProcess(runId, command, args, {
       cwd,
-      env,
+      env: policyAdjustedEnv,
       stdin: prompt,
       timeoutSec,
       graceSec,
@@ -576,6 +629,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? ({
         sessionId: resolvedSessionId,
         cwd,
+        instructionsFingerprint,
         ...(workspaceId ? { workspaceId } : {}),
         ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),

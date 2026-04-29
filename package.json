@@ -33,6 +33,7 @@
     "smoke:openclaw-docker-ui": "./scripts/smoke/openclaw-docker-ui.sh",
     "smoke:openclaw-sse-standalone": "./scripts/smoke/openclaw-sse-standalone.sh",
     "test:e2e": "npx playwright test --config tests/e2e/playwright.config.ts",
+    "test:e2e:repo-first": "PAPERCLIP_E2E_BASE_URL=http://127.0.0.1:3101 npx playwright test --config tests/e2e/playwright.local.config.ts tests/e2e/repo-first-staffing.spec.ts",
     "test:e2e:headed": "npx playwright test --config tests/e2e/playwright.config.ts --headed",
     "evals:smoke": "cd evals/promptfoo && npx promptfoo@0.103.3 eval",
     "test:release-smoke": "npx playwright test --config tests/release-smoke/playwright.config.ts",

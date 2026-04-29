@@ -26,6 +26,13 @@ const mockHeartbeatService = vi.hoisted(() => ({}));
 const mockIssueApprovalService = vi.hoisted(() => ({
   linkManyForApproval: vi.fn(),
 }));
+const mockIssueService = vi.hoisted(() => ({
+  getById: vi.fn(),
+  update: vi.fn(),
+}));
+const mockProjectService = vi.hoisted(() => ({
+  getById: vi.fn(),
+}));
 const mockWorkspaceOperationService = vi.hoisted(() => ({}));
 const mockAgentInstructionsService = vi.hoisted(() => ({
   getBundle: vi.fn(),
@@ -76,8 +83,9 @@ vi.mock("../services/index.js", () => ({
   budgetService: () => mockBudgetService,
   heartbeatService: () => mockHeartbeatService,
   issueApprovalService: () => mockIssueApprovalService,
-  issueService: () => ({}),
+  issueService: () => mockIssueService,
   logActivity: mockLogActivity,
+  projectService: () => mockProjectService,
   secretService: () => mockSecretService,
   syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
   workspaceOperationService: () => mockWorkspaceOperationService,
@@ -109,8 +117,9 @@ function registerModuleMocks() {
     budgetService: () => mockBudgetService,
     heartbeatService: () => mockHeartbeatService,
     issueApprovalService: () => mockIssueApprovalService,
-    issueService: () => ({}),
+    issueService: () => mockIssueService,
     logActivity: mockLogActivity,
+    projectService: () => mockProjectService,
     secretService: () => mockSecretService,
     syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
     workspaceOperationService: () => mockWorkspaceOperationService,
@@ -266,6 +275,9 @@ describe("agent skill routes", () => {
     mockAccessService.listPrincipalGrants.mockResolvedValue([]);
     mockAccessService.ensureMembership.mockResolvedValue(undefined);
     mockAccessService.setPrincipalPermission.mockResolvedValue(undefined);
+    mockIssueService.getById.mockResolvedValue(null);
+    mockIssueService.update.mockResolvedValue(null);
+    mockProjectService.getById.mockResolvedValue(null);
   });
 
   it("skips runtime materialization when listing Claude skills", async () => {
@@ -400,9 +412,16 @@ describe("agent skill routes", () => {
         id: "11111111-1111-4111-8111-111111111111",
         adapterType: "claude_local",
       }),
-      { "AGENTS.md": "You are QA." },
+      expect.objectContaining({
+        "AGENTS.md": expect.stringContaining("You are QA."),
+      }),
       { entryFile: "AGENTS.md", replaceExisting: false },
     );
+    const files = mockAgentInstructionsService.materializeManagedBundle.mock.calls.at(-1)?.[1] as
+      | Record<string, string>
+      | undefined;
+    expect(files?.["AGENTS.md"]).toContain("## Custom role directives");
+    expect(files?.["AGENTS.md"]).toContain("Keep the work moving until it's done.");
     expect(mockAgentService.update).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       expect.objectContaining({
@@ -529,5 +548,171 @@ describe("agent skill routes", () => {
       | { payload?: { adapterConfig?: Record<string, unknown> } }
       | undefined;
     expect(approvalInput?.payload?.adapterConfig?.promptTemplate).toBeUndefined();
+    const files = mockAgentInstructionsService.materializeManagedBundle.mock.calls.at(-1)?.[1] as
+      | Record<string, string>
+      | undefined;
+    expect(files?.["AGENTS.md"]).toContain("## Custom role directives");
+    expect(files?.["AGENTS.md"]).toContain("You are QA.");
+  });
+
+  it("adds a project packet when hiring from an accepted baseline project issue", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "11111111-2222-4333-8444-555555555555",
+      companyId: "company-1",
+      projectId: "66666666-7777-4888-8999-000000000000",
+    });
+    mockProjectService.getById.mockResolvedValue({
+      id: "66666666-7777-4888-8999-000000000000",
+      companyId: "company-1",
+      name: "Prop4You Next.js Fullstack",
+      operatingContext: {
+        baselineStatus: "accepted",
+        overviewSummary: "Existing Next.js platform for real-estate operations.",
+        stackSummary: ["Next.js", "TypeScript", "PostgreSQL"],
+        topRisks: ["Legacy auth flow still needs regression coverage."],
+        labelCatalog: [
+          {
+            name: "frontend",
+            description: "UI and interaction work.",
+            usageGuidance: "Use for React/Vite surface changes.",
+          },
+        ],
+        canonicalDocs: [
+          {
+            path: "README.md",
+            title: "Repository README",
+            reason: "Primary contributor entrypoint.",
+          },
+        ],
+        verificationCommands: ["pnpm test", "pnpm --filter @paperclipai/ui typecheck"],
+        ownershipAreas: [
+          {
+            name: "Frontend",
+            paths: ["ui/"],
+            summary: "React application surface.",
+          },
+        ],
+        operatingGuidance: [
+          "Read the baseline tracking issue before decomposing work.",
+        ],
+        executiveProjectPacket: {
+          projectSummary: "Executive framing for an existing real-estate operations platform.",
+          stackSummary: ["Next.js", "TypeScript", "PostgreSQL"],
+          docsToReadFirst: ["README.md"],
+          topRisks: ["Legacy auth flow still needs regression coverage."],
+          topGaps: ["Architecture decision records are still thin."],
+          operatingGuidance: ["Validate baseline issue context before delegating."],
+          hiringSignals: ["cto"],
+        },
+        technicalProjectPacket: {
+          projectSummary: "Technical framing for an existing Next.js and TypeScript codebase.",
+          stackSignals: ["Next.js", "TypeScript", "PostgreSQL"],
+          canonicalDocs: ["README.md"],
+          verificationCommands: ["pnpm test", "pnpm --filter @paperclipai/ui typecheck"],
+          ownershipAreas: [
+            {
+              name: "Frontend",
+              paths: ["ui/"],
+              summary: "React application surface.",
+            },
+          ],
+          labelCatalog: [
+            {
+              name: "frontend",
+              description: "UI and interaction work.",
+              usageGuidance: "Use for React/Vite surface changes.",
+            },
+          ],
+          issueGuidance: [
+            "Use the baseline issue as the canonical project context when planning work.",
+          ],
+        },
+        descriptionSuggestion: "Paperclip deployment for Prop4You real-estate workflows.",
+        descriptionSource: "baseline",
+        suggestedGoals: [],
+        baselineTrackingIssueId: "tracking-1",
+        baselineTrackingIssueIdentifier: "P4Y-1",
+        baselineAcceptedAt: "2026-04-23T12:00:00.000Z",
+      },
+    });
+
+    const res = await request(await createApp())
+      .post("/api/companies/company-1/agent-hires")
+      .send({
+        name: "CTO",
+        role: "cto",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        sourceIssueIds: ["11111111-2222-4333-8444-555555555555"],
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledWith(
+      expect.objectContaining({
+        role: "cto",
+        adapterType: "claude_local",
+      }),
+      expect.objectContaining({
+        "AGENTS.md": expect.stringContaining("PROJECT_PACKET.md"),
+        "PROJECT_PACKET.md": expect.stringContaining("Prop4You Next.js Fullstack"),
+      }),
+      { entryFile: "AGENTS.md", replaceExisting: false },
+    );
+    const files = mockAgentInstructionsService.materializeManagedBundle.mock.calls.at(-1)?.[1] as
+      | Record<string, string>
+      | undefined;
+    expect(files?.["PROJECT_PACKET.md"]).toContain("## Verification commands");
+    expect(files?.["PROJECT_PACKET.md"]).toContain("## Ownership areas");
+    expect(files?.["PROJECT_PACKET.md"]).toContain("Baseline issue: P4Y-1");
+  });
+
+  it("assigns staffing hire source issues to the reviewer when a hire approval is created", async () => {
+    const sourceIssueId = "11111111-2222-4333-8444-555555555555";
+    const ceoAgentId = "99999999-aaaa-4bbb-8ccc-dddddddddddd";
+    mockIssueService.getById.mockResolvedValue({
+      id: sourceIssueId,
+      companyId: "company-1",
+      projectId: "66666666-7777-4888-8999-000000000000",
+      originKind: "staffing_hiring",
+      status: "backlog",
+      assigneeAgentId: null,
+    });
+
+    const res = await request(await createApp(createDb(true)))
+      .post("/api/companies/company-1/agent-hires")
+      .send({
+        name: "CTO",
+        role: "cto",
+        reportsTo: ceoAgentId,
+        adapterType: "claude_local",
+        adapterConfig: {},
+        sourceIssueIds: [sourceIssueId],
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueApprovalService.linkManyForApproval).toHaveBeenCalledWith(
+      "approval-1",
+      [sourceIssueId],
+      { agentId: null, userId: "local-board" },
+    );
+    expect(mockIssueService.update).toHaveBeenCalledWith(sourceIssueId, {
+      status: "in_review",
+      assigneeAgentId: ceoAgentId,
+      assigneeUserId: null,
+      actorAgentId: null,
+      actorUserId: "local-board",
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.staffing_approval_requested",
+        entityType: "issue",
+        entityId: sourceIssueId,
+        details: {
+          approvalId: "approval-1",
+          reviewerAgentId: ceoAgentId,
+        },
+      }),
+    );
   });
 });

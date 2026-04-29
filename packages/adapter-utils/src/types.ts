@@ -223,6 +223,22 @@ export interface HireApprovedPayload {
   approvedAt: string;
   /** Canonical operator-facing message for cloud adapters to show the user. */
   message: string;
+  /** Optional structured context about the project/issue that originated the hire. */
+  hireContext?: {
+    sourceIssueId: string;
+    sourceIssueIdentifier: string | null;
+    sourceIssueTitle: string | null;
+    sourceIssueKind?: "staffing_hiring" | "baseline_tracking" | "other";
+    sourceIssueStatus?: string | null;
+    sourceIssueAssigneeAgentId?: string | null;
+    projectId: string | null;
+    projectName: string | null;
+    projectOverviewSummary: string | null;
+    baselineStatus: "none" | "available" | "accepted" | null;
+    baselineIssueId?: string | null;
+    baselineTrackingIssueIdentifier: string | null;
+    baselineIssueTitle?: string | null;
+  } | null;
 }
 
 /** Result of onHireApproved hook; failures are non-fatal to the approval flow. */

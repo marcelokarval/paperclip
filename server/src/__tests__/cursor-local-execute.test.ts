@@ -110,6 +110,8 @@ describe("cursor execute", () => {
         expect.arrayContaining([
           "PAPERCLIP_AGENT_ID",
           "PAPERCLIP_API_KEY",
+          "PAPERCLIP_API_BASE",
+          "PAPERCLIP_HEALTH_URL",
           "PAPERCLIP_API_URL",
           "PAPERCLIP_COMPANY_ID",
           "PAPERCLIP_RUN_ID",
@@ -119,6 +121,7 @@ describe("cursor execute", () => {
       expect(capture.prompt).toContain("PAPERCLIP_API_KEY");
       expect(invocationPrompt).toContain("Paperclip runtime note:");
       expect(invocationPrompt).toContain("PAPERCLIP_API_URL");
+      expect(invocationPrompt).toContain("PAPERCLIP_API_BASE");
     } finally {
       if (previousHome === undefined) {
         delete process.env.HOME;

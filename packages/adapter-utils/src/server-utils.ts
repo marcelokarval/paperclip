@@ -33,7 +33,13 @@ type ChildProcessWithEvents = ChildProcess & {
     event: "close",
     listener: (code: number | null, signal: NodeJS.Signals | null) => void,
   ): ChildProcess;
+  on(event: "exit", listener: (code: number | null, signal: NodeJS.Signals | null) => void): ChildProcess;
 };
+
+export interface TerminalResultCleanupOptions {
+  graceMs: number;
+  hasTerminalResult(output: string): boolean;
+}
 
 function resolveProcessGroupId(child: ChildProcess) {
   if (process.platform === "win32") return null;
@@ -60,6 +66,7 @@ function signalRunningProcess(
 export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
+const MAX_TERMINAL_RESULT_SCAN_BYTES = 64 * 1024;
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
 const SENSITIVE_ENV_EXACT_KEYS = new Set(["PAPERCLIP_WAKE_PAYLOAD_JSON"]);
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
@@ -79,6 +86,15 @@ export interface InstalledSkillTarget {
   targetPath: string | null;
   kind: "symlink" | "directory" | "file";
 }
+
+type PaperclipTruthLedger = {
+  scope: "repository_baseline_review" | "issue_scoped" | null;
+  authoritativeSources: string[];
+  issueCommentRequired: boolean;
+  finalSummaryMayBecomeIssueComment: boolean;
+  localShellProbesAreAuxiliary: boolean;
+  apiRootIsNotOperationalProof: boolean;
+};
 
 interface PersistentSkillSnapshotOptions {
   adapterType: string;
@@ -217,6 +233,159 @@ export function joinPromptSections(
     .join(separator);
 }
 
+export async function buildInstructionsPromptPrefix(input: {
+  instructionsFilePath: string;
+  supplementalFileNames?: string[];
+}): Promise<{
+  prefix: string;
+  includedSupplementalPaths: string[];
+}> {
+  const instructionsFilePath = input.instructionsFilePath.trim();
+  if (!instructionsFilePath) {
+    return { prefix: "", includedSupplementalPaths: [] };
+  }
+
+  const instructionsDirPath = path.dirname(instructionsFilePath);
+  const instructionsDir = `${instructionsDirPath}/`;
+  const baseContents = await fs.readFile(instructionsFilePath, "utf8");
+
+  const supplementalSections: string[] = [];
+  const includedSupplementalPaths: string[] = [];
+  for (const fileName of input.supplementalFileNames ?? []) {
+    const trimmed = fileName.trim();
+    if (!trimmed) continue;
+    const supplementalPath = path.join(instructionsDirPath, trimmed);
+    if (supplementalPath === instructionsFilePath) continue;
+    try {
+      const stat = await fs.stat(supplementalPath);
+      if (!stat.isFile()) continue;
+      const supplementalContents = await fs.readFile(supplementalPath, "utf8");
+      supplementalSections.push(
+        `## Supplemental instructions from ./${trimmed}\n${supplementalContents}`,
+      );
+      includedSupplementalPaths.push(`./${trimmed}`);
+    } catch {
+      continue;
+    }
+  }
+
+  const loadedFilesSentence =
+    includedSupplementalPaths.length > 0
+      ? ` Supplemental sibling instruction files were also loaded from ${includedSupplementalPaths.join(", ")}.`
+      : "";
+
+  return {
+    prefix: [
+      baseContents,
+      ...supplementalSections,
+      `The above agent instructions were loaded from ${instructionsFilePath}. ` +
+        `Resolve any relative file references from ${instructionsDir}.` +
+        loadedFilesSentence,
+      "",
+    ].join("\n\n"),
+    includedSupplementalPaths,
+  };
+}
+
+export function buildInstructionSupplementalEnv(input: {
+  effectiveInstructionsFilePath: string;
+  includedSupplementalPaths: string[];
+}): Record<string, string> {
+  const effectiveInstructionsFilePath = input.effectiveInstructionsFilePath.trim();
+  if (!effectiveInstructionsFilePath) return {};
+
+  const env: Record<string, string> = {
+    PAPERCLIP_INSTRUCTIONS_FILE_PATH: effectiveInstructionsFilePath,
+  };
+  const projectPacketIncluded = input.includedSupplementalPaths.includes("./PROJECT_PACKET.md");
+  env.PAPERCLIP_PROJECT_PACKET_PRESENT = projectPacketIncluded ? "true" : "false";
+  if (projectPacketIncluded) {
+    env.PAPERCLIP_PROJECT_PACKET_PATH = path.join(
+      path.dirname(effectiveInstructionsFilePath),
+      "PROJECT_PACKET.md",
+    );
+  }
+  return env;
+}
+
+export function shouldDisableDirectPaperclipApiForRun(input: {
+  truthLedger?: unknown;
+}): boolean {
+  const truthLedger = normalizePaperclipTruthLedger(input.truthLedger);
+  return truthLedger?.scope === "repository_baseline_review";
+}
+
+export function applyDirectPaperclipApiPolicy(
+  env: Record<string, string>,
+  input: { disableDirectApi: boolean; reason?: string | null },
+): Record<string, string> {
+  if (!input.disableDirectApi) return env;
+  const nextEnv = { ...env };
+  nextEnv.PAPERCLIP_DIRECT_API_DISABLED = "true";
+  nextEnv.PAPERCLIP_DIRECT_API_DISABLED_REASON =
+    input.reason?.trim() || "repo_first_ceo_baseline_review";
+  delete nextEnv.PAPERCLIP_API_KEY;
+  return nextEnv;
+}
+
+function isPathWithinRoot(candidatePath: string, rootPath: string): boolean {
+  const relative = path.relative(rootPath, candidatePath);
+  return (
+    relative.length === 0 ||
+    (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`))
+  );
+}
+
+export function resolveAllowedInstructionsFilePath(input: {
+  cwd: string;
+  instructionsFilePath: string;
+  instructionsBundleMode?: string | null;
+  instructionsRootPath?: string | null;
+}): {
+  resolvedInstructionsFilePath: string;
+  effectiveInstructionsFilePath: string;
+  warning: string | null;
+} {
+  const instructionsFilePath = input.instructionsFilePath.trim();
+  if (!instructionsFilePath) {
+    return {
+      resolvedInstructionsFilePath: "",
+      effectiveInstructionsFilePath: "",
+      warning: null,
+    };
+  }
+
+  const resolvedInstructionsFilePath = path.resolve(input.cwd, instructionsFilePath);
+  if (isPathWithinRoot(resolvedInstructionsFilePath, input.cwd)) {
+    return {
+      resolvedInstructionsFilePath,
+      effectiveInstructionsFilePath: resolvedInstructionsFilePath,
+      warning: null,
+    };
+  }
+
+  const instructionsBundleMode = input.instructionsBundleMode?.trim() ?? "";
+  const instructionsRootPath = input.instructionsRootPath?.trim() ?? "";
+  if (instructionsBundleMode === "managed" && instructionsRootPath) {
+    const resolvedInstructionsRootPath = path.resolve(instructionsRootPath);
+    if (isPathWithinRoot(resolvedInstructionsFilePath, resolvedInstructionsRootPath)) {
+      return {
+        resolvedInstructionsFilePath,
+        effectiveInstructionsFilePath: resolvedInstructionsFilePath,
+        warning: null,
+      };
+    }
+  }
+
+  return {
+    resolvedInstructionsFilePath,
+    effectiveInstructionsFilePath: "",
+    warning:
+      `[paperclip] Warning: instructionsFilePath must stay within cwd "${input.cwd}" ` +
+      `or the managed instructions root; ignoring "${resolvedInstructionsFilePath}".\n`,
+  };
+}
+
 type PaperclipWakeIssue = {
   id: string | null;
   identifier: string | null;
@@ -251,9 +420,26 @@ type PaperclipWakeComment = {
   authorId: string | null;
 };
 
+type PaperclipWakeProjectIssueSystem = {
+  labels: Array<{
+    id: string | null;
+    name: string;
+    color: string | null;
+    description: string | null;
+  }>;
+  parentChildGuidance: string[];
+  blockingGuidance: string[];
+  labelUsageGuidance: string[];
+  reviewGuidance: string[];
+  approvalGuidance: string[];
+  canonicalDocs: string[];
+  suggestedVerificationCommands: string[];
+};
+
 type PaperclipWakePayload = {
   reason: string | null;
   issue: PaperclipWakeIssue | null;
+  projectIssueSystem: PaperclipWakeProjectIssueSystem | null;
   checkedOutByHarness: boolean;
   executionStage: PaperclipWakeExecutionStage | null;
   commentIds: string[];
@@ -265,6 +451,45 @@ type PaperclipWakePayload = {
   truncated: boolean;
   fallbackFetchNeeded: boolean;
 };
+
+function normalizePaperclipTruthLedger(value: unknown): PaperclipTruthLedger | null {
+  const record = parseObject(value);
+  const scopeRaw = asString(record.scope, "").trim().toLowerCase();
+  const scope =
+    scopeRaw === "repository_baseline_review" || scopeRaw === "issue_scoped" ? scopeRaw : null;
+  const authoritativeSources = Array.isArray(record.authoritativeSources)
+    ? record.authoritativeSources
+        .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+        .map((entry) => entry.trim())
+    : [];
+  const issueCommentRequired = asBoolean(record.issueCommentRequired, false);
+  const finalSummaryMayBecomeIssueComment = asBoolean(
+    record.finalSummaryMayBecomeIssueComment,
+    false,
+  );
+  const localShellProbesAreAuxiliary = asBoolean(record.localShellProbesAreAuxiliary, false);
+  const apiRootIsNotOperationalProof = asBoolean(record.apiRootIsNotOperationalProof, false);
+
+  if (
+    !scope &&
+    authoritativeSources.length === 0 &&
+    !issueCommentRequired &&
+    !finalSummaryMayBecomeIssueComment &&
+    !localShellProbesAreAuxiliary &&
+    !apiRootIsNotOperationalProof
+  ) {
+    return null;
+  }
+
+  return {
+    scope,
+    authoritativeSources,
+    issueCommentRequired,
+    finalSummaryMayBecomeIssueComment,
+    localShellProbesAreAuxiliary,
+    apiRootIsNotOperationalProof,
+  };
+}
 
 function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null {
   const issue = parseObject(value);
@@ -343,6 +568,56 @@ function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExec
   };
 }
 
+function normalizeStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value
+        .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+        .map((entry) => entry.trim())
+    : [];
+}
+
+function normalizePaperclipWakeProjectIssueSystem(value: unknown): PaperclipWakeProjectIssueSystem | null {
+  const system = parseObject(value);
+  const labels = Array.isArray(system.labels)
+    ? system.labels
+        .map((entry) => {
+          const label = parseObject(entry);
+          const name = asString(label.name, "").trim();
+          if (!name) return null;
+          return {
+            id: asString(label.id, "").trim() || null,
+            name,
+            color: asString(label.color, "").trim() || null,
+            description: asString(label.description, "").trim() || null,
+          };
+        })
+        .filter((entry): entry is PaperclipWakeProjectIssueSystem["labels"][number] => Boolean(entry))
+    : [];
+  const normalized = {
+    labels,
+    parentChildGuidance: normalizeStringArray(system.parentChildGuidance),
+    blockingGuidance: normalizeStringArray(system.blockingGuidance),
+    labelUsageGuidance: normalizeStringArray(system.labelUsageGuidance),
+    reviewGuidance: normalizeStringArray(system.reviewGuidance),
+    approvalGuidance: normalizeStringArray(system.approvalGuidance),
+    canonicalDocs: normalizeStringArray(system.canonicalDocs),
+    suggestedVerificationCommands: normalizeStringArray(system.suggestedVerificationCommands),
+  };
+  if (
+    normalized.labels.length === 0 &&
+    normalized.parentChildGuidance.length === 0 &&
+    normalized.blockingGuidance.length === 0 &&
+    normalized.labelUsageGuidance.length === 0 &&
+    normalized.reviewGuidance.length === 0 &&
+    normalized.approvalGuidance.length === 0 &&
+    normalized.canonicalDocs.length === 0 &&
+    normalized.suggestedVerificationCommands.length === 0
+  ) {
+    return null;
+  }
+  return normalized;
+}
+
 export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayload | null {
   const payload = parseObject(value);
   const comments = Array.isArray(payload.comments)
@@ -365,6 +640,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
   return {
     reason: asString(payload.reason, "").trim() || null,
     issue: normalizePaperclipWakeIssue(payload.issue),
+    projectIssueSystem: normalizePaperclipWakeProjectIssueSystem(payload.projectIssueSystem),
     checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
     executionStage,
     commentIds,
@@ -386,14 +662,33 @@ export function stringifyPaperclipWakePayload(value: unknown): string | null {
 
 export function renderPaperclipWakePrompt(
   value: unknown,
-  options: { resumedSession?: boolean } = {},
+  options: { resumedSession?: boolean; truthLedger?: unknown } = {},
 ): string {
   const normalized = normalizePaperclipWakePayload(value);
-  if (!normalized) return "";
+  const truthLedger = normalizePaperclipTruthLedger(options.truthLedger);
+  if (!normalized && !truthLedger) return "";
+  const payload =
+    normalized ??
+    ({
+      reason: null,
+      issue: null,
+      projectIssueSystem: null,
+      checkedOutByHarness: false,
+      executionStage: null,
+      commentIds: [],
+      latestCommentId: null,
+      comments: [],
+      requestedCount: 0,
+      includedCount: 0,
+      missingCount: 0,
+      truncated: false,
+      fallbackFetchNeeded: false,
+    } satisfies PaperclipWakePayload);
   const resumedSession = options.resumedSession === true;
-  const executionStage = normalized.executionStage;
+  const executionStage = payload.executionStage;
   const commentAwareWake =
-    normalized.requestedCount > 0 || normalized.includedCount > 0 || Boolean(normalized.latestCommentId);
+    payload.requestedCount > 0 || payload.includedCount > 0 || Boolean(payload.latestCommentId);
+  const directApiDisabledForWake = truthLedger?.scope === "repository_baseline_review";
   const principalLabel = (principal: PaperclipWakeExecutionPrincipal | null) => {
     if (!principal || !principal.type) return "unknown";
     if (principal.type === "agent") return principal.agentId ? `agent ${principal.agentId}` : "agent";
@@ -407,13 +702,18 @@ export function renderPaperclipWakePrompt(
         "You are resuming an existing Paperclip session.",
         "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
         "Focus on the new wake delta below and continue the current task without restating the full heartbeat boilerplate.",
-        "Fetch the API thread only when `fallbackFetchNeeded` is true or you need broader history than this batch.",
+        directApiDisabledForWake
+          ? "For this repo-first review wake, do not fetch the API thread directly even when `fallbackFetchNeeded` is true; use this inline wake payload as the source of truth."
+          : "Fetch the API thread only when `fallbackFetchNeeded` is true or you need broader history than this batch.",
+        directApiDisabledForWake
+          ? "Do not call `/api/issues/{id}/heartbeat-context`, `/api/issues/{id}`, or `/api/issues/{id}/comments` directly in this wake."
+          : "Do not call `/api/issues/{id}/heartbeat-context` when `fallbackFetchNeeded` is false; use this inline wake payload as the source of truth for the current wake.",
         "",
-        `- reason: ${normalized.reason ?? "unknown"}`,
-        `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
-        `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
-        `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
-        `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
+        `- reason: ${payload.reason ?? "unknown"}`,
+        `- issue: ${payload.issue?.identifier ?? payload.issue?.id ?? "unknown"}${payload.issue?.title ? ` ${payload.issue.title}` : ""}`,
+        `- pending comments: ${payload.includedCount}/${payload.requestedCount}`,
+        `- latest comment id: ${payload.latestCommentId ?? "unknown"}`,
+        `- fallback fetch needed: ${payload.fallbackFetchNeeded ? "yes" : "no"}`,
       ]
     : [
         "## Paperclip Wake Payload",
@@ -424,26 +724,67 @@ export function renderPaperclipWakePrompt(
           ? "Before generic repo exploration or boilerplate heartbeat updates, acknowledge the latest comment and explain how it changes your next action."
           : "Before generic repo exploration or boilerplate heartbeat updates, explain how this wake changes your next action.",
         "Use this inline wake data first before refetching the issue thread.",
-        "Only fetch the API thread when `fallbackFetchNeeded` is true or you need broader history than this batch.",
+        directApiDisabledForWake
+          ? "For this repo-first review wake, do not fetch the API thread directly even when `fallbackFetchNeeded` is true; use this inline wake payload as the source of truth."
+          : "Only fetch the API thread when `fallbackFetchNeeded` is true or you need broader history than this batch.",
+        directApiDisabledForWake
+          ? "Do not call `/api/issues/{id}/heartbeat-context`, `/api/issues/{id}`, or `/api/issues/{id}/comments` directly in this wake."
+          : "Do not call `/api/issues/{id}/heartbeat-context` when `fallbackFetchNeeded` is false; use this inline wake payload as the source of truth for the current wake.",
         "",
-        `- reason: ${normalized.reason ?? "unknown"}`,
-        `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
-        `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
-        `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
-        `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
+        `- reason: ${payload.reason ?? "unknown"}`,
+        `- issue: ${payload.issue?.identifier ?? payload.issue?.id ?? "unknown"}${payload.issue?.title ? ` ${payload.issue.title}` : ""}`,
+        `- pending comments: ${payload.includedCount}/${payload.requestedCount}`,
+        `- latest comment id: ${payload.latestCommentId ?? "unknown"}`,
+        `- fallback fetch needed: ${payload.fallbackFetchNeeded ? "yes" : "no"}`,
       ];
 
-  if (normalized.issue?.status) {
-    lines.push(`- issue status: ${normalized.issue.status}`);
+  if (payload.issue?.status) {
+    lines.push(`- issue status: ${payload.issue.status}`);
   }
-  if (normalized.issue?.priority) {
-    lines.push(`- issue priority: ${normalized.issue.priority}`);
+  if (payload.issue?.priority) {
+    lines.push(`- issue priority: ${payload.issue.priority}`);
   }
-  if (normalized.checkedOutByHarness) {
+  if (payload.projectIssueSystem) {
+    const system = payload.projectIssueSystem;
+    lines.push("", "## Paperclip Project Issue System", "");
+    if (system.labels.length > 0) {
+      lines.push("Available labels:");
+      for (const label of system.labels) {
+        lines.push(`- ${label.name}${label.description ? `: ${label.description}` : ""}`);
+      }
+      lines.push("");
+    }
+    if (system.parentChildGuidance.length > 0) {
+      lines.push("Parent/sub-issue policy:", ...system.parentChildGuidance.map((entry) => `- ${entry}`), "");
+    }
+    if (system.blockingGuidance.length > 0) {
+      lines.push("Blocking policy:", ...system.blockingGuidance.map((entry) => `- ${entry}`), "");
+    }
+    if (system.labelUsageGuidance.length > 0) {
+      lines.push("Label usage:", ...system.labelUsageGuidance.map((entry) => `- ${entry}`), "");
+    }
+    if (system.reviewGuidance.length > 0 || system.approvalGuidance.length > 0) {
+      lines.push(
+        "Review and approval policy:",
+        ...system.reviewGuidance.map((entry) => `- Review: ${entry}`),
+        ...system.approvalGuidance.map((entry) => `- Approval: ${entry}`),
+        "",
+      );
+    }
+    if (system.canonicalDocs.length > 0 || system.suggestedVerificationCommands.length > 0) {
+      lines.push(
+        "Project defaults:",
+        ...system.canonicalDocs.map((entry) => `- Read first: ${entry}`),
+        ...system.suggestedVerificationCommands.map((entry) => `- Verify with: ${entry}`),
+        "",
+      );
+    }
+  }
+  if (payload.checkedOutByHarness) {
     lines.push("- checkout: already claimed by the harness for this run");
   }
-  if (normalized.missingCount > 0) {
-    lines.push(`- omitted comments: ${normalized.missingCount}`);
+  if (payload.missingCount > 0) {
+    lines.push(`- omitted comments: ${payload.missingCount}`);
   }
 
   if (executionStage) {
@@ -475,20 +816,53 @@ export function renderPaperclipWakePrompt(
     }
   }
 
-  if (normalized.checkedOutByHarness) {
+  if (truthLedger) {
+    lines.push("", "## Paperclip Truth Ledger", "");
+    if (truthLedger.scope === "repository_baseline_review") {
+      lines.push("- scope: repository baseline review");
+      lines.push(
+        "- direct Paperclip API reads and mutations are disabled for this wake; do not `curl` the issue thread or patch the issue yourself",
+        "- even when `fallbackFetchNeeded` is yes, use the inline wake payload, managed instructions, and repository evidence instead of direct API reads",
+      );
+    } else if (truthLedger.scope === "issue_scoped") {
+      lines.push("- scope: issue-scoped wake");
+    }
+    if (truthLedger.authoritativeSources.length > 0) {
+      lines.push(`- authoritative sources: ${truthLedger.authoritativeSources.join(" > ")}`);
+    }
+    if (truthLedger.issueCommentRequired) {
+      lines.push("- this wake requires an issue-thread update before the run is considered satisfied");
+    }
+    if (truthLedger.finalSummaryMayBecomeIssueComment) {
+      lines.push("- your final summary may be persisted by Paperclip as the issue-thread update for this run");
+    }
+    if (truthLedger.localShellProbesAreAuxiliary) {
+      lines.push("- local shell probes are auxiliary diagnostics only and cannot override inline wake data or actual Paperclip mutation results");
+    }
+    if (truthLedger.apiRootIsNotOperationalProof) {
+      lines.push("- do not treat the bare `PAPERCLIP_API_URL` root as an operational proof probe; use `PAPERCLIP_API_BASE` or `PAPERCLIP_HEALTH_URL` instead");
+    }
     lines.push(
-      "",
-      "The harness already checked out this issue for the current run.",
-      "Do not call `/api/issues/{id}/checkout` again unless you intentionally switch to a different task.",
+      "If Paperclip persists your final summary as the issue comment, do not say the thread may have remained unupdated unless an actual Paperclip API mutation failed in this run.",
       "",
     );
   }
 
-  if (normalized.comments.length > 0) {
+  if (payload.checkedOutByHarness) {
+    lines.push(
+      "",
+      "The harness already checked out this issue for the current run.",
+      "Do not call `/api/issues/{id}/checkout` again unless you intentionally switch to a different task.",
+      "Do not use raw `curl` control-plane probes for routine confirmation when this wake payload already gives you the current issue state.",
+      "",
+    );
+  }
+
+  if (payload.comments.length > 0) {
     lines.push("New comments in order:");
   }
 
-  for (const [index, comment] of normalized.comments.entries()) {
+  for (const [index, comment] of payload.comments.entries()) {
     const authorLabel = comment.authorId
       ? `${comment.authorType ?? "unknown"} ${comment.authorId}`
       : comment.authorType ?? "unknown";
@@ -558,9 +932,51 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
   );
   const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
-  const apiUrl = process.env.PAPERCLIP_API_URL ?? `http://${runtimeHost}:${runtimePort}`;
+  const apiUrl = (process.env.PAPERCLIP_API_URL ?? `http://${runtimeHost}:${runtimePort}`).replace(/\/+$/, "");
+  const apiBase = apiUrl.endsWith("/api") ? apiUrl : `${apiUrl}/api`;
   vars.PAPERCLIP_API_URL = apiUrl;
+  vars.PAPERCLIP_API_BASE = apiBase;
+  vars.PAPERCLIP_HEALTH_URL = `${apiBase}/health`;
   return vars;
+}
+
+export function applyPaperclipWorkspaceEnv(
+  env: Record<string, string>,
+  input: {
+    workspaceCwd?: string | null;
+    workspaceSource?: string | null;
+    workspaceStrategy?: string | null;
+    workspaceId?: string | null;
+    workspaceRepoUrl?: string | null;
+    workspaceRepoRef?: string | null;
+    workspaceBranch?: string | null;
+    workspaceWorktreePath?: string | null;
+    agentHome?: string | null;
+  },
+): Record<string, string> {
+  const mappings = [
+    ["PAPERCLIP_WORKSPACE_CWD", input.workspaceCwd],
+    ["PAPERCLIP_WORKSPACE_SOURCE", input.workspaceSource],
+    ["PAPERCLIP_WORKSPACE_STRATEGY", input.workspaceStrategy],
+    ["PAPERCLIP_WORKSPACE_ID", input.workspaceId],
+    ["PAPERCLIP_WORKSPACE_REPO_URL", input.workspaceRepoUrl],
+    ["PAPERCLIP_WORKSPACE_REPO_REF", input.workspaceRepoRef],
+    ["PAPERCLIP_WORKSPACE_BRANCH", input.workspaceBranch],
+    ["PAPERCLIP_WORKSPACE_WORKTREE_PATH", input.workspaceWorktreePath],
+    ["AGENT_HOME", input.agentHome],
+  ] as const;
+
+  for (const [key, value] of mappings) {
+    if (typeof value === "string" && value.length > 0) {
+      env[key] = value;
+    }
+  }
+
+  return env;
+}
+
+export function resolvePaperclipWorkspaceBranch(workspaceContext: Record<string, unknown>): string {
+  return asString(workspaceContext.branchName, "") || asString(workspaceContext.branch, "");
 }
 
 export function defaultPathForPlatform() {
@@ -1081,6 +1497,7 @@ export async function runChildProcess(
     onLogError?: (err: unknown, runId: string, message: string) => void;
     onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
     stdin?: string;
+    terminalResultCleanup?: TerminalResultCleanupOptions;
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
@@ -1129,11 +1546,44 @@ export async function runChildProcess(
         let stdout = "";
         let stderr = "";
         let logChain: Promise<void> = Promise.resolve();
+        let childExited = false;
+        let terminalResultSeen = false;
+        let terminalResultCleanupTimer: NodeJS.Timeout | null = null;
+
+        const clearTerminalResultCleanupTimer = () => {
+          if (!terminalResultCleanupTimer) return;
+          clearTimeout(terminalResultCleanupTimer);
+          terminalResultCleanupTimer = null;
+        };
+
+        const maybeArmTerminalResultCleanup = () => {
+          if (!opts.terminalResultCleanup || !terminalResultSeen || !childExited || !processGroupId) return;
+          if (terminalResultCleanupTimer) return;
+          terminalResultCleanupTimer = setTimeout(() => {
+            signalRunningProcess({ child, processGroupId }, "SIGTERM");
+            setTimeout(() => {
+              signalRunningProcess({ child, processGroupId }, "SIGKILL");
+            }, Math.max(1, opts.graceSec) * 1000);
+          }, Math.max(0, opts.terminalResultCleanup.graceMs));
+        };
+
+        const recordOutput = (stream: "stdout" | "stderr", text: string) => {
+          if (stream === "stdout") stdout = appendWithCap(stdout, text);
+          else stderr = appendWithCap(stderr, text);
+          if (opts.terminalResultCleanup && !terminalResultSeen) {
+            const output = stream === "stdout" ? stdout : `${stdout}\n${stderr}`;
+            terminalResultSeen = opts.terminalResultCleanup.hasTerminalResult(
+              output.slice(-MAX_TERMINAL_RESULT_SCAN_BYTES),
+            );
+            maybeArmTerminalResultCleanup();
+          }
+        };
 
         const timeout =
           opts.timeoutSec > 0
             ? setTimeout(() => {
                 timedOut = true;
+                clearTerminalResultCleanupTimer();
                 signalRunningProcess({ child, processGroupId }, "SIGTERM");
                 setTimeout(() => {
                   signalRunningProcess({ child, processGroupId }, "SIGKILL");
@@ -1143,7 +1593,7 @@ export async function runChildProcess(
 
         child.stdout?.on("data", (chunk: unknown) => {
           const text = String(chunk);
-          stdout = appendWithCap(stdout, text);
+          recordOutput("stdout", text);
           logChain = logChain
             .then(() => opts.onLog("stdout", text))
             .catch((err) => onLogError(err, runId, "failed to append stdout log chunk"));
@@ -1151,7 +1601,7 @@ export async function runChildProcess(
 
         child.stderr?.on("data", (chunk: unknown) => {
           const text = String(chunk);
-          stderr = appendWithCap(stderr, text);
+          recordOutput("stderr", text);
           logChain = logChain
             .then(() => opts.onLog("stderr", text))
             .catch((err) => onLogError(err, runId, "failed to append stderr log chunk"));
@@ -1168,6 +1618,7 @@ export async function runChildProcess(
 
         child.on("error", (err: Error) => {
           if (timeout) clearTimeout(timeout);
+          clearTerminalResultCleanupTimer();
           runningProcesses.delete(runId);
           const errno = (err as NodeJS.ErrnoException).code;
           const pathValue = mergedEnv.PATH ?? mergedEnv.Path ?? "";
@@ -1178,8 +1629,14 @@ export async function runChildProcess(
           reject(new Error(msg));
         });
 
+        child.on("exit", () => {
+          childExited = true;
+          maybeArmTerminalResultCleanup();
+        });
+
         child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
           if (timeout) clearTimeout(timeout);
+          clearTerminalResultCleanupTimer();
           runningProcesses.delete(runId);
           void logChain.finally(() => {
             resolve({

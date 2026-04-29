@@ -4,9 +4,10 @@ import path from "node:path";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
-const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
+const COPIED_SHARED_FILES = ["config.json", "instructions.md"] as const;
 const SYMLINKED_SHARED_FILES = ["auth.json"] as const;
 const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";
+const CODEX_HOME_ROOT_ENV = "PAPERCLIP_CODEX_HOME_ROOT";
 
 function nonEmpty(value: string | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -32,10 +33,12 @@ export function resolveManagedCodexHomeDir(
   companyId?: string,
 ): string {
   const paperclipHome = nonEmpty(env.PAPERCLIP_HOME) ?? path.resolve(os.homedir(), ".paperclip");
+  const managedCodexHomeRoot = nonEmpty(env[CODEX_HOME_ROOT_ENV]);
+  const root = managedCodexHomeRoot ? path.resolve(managedCodexHomeRoot) : paperclipHome;
   const instanceId = nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? DEFAULT_PAPERCLIP_INSTANCE_ID;
   return companyId
-    ? path.resolve(paperclipHome, "instances", instanceId, "companies", companyId, "codex-home")
-    : path.resolve(paperclipHome, "instances", instanceId, "codex-home");
+    ? path.resolve(root, "instances", instanceId, "companies", companyId, "codex-home")
+    : path.resolve(root, "instances", instanceId, "codex-home");
 }
 
 async function ensureParentDir(target: string): Promise<void> {
@@ -71,6 +74,41 @@ async function ensureCopiedFile(target: string, source: string): Promise<void> {
   await fs.copyFile(source, target);
 }
 
+async function removeManagedCodexHomeContamination(
+  targetHome: string,
+  onLog: AdapterExecutionContext["onLog"],
+): Promise<void> {
+  const staleConfigToml = path.join(targetHome, "config.toml");
+  const stalePluginsDir = path.join(targetHome, ".tmp", "plugins");
+  const stalePluginsSha = path.join(targetHome, ".tmp", "plugins.sha");
+  const staleRemotePluginSyncMarker = path.join(targetHome, ".tmp", "app-server-remote-plugin-sync-v1");
+
+  const removed: string[] = [];
+  if (await pathExists(staleConfigToml)) {
+    await fs.rm(staleConfigToml, { force: true });
+    removed.push("config.toml");
+  }
+  if (await pathExists(stalePluginsDir)) {
+    await fs.rm(stalePluginsDir, { recursive: true, force: true });
+    removed.push(".tmp/plugins");
+  }
+  if (await pathExists(stalePluginsSha)) {
+    await fs.rm(stalePluginsSha, { force: true });
+    removed.push(".tmp/plugins.sha");
+  }
+  if (await pathExists(staleRemotePluginSyncMarker)) {
+    await fs.rm(staleRemotePluginSyncMarker, { force: true });
+    removed.push(".tmp/app-server-remote-plugin-sync-v1");
+  }
+
+  if (removed.length > 0) {
+    await onLog(
+      "stdout",
+      `[paperclip] Removed incompatible shared Codex bootstrap artifacts from managed home: ${removed.join(", ")}\n`,
+    );
+  }
+}
+
 export async function prepareManagedCodexHome(
   env: NodeJS.ProcessEnv,
   onLog: AdapterExecutionContext["onLog"],
@@ -94,6 +132,8 @@ export async function prepareManagedCodexHome(
     if (!(await pathExists(source))) continue;
     await ensureCopiedFile(path.join(targetHome, name), source);
   }
+
+  await removeManagedCodexHomeContamination(targetHome, onLog);
 
   await onLog(
     "stdout",

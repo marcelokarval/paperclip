@@ -25,9 +25,9 @@ import {
   registerServerAdapter,
   unregisterServerAdapter,
   isOverridePaused,
+  resolveExternalAdapterRegistration,
   setOverridePaused,
 } from "../adapters/registry.js";
-import { getAdapterSessionManagement } from "@paperclipai/adapter-utils";
 import {
   listAdapterPlugins,
   addAdapterPlugin,
@@ -147,16 +147,8 @@ async function normalizeLocalPath(rawPath: string): Promise<string> {
   return rawPath;
 }
 
-/**
- * Register an adapter module into the server registry, filling in
- * sessionManagement from the host.
- */
 function registerWithSessionManagement(adapter: ServerAdapterModule): void {
-  const wrapped: ServerAdapterModule = {
-    ...adapter,
-    sessionManagement: getAdapterSessionManagement(adapter.type) ?? undefined,
-  };
-  registerServerAdapter(wrapped);
+  registerServerAdapter(resolveExternalAdapterRegistration(adapter));
 }
 
 // ---------------------------------------------------------------------------

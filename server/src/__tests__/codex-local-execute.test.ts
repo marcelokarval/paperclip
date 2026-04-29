@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execute } from "@paperclipai/adapter-codex-local/server";
 
-async function writeFakeCodexCommand(commandPath: string): Promise<void> {
+async function writeFakeCodexCommand(commandPath: string, options: { stderrLines?: string[] } = {}): Promise<void> {
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
+
+for (const line of ${JSON.stringify(options.stderrLines ?? [])}) {
+  console.error(line);
+}
 
 const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
 const payload = {
@@ -41,6 +46,10 @@ type LogEntry = {
   stream: "stdout" | "stderr";
   chunk: string;
 };
+
+function buildInstructionsFingerprint(instructionsPath: string, instructions: string) {
+  return createHash("sha256").update(`${instructionsPath}\n${instructions}`).digest("hex");
+}
 
 describe("codex execute", () => {
   it("uses a Paperclip-managed CODEX_HOME outside worktree mode while preserving shared auth and config", async () => {
@@ -83,6 +92,7 @@ describe("codex execute", () => {
           id: "agent-1",
           companyId: "company-1",
           name: "Codex Coder",
+          role: "ceo",
           adapterType: "codex_local",
           adapterConfig: {},
         },
@@ -112,13 +122,20 @@ describe("codex execute", () => {
 
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
       expect(capture.codexHome).toBe(managedCodexHome);
+      expect(capture.argv).toEqual([
+        "exec",
+        "--json",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "-",
+      ]);
+      expect(capture.argv).not.toContain("--ignore-user-config");
+      expect(capture.argv).not.toContain("--disable");
 
       const managedAuth = path.join(managedCodexHome, "auth.json");
       const managedConfig = path.join(managedCodexHome, "config.toml");
       expect((await fs.lstat(managedAuth)).isSymbolicLink()).toBe(true);
       expect(await fs.realpath(managedAuth)).toBe(await fs.realpath(path.join(sharedCodexHome, "auth.json")));
-      expect((await fs.lstat(managedConfig)).isFile()).toBe(true);
-      expect(await fs.readFile(managedConfig, "utf8")).toBe('model = "codex-mini-latest"\n');
+      await expect(fs.lstat(managedConfig)).rejects.toThrow();
       await expect(fs.lstat(path.join(sharedCodexHome, "companies", "company-1"))).rejects.toThrow();
       expect(logs).toContainEqual(
         expect.objectContaining({
@@ -137,6 +154,146 @@ describe("codex execute", () => {
       else process.env.PAPERCLIP_IN_WORKTREE = previousPaperclipInWorktree;
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousCodexHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("uses PAPERCLIP_CODEX_HOME_ROOT for managed CODEX_HOME without moving Paperclip data", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-managed-root-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    const sharedCodexHome = path.join(root, "shared-codex-home");
+    const paperclipHome = path.join(root, "paperclip-home");
+    const managedCodexRoot = path.join(root, "paperclip-codex-homes");
+    const managedCodexHome = path.join(
+      managedCodexRoot,
+      "instances",
+      "default",
+      "companies",
+      "company-1",
+      "codex-home",
+    );
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(sharedCodexHome, { recursive: true });
+    await fs.writeFile(path.join(sharedCodexHome, "auth.json"), '{"token":"shared"}\n', "utf8");
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    const previousPaperclipCodexHomeRoot = process.env.PAPERCLIP_CODEX_HOME_ROOT;
+    const previousCodexHome = process.env.CODEX_HOME;
+    process.env.HOME = root;
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_CODEX_HOME_ROOT = managedCodexRoot;
+    process.env.CODEX_HOME = sharedCodexHome;
+
+    try {
+      const result = await execute({
+        runId: "run-managed-root",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          role: "ceo",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.codexHome).toBe(managedCodexHome);
+      await expect(fs.lstat(path.join(paperclipHome, "instances", "default", "companies", "company-1", "codex-home"))).rejects.toThrow();
+      expect((await fs.lstat(path.join(managedCodexHome, "auth.json"))).isSymbolicLink()).toBe(true);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      if (previousPaperclipCodexHomeRoot === undefined) delete process.env.PAPERCLIP_CODEX_HOME_ROOT;
+      else process.env.PAPERCLIP_CODEX_HOME_ROOT = previousPaperclipCodexHomeRoot;
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("filters successful Codex rollout persistence noise from stderr", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-rollout-noise-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath, {
+      stderrLines: [
+        '2026-04-29T04:00:14.665859Z ERROR codex_core::session: failed to record rollout items: thread 019dd761-f51b-7850-842c-11774e07062c not found',
+      ],
+    });
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    const logs: LogEntry[] = [];
+    try {
+      const result = await execute({
+        runId: "run-rollout-noise",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          role: "ceo",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+      expect((result.resultJson as { stderr?: string } | null)?.stderr).toBe("");
+      expect(logs).not.toContainEqual(
+        expect.objectContaining({
+          stream: "stderr",
+          chunk: expect.stringContaining("failed to record rollout items"),
+        }),
+      );
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
       await fs.rm(root, { recursive: true, force: true });
     }
   });
@@ -193,6 +350,95 @@ describe("codex execute", () => {
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("removes stale plugin sync artifacts from an existing managed CODEX_HOME", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-plugin-cleanup-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    const sharedCodexHome = path.join(root, "shared-codex-home");
+    const paperclipHome = path.join(root, "paperclip-home");
+    const managedCodexHome = path.join(
+      paperclipHome,
+      "instances",
+      "default",
+      "companies",
+      "company-1",
+      "codex-home",
+    );
+    const stalePluginsDir = path.join(managedCodexHome, ".tmp", "plugins");
+    const stalePluginsSha = path.join(managedCodexHome, ".tmp", "plugins.sha");
+    const staleRemotePluginSyncMarker = path.join(managedCodexHome, ".tmp", "app-server-remote-plugin-sync-v1");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(sharedCodexHome, { recursive: true });
+    await fs.mkdir(stalePluginsDir, { recursive: true });
+    await fs.writeFile(path.join(stalePluginsDir, "README.md"), "stale plugin cache\n", "utf8");
+    await fs.writeFile(stalePluginsSha, "stale-sha\n", "utf8");
+    await fs.writeFile(staleRemotePluginSyncMarker, "stale-sync\n", "utf8");
+    await fs.writeFile(path.join(sharedCodexHome, "auth.json"), '{"token":"shared"}\n', "utf8");
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    const previousCodexHome = process.env.CODEX_HOME;
+    process.env.HOME = root;
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.CODEX_HOME = sharedCodexHome;
+
+    const logs: LogEntry[] = [];
+    try {
+      const result = await execute({
+        runId: "run-plugin-cleanup",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      await expect(fs.lstat(stalePluginsDir)).rejects.toThrow();
+      await expect(fs.lstat(stalePluginsSha)).rejects.toThrow();
+      await expect(fs.lstat(staleRemotePluginSyncMarker)).rejects.toThrow();
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          stream: "stdout",
+          chunk: expect.stringContaining(
+            "Removed incompatible shared Codex bootstrap artifacts from managed home: .tmp/plugins, .tmp/plugins.sha, .tmp/app-server-remote-plugin-sync-v1",
+          ),
+        }),
+      );
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
       await fs.rm(root, { recursive: true, force: true });
     }
   });
@@ -645,6 +891,20 @@ describe("codex execute", () => {
           issueId: "issue-1",
           taskId: "issue-1",
           wakeReason: "issue_assigned",
+          paperclipTruthLedger: {
+            scope: "repository_baseline_review",
+            authoritativeSources: [
+              "wake_payload",
+              "managed_instructions",
+              "project_packet",
+              "paperclip_api_mutations",
+              "runtime_reconciliation",
+            ],
+            issueCommentRequired: true,
+            finalSummaryMayBecomeIssueComment: true,
+            localShellProbesAreAuxiliary: true,
+            apiRootIsNotOperationalProof: true,
+          },
           paperclipWake: {
             reason: "issue_assigned",
             issue: {
@@ -701,6 +961,19 @@ describe("codex execute", () => {
         "Before generic repo exploration or boilerplate heartbeat updates, explain how this wake changes your next action.",
       );
       expect(capture.prompt).toContain("The harness already checked out this issue for the current run.");
+      expect(capture.prompt).toContain(
+        "For this repo-first review wake, do not fetch the API thread directly even when `fallbackFetchNeeded` is true; use this inline wake payload as the source of truth.",
+      );
+      expect(capture.prompt).toContain(
+        "Do not call `/api/issues/{id}/heartbeat-context`, `/api/issues/{id}`, or `/api/issues/{id}/comments` directly in this wake.",
+      );
+      expect(capture.prompt).toContain("## Paperclip Truth Ledger");
+      expect(capture.prompt).toContain("- scope: repository baseline review");
+      expect(capture.prompt).toContain("direct Paperclip API reads and mutations are disabled for this wake");
+      expect(capture.prompt).toContain("your final summary may be persisted by Paperclip as the issue-thread update for this run");
+      expect(capture.paperclipEnvKeys).not.toContain("PAPERCLIP_API_KEY");
+      expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_DIRECT_API_DISABLED");
+      expect(capture.argv).not.toContain("--dangerously-bypass-approvals-and-sandbox");
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
@@ -895,6 +1168,8 @@ describe("codex execute", () => {
         expect.arrayContaining([
           "PAPERCLIP_AGENT_ID",
           "PAPERCLIP_API_KEY",
+          "PAPERCLIP_API_BASE",
+          "PAPERCLIP_HEALTH_URL",
           "PAPERCLIP_API_URL",
           "PAPERCLIP_COMPANY_ID",
           "PAPERCLIP_RUN_ID",
@@ -906,8 +1181,7 @@ describe("codex execute", () => {
 
       expect((await fs.lstat(isolatedAuth)).isSymbolicLink()).toBe(true);
       expect(await fs.realpath(isolatedAuth)).toBe(await fs.realpath(path.join(sharedCodexHome, "auth.json")));
-      expect((await fs.lstat(isolatedConfig)).isFile()).toBe(true);
-      expect(await fs.readFile(isolatedConfig, "utf8")).toBe('model = "codex-mini-latest"\n');
+      await expect(fs.lstat(isolatedConfig)).rejects.toThrow();
       expect((await fs.lstat(homeSkill)).isSymbolicLink()).toBe(true);
       expect(logs).toContainEqual(
         expect.objectContaining({
@@ -932,6 +1206,352 @@ describe("codex execute", () => {
       else process.env.PAPERCLIP_IN_WORKTREE = previousPaperclipInWorktree;
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousCodexHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("removes stale shared config bootstrap from an existing managed CODEX_HOME", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-cleanup-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    const sharedCodexHome = path.join(root, "shared-codex-home");
+    const paperclipHome = path.join(root, "paperclip-home");
+    const managedCodexHome = path.join(
+      paperclipHome,
+      "instances",
+      "default",
+      "companies",
+      "company-1",
+      "codex-home",
+    );
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(sharedCodexHome, { recursive: true });
+    await fs.mkdir(path.join(managedCodexHome, ".tmp", "plugins"), { recursive: true });
+    await fs.writeFile(path.join(sharedCodexHome, "auth.json"), '{"token":"shared"}\n', "utf8");
+    await fs.writeFile(path.join(sharedCodexHome, "config.toml"), 'model = "codex-mini-latest"\n', "utf8");
+    await fs.writeFile(path.join(managedCodexHome, "config.toml"), 'plugin = "legacy"\n', "utf8");
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    const previousPaperclipInWorktree = process.env.PAPERCLIP_IN_WORKTREE;
+    const previousCodexHome = process.env.CODEX_HOME;
+    process.env.HOME = root;
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    delete process.env.PAPERCLIP_INSTANCE_ID;
+    delete process.env.PAPERCLIP_IN_WORKTREE;
+    process.env.CODEX_HOME = sharedCodexHome;
+
+    try {
+      const logs: LogEntry[] = [];
+      const result = await execute({
+        runId: "run-cleanup",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      await expect(fs.lstat(path.join(managedCodexHome, "config.toml"))).rejects.toThrow();
+      await expect(fs.lstat(path.join(managedCodexHome, ".tmp", "plugins"))).rejects.toThrow();
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          stream: "stdout",
+          chunk: expect.stringContaining("Removed incompatible shared Codex bootstrap artifacts"),
+        }),
+      );
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
+      if (previousPaperclipInWorktree === undefined) delete process.env.PAPERCLIP_IN_WORKTREE;
+      else process.env.PAPERCLIP_IN_WORKTREE = previousPaperclipInWorktree;
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("starts a fresh session when managed instructions changed since the saved session", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-instructions-rotation-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    const managedRoot = path.join(root, "paperclip", "agent", "instructions");
+    const instructionsPath = path.join(managedRoot, "AGENTS.md");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(managedRoot, { recursive: true });
+    await fs.writeFile(instructionsPath, "You are managed instructions v2.\n", "utf8");
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    let invocationPrompt = "";
+    let invocationNotes: string[] = [];
+    let promptMetrics: Record<string, number> = {};
+    try {
+      const result = await execute({
+        runId: "run-instructions-rotation",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: {
+            sessionId: "codex-session-1",
+            cwd: workspace,
+            instructionsFingerprint: buildInstructionsFingerprint(
+              instructionsPath,
+              "You are managed instructions v1.\n",
+            ),
+          },
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          instructionsFilePath: instructionsPath,
+          instructionsBundleMode: "managed",
+          instructionsRootPath: managedRoot,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          issueId: "issue-1",
+          taskId: "issue-1",
+          wakeReason: "issue_commented",
+          wakeCommentId: "comment-2",
+          paperclipWake: {
+            reason: "issue_commented",
+            issue: {
+              id: "issue-1",
+              identifier: "PAP-874",
+              title: "chat-speed issues",
+              status: "in_progress",
+              priority: "medium",
+            },
+            commentIds: ["comment-2"],
+            latestCommentId: "comment-2",
+            comments: [
+              {
+                id: "comment-2",
+                issueId: "issue-1",
+                body: "Second comment",
+                bodyTruncated: false,
+                createdAt: "2026-03-28T14:35:10.000Z",
+                author: { type: "user", id: "user-1" },
+              },
+            ],
+            commentWindow: {
+              requestedCount: 1,
+              includedCount: 1,
+              missingCount: 0,
+            },
+            truncated: false,
+            fallbackFetchNeeded: false,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+        onMeta: async (meta) => {
+          invocationPrompt = meta.prompt ?? "";
+          invocationNotes = meta.commandNotes ?? [];
+          promptMetrics = meta.promptMetrics ?? {};
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+      expect(result.sessionParams).toMatchObject({
+        sessionId: "codex-session-1",
+        cwd: workspace,
+      });
+      expect(typeof result.sessionParams?.instructionsFingerprint).toBe("string");
+      expect(result.sessionParams?.instructionsFingerprint).not.toBe(
+        buildInstructionsFingerprint(
+          instructionsPath,
+          "You are managed instructions v1.\n",
+        ),
+      );
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.argv).not.toEqual(expect.arrayContaining(["resume", "codex-session-1", "-"]));
+      expect(capture.prompt).toContain("You are managed instructions v2.");
+      expect(capture.prompt).toContain("Follow the paperclip heartbeat.");
+      expect(invocationPrompt).not.toContain("## Paperclip Resume Delta");
+      expect(invocationNotes).not.toContain(
+        "Skipped stdin instruction reinjection because an existing Codex session is being resumed with a wake delta.",
+      );
+      expect(promptMetrics.instructionsChars).toBeGreaterThan(0);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("injects a sibling PROJECT_PACKET.md beside the configured instructions file", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-project-packet-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    const instructionsPath = path.join(workspace, "AGENTS.md");
+    const packetPath = path.join(workspace, "PROJECT_PACKET.md");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(instructionsPath, "You are managed instructions.\n", "utf8");
+    await fs.writeFile(packetPath, "# Project Packet\nProject: Prop4You\n", "utf8");
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-project-packet",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          instructionsFilePath: instructionsPath,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.prompt).toContain("You are managed instructions.");
+      expect(capture.prompt).toContain("## Supplemental instructions from ./PROJECT_PACKET.md");
+      expect(capture.prompt).toContain("Project: Prop4You");
+      expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_PROJECT_PACKET_PRESENT");
+      expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_PROJECT_PACKET_PATH");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("allows a managed instructions bundle outside the workspace cwd", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-managed-root-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    const managedRoot = path.join(root, "paperclip", "agent", "instructions");
+    const instructionsPath = path.join(managedRoot, "AGENTS.md");
+    const packetPath = path.join(managedRoot, "PROJECT_PACKET.md");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(managedRoot, { recursive: true });
+    await fs.writeFile(instructionsPath, "You are managed instructions outside cwd.\n", "utf8");
+    await fs.writeFile(packetPath, "# Project Packet\nProject: Prop4You\n", "utf8");
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const logChunks: string[] = [];
+      const result = await execute({
+        runId: "run-managed-root",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          instructionsFilePath: instructionsPath,
+          instructionsBundleMode: "managed",
+          instructionsRootPath: managedRoot,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async (_stream, chunk) => {
+          logChunks.push(chunk);
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+      expect(logChunks.join("")).not.toContain("instructionsFilePath must stay within cwd");
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.prompt).toContain("You are managed instructions outside cwd.");
+      expect(capture.prompt).toContain("## Supplemental instructions from ./PROJECT_PACKET.md");
+      expect(capture.prompt).toContain("Project: Prop4You");
+      expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_PROJECT_PACKET_PRESENT");
+      expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_PROJECT_PACKET_PATH");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
       await fs.rm(root, { recursive: true, force: true });
     }
   });
