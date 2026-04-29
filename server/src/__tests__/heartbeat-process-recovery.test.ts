@@ -16,6 +16,7 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
+  issueRelations,
   issues,
 } from "@paperclipai/db";
 import {
@@ -189,6 +190,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(agentRuntimeState);
     await db.delete(companySkills);
     await db.delete(issueComments);
+    await db.delete(issueRelations);
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
@@ -677,7 +679,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
-  async function seedQueuedIssueWake(input: { assigneeAgentId: string | null; status?: "todo" | "done" | "cancelled" }) {
+  async function seedQueuedIssueWake(input: {
+    assigneeAgentId: string | null;
+    status?: "todo" | "blocked" | "done" | "cancelled";
+  }) {
     const companyId = randomUUID();
     const oldAgentId = randomUUID();
     const newAgentId = input.assigneeAgentId ?? randomUUID();
@@ -752,7 +757,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       updatedAt: new Date("2026-03-19T00:00:00.000Z"),
     });
 
-    return { runId, wakeupRequestId };
+    return { companyId, oldAgentId, issueId, runId, wakeupRequestId };
   }
 
   it("cancels a queued issue wake when the issue assignee changed before claim", async () => {
@@ -814,6 +819,41 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const run = await heartbeat.getRun(runId);
     expect(run?.status).toBe("cancelled");
     expect(run?.error).toContain("issue is cancelled");
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("cancelled");
+  });
+
+  it("cancels a queued issue wake when the issue is still blocked by an unfinished blocker", async () => {
+    const { companyId, oldAgentId, issueId, runId, wakeupRequestId } = await seedQueuedIssueWake({
+      assigneeAgentId: randomUUID(),
+      status: "blocked",
+    });
+    await db.update(issues).set({ assigneeAgentId: oldAgentId }).where(eq(issues.id, issueId));
+    const blockerIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: blockerIssueId,
+      companyId,
+      title: "Open blocker",
+      status: "todo",
+      priority: "medium",
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("cancelled");
+    expect(run?.error).toContain("issue is blocked by unresolved blockers");
     const wakeup = await db
       .select()
       .from(agentWakeupRequests)

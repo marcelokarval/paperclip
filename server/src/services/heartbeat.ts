@@ -23,6 +23,7 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
+  issueRelations,
   issues,
   labels,
   projects,
@@ -2707,6 +2708,9 @@ export function heartbeatService(db: Db) {
     if (issue.status === "done" || issue.status === "cancelled") {
       return `issue is ${issue.status}`;
     }
+    if (issue.status === "blocked" && await hasUnresolvedIssueBlockers(run.companyId, issue.id)) {
+      return "issue is blocked by unresolved blockers";
+    }
     if (
       issue.assigneeAgentId !== run.agentId &&
       readNonEmptyString(context.wakeReason) !== "issue_comment_mentioned"
@@ -2715,6 +2719,25 @@ export function heartbeatService(db: Db) {
     }
 
     return null;
+  }
+
+  async function hasUnresolvedIssueBlockers(companyId: string, issueId: string) {
+    const blocker = await db
+      .select({ id: issues.id })
+      .from(issueRelations)
+      .innerJoin(issues, eq(issues.id, issueRelations.issueId))
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.relatedIssueId, issueId),
+          eq(issueRelations.type, "blocks"),
+          eq(issues.companyId, companyId),
+          sql`${issues.status} not in ('done', 'cancelled')`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return Boolean(blocker);
   }
 
   async function cancelQueuedRunForStaleIssue(run: typeof heartbeatRuns.$inferSelect, reason: string) {
