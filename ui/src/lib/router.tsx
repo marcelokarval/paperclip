@@ -4,17 +4,12 @@ import type { NavigateOptions, To } from "react-router-dom";
 import type { Issue } from "@paperclipai/shared";
 import { useCompany } from "@/context/CompanyContext";
 import { IssueLinkQuicklook } from "@/components/IssueLinkQuicklook";
+import { parseIssuePathIdFromPath } from "@/lib/issue-reference";
 import {
   applyCompanyPrefix,
   extractCompanyPrefixFromPath,
   normalizeCompanyPrefix,
 } from "@/lib/company-routes";
-
-function parseIssuePathIdFromPath(pathname: string | null | undefined): string | null {
-  if (!pathname) return null;
-  const match = pathname.match(/(?:^|\/)issues\/([^/?#]+)/);
-  return match?.[1] ?? null;
-}
 
 function resolveTo(to: To, companyPrefix: string | null): To {
   if (typeof to === "string") {

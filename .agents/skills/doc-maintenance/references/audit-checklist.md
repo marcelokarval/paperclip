@@ -83,3 +83,18 @@ against the change summary from git history.
 ### User Flow
 - [ ] Dream scenario still reflects actual onboarding
 - [ ] Steps are achievable with current features
+
+## Governance Exception
+
+Use this section only when the review explicitly concerns contributor/runtime
+governance.
+
+### AGENTS.md
+- [ ] Runtime vs local fork guidance matches the current checkout
+- [ ] Source-of-truth rules do not point at untracked or absent paths
+- [ ] Upstream review and verification expectations match current workflow
+
+### Repo-owned skills
+- [ ] `.agents/skills/` and `skills/` guidance matches tracked files
+- [ ] Any tracked Codex skill seed catalog is included in parity checks
+- [ ] Global `~/.codex/skills/` is not documented as the authoring source for repo-governed behavior

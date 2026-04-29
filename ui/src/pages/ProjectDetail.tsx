@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Link, useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PROJECT_COLORS, isUuidLike, type BudgetPolicySummary, type ExecutionWorkspace } from "@paperclipai/shared";
+import { PROJECT_COLORS, isUuidLike, type BudgetPolicySummary, type ExecutionWorkspace, type Project } from "@paperclipai/shared";
 import { budgetsApi } from "../api/budgets";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -9,7 +9,6 @@ import { projectsApi } from "../api/projects";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
-import { assetsApi } from "../api/assets";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
 import { useToastActions } from "../context/ToastContext";
@@ -25,16 +24,29 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { ProjectWorkspaceSummaryCard } from "../components/ProjectWorkspaceSummaryCard";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
+import { readRepositoryDocumentationBaseline } from "../lib/repository-documentation-baseline";
+import {
+  buildBaselineCeoReviewRequestComment,
+  buildRepositoryBaselineReviewFingerprint,
+  buildExecutionContractDraft,
+  isExecutionContractComplete,
+  normalizeExecutionContractCommands,
+  normalizeExecutionContractText,
+  readBaselineReviewRequestPresentForFingerprint,
+  readBaselineReviewResponsePresentForFingerprint,
+} from "../lib/repository-baseline-actions";
 import { projectRouteRef } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
-import { Loader2 } from "lucide-react";
+import { getProjectOverviewModel } from "../lib/project-operating-context";
+import { ProjectIntakePanel } from "../components/ProjectIntakePanel";
+import { ProjectStaffingPanel } from "../components/ProjectStaffingPanel";
 
 /* ── Top-level tab types ── */
 
-type ProjectBaseTab = "overview" | "list" | "workspaces" | "configuration" | "budget";
+type ProjectBaseTab = "overview" | "list" | "workspaces" | "intake" | "configuration" | "budget";
 type ProjectPluginTab = `plugin:${string}`;
 type ProjectTab = ProjectBaseTab | ProjectPluginTab;
 
@@ -48,6 +60,7 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
   if (projectsIdx === -1 || segments[projectsIdx + 1] !== projectId) return null;
   const tab = segments[projectsIdx + 2];
   if (tab === "overview") return "overview";
+  if (tab === "intake") return "intake";
   if (tab === "configuration") return "configuration";
   if (tab === "budget") return "budget";
   if (tab === "issues") return "list";
@@ -59,25 +72,84 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
 
 function OverviewContent({
   project,
-  onUpdate,
-  imageUploadHandler,
+  companyPrefix,
 }: {
-  project: { description: string | null; status: string; targetDate: string | null };
-  onUpdate: (data: Record<string, unknown>) => void;
-  imageUploadHandler?: (file: File) => Promise<string>;
+  project: Pick<Project, "description" | "status" | "targetDate" | "operatingContext">;
+  companyPrefix?: string;
 }) {
+  const overview = getProjectOverviewModel(project);
+  const trackingIssueHref = companyPrefix && overview.baselineTrackingIssueIdentifier
+    ? `/${companyPrefix}/issues/${overview.baselineTrackingIssueIdentifier}`
+    : null;
+
   return (
     <div className="space-y-6">
-      <InlineEditor
-        value={project.description ?? ""}
-        onSave={(description) => onUpdate({ description })}
-        nullable
-        as="p"
-        className="text-sm text-muted-foreground"
-        placeholder="Add a description..."
-        multiline
-        imageUploadHandler={imageUploadHandler}
-      />
+      <div className="space-y-2">
+        <p className="text-sm text-muted-foreground">
+          {overview.summary ?? "No overview is available yet."}
+        </p>
+        {project.description?.trim() && project.description.trim() !== overview.summary ? (
+          <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2">
+            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Manual description</div>
+            <p className="mt-1 text-xs text-muted-foreground">{project.description}</p>
+          </div>
+        ) : null}
+      </div>
+
+      {(overview.stackSummary.length > 0 || overview.canonicalDocs.length > 0 || overview.topRisks.length > 0 || trackingIssueHref || overview.baselineAcceptedAt) ? (
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {overview.stackSummary.length > 0 ? (
+            <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-3">
+              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Stack signals</div>
+              <div className="mt-2 flex flex-wrap gap-1">
+                {overview.stackSummary.map((item) => (
+                  <span key={item} className="rounded-full border border-border bg-background px-2 py-0.5 text-[10px] text-muted-foreground">
+                    {item}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {overview.canonicalDocs.length > 0 ? (
+            <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-3">
+              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Canonical docs</div>
+              <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                {overview.canonicalDocs.slice(0, 6).map((doc) => (
+                  <div key={doc} className="font-mono break-all">{doc}</div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {overview.topRisks.length > 0 ? (
+            <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-3">
+              <div className="text-[11px] uppercase tracking-wide text-amber-800 dark:text-amber-200">Top risks</div>
+              <ul className="mt-2 space-y-1 text-xs text-amber-900 dark:text-amber-100">
+                {overview.topRisks.slice(0, 4).map((risk) => (
+                  <li key={risk}>{risk}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {(trackingIssueHref || overview.baselineAcceptedAt) ? (
+            <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-3">
+              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Baseline</div>
+              <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                {trackingIssueHref && overview.baselineTrackingIssueIdentifier ? (
+                  <Link to={trackingIssueHref} className="hover:underline">
+                    {overview.baselineTrackingIssueIdentifier}
+                  </Link>
+                ) : null}
+                {overview.baselineAcceptedAt ? (
+                  <div>Accepted {overview.baselineAcceptedAt}</div>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
         <div>
@@ -93,7 +165,19 @@ function OverviewContent({
           </div>
         )}
       </div>
+
+      <ProjectStaffingPanel project={project} companyPrefix={companyPrefix ?? null} />
     </div>
+  );
+}
+
+function shouldDefaultProjectRouteToIntake(project: Project | null | undefined) {
+  if (!project) return false;
+  return Boolean(
+    project.primaryWorkspace
+    || project.workspaces.length > 0
+    || project.operatingContext
+    || project.staffingState,
   );
 }
 
@@ -335,6 +419,15 @@ export function ProjectDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const [fieldSaveStates, setFieldSaveStates] = useState<Partial<Record<ProjectConfigFieldKey, ProjectFieldSaveState>>>({});
+  const [baselineActionMessage, setBaselineActionMessage] = useState<string | null>(null);
+  const [staffingPreviewOpen, setStaffingPreviewOpen] = useState(false);
+  const [executionContractDraft, setExecutionContractDraft] = useState({
+    packageManager: "",
+    installCommand: "",
+    verificationCommands: "",
+    envHandoff: "",
+    designAuthority: "",
+  });
   const fieldSaveRequestIds = useRef<Partial<Record<ProjectConfigFieldKey, number>>>({});
   const fieldSaveTimers = useRef<Partial<Record<ProjectConfigFieldKey, ReturnType<typeof setTimeout>>>>({});
   const routeProjectRef = projectId ?? "";
@@ -358,6 +451,13 @@ export function ProjectDetail() {
     enabled: canFetchProject,
   });
   const canonicalProjectRef = project ? projectRouteRef(project) : routeProjectRef;
+  const primaryWorkspace = project?.primaryWorkspace ?? project?.workspaces[0] ?? null;
+  const primaryWorkspaceId = primaryWorkspace?.id ?? null;
+  const repositoryBaseline = readRepositoryDocumentationBaseline(primaryWorkspace?.metadata);
+  const baselineIssueId =
+    project?.operatingContext?.baselineTrackingIssueId
+    ?? repositoryBaseline?.trackingIssueId
+    ?? null;
   const projectLookupRef = project?.id ?? routeProjectRef;
   const resolvedCompanyId = project?.companyId ?? selectedCompanyId;
   const experimentalSettingsQuery = useQuery({
@@ -436,6 +536,230 @@ export function ProjectDetail() {
     onSuccess: invalidateProject,
   });
 
+  const refreshRepositoryBaseline = useMutation({
+    mutationFn: (request: { createTrackingIssue?: boolean; runAnalyzer?: boolean } = {}) => {
+      if (!project?.id || !primaryWorkspaceId) throw new Error("Project Intake requires a primary workspace.");
+      return projectsApi.refreshRepositoryBaseline(project.id, primaryWorkspaceId, resolvedCompanyId ?? lookupCompanyId, request);
+    },
+    onSuccess: (result) => {
+      invalidateProject();
+      const trackingIssue = result.trackingIssue ?? null;
+      setBaselineActionMessage(
+        trackingIssue
+          ? `Repository baseline ${result.baseline.status}. Operator issue ${trackingIssue.identifier ?? trackingIssue.id} is linked.`
+          : `Repository baseline ${result.baseline.status}.`,
+      );
+      if (trackingIssue && project?.companyId && project.id) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(project.companyId, project.id) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(project.companyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(trackingIssue.id) });
+      }
+      pushToast({ title: "Repository baseline refreshed", tone: "success" });
+    },
+    onError: (error) => {
+      setBaselineActionMessage(null);
+      pushToast({
+        title: "Repository baseline failed",
+        body: error instanceof Error ? error.message : "Failed to refresh repository baseline.",
+        tone: "error",
+      });
+    },
+  });
+
+  const applyRepositoryBaselineRecommendations = useMutation({
+    mutationFn: () => {
+      if (!project?.id || !primaryWorkspaceId) throw new Error("Project Intake requires a primary workspace.");
+      return projectsApi.applyRepositoryBaselineRecommendations(project.id, primaryWorkspaceId, resolvedCompanyId ?? lookupCompanyId, {
+        applyLabels: true,
+        acceptIssueGuidance: true,
+      });
+    },
+    onSuccess: (result) => {
+      invalidateProject();
+      if (project?.companyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.labels(project.companyId) });
+      }
+      setBaselineActionMessage(
+        `Repository baseline recommendations applied. Created ${result.labels.created.length} labels; ${result.labels.existing.length} already existed. Repository context acceptance is still a separate operator step.`,
+      );
+      pushToast({ title: "Recommendations applied", tone: "success" });
+    },
+    onError: (error) => {
+      setBaselineActionMessage(null);
+      pushToast({
+        title: "Recommendation apply failed",
+        body: error instanceof Error ? error.message : "Failed to apply repository baseline recommendations.",
+        tone: "error",
+      });
+    },
+  });
+
+  const requestBaselineCeoReview = useMutation({
+    mutationFn: () => {
+      if (!baselineIssueId || !baselineIssue || !repositoryBaseline || !baselineReviewAgent) {
+        throw new Error("CEO review requires a baseline issue, repository baseline, and an active CEO agent.");
+      }
+      return issuesApi.update(baselineIssueId, {
+        comment: buildBaselineCeoReviewRequestComment({
+          baselineIssue,
+          summary: repositoryBaseline.summary,
+          stack: repositoryBaseline.stack,
+          documentationFiles: repositoryBaseline.documentationFiles,
+          guardrails: repositoryBaseline.guardrails,
+          reviewFingerprint: baselineReviewFingerprint,
+        }),
+        assigneeAgentId: baselineReviewAgent.id,
+        assigneeUserId: null,
+        ...(baselineIssue.status === "backlog" || baselineIssue.status === "done" || baselineIssue.status === "cancelled"
+          ? { status: "todo" }
+          : {}),
+      });
+    },
+    onSuccess: () => {
+      if (baselineIssueId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(baselineIssueId) });
+        queryClient.invalidateQueries({ queryKey: ["issues", baselineIssueId, "comments-preview"] });
+      }
+      if (project?.companyId && project.id) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(project.companyId, project.id) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(project.companyId) });
+      }
+      pushToast({
+        title: "CEO review requested",
+        body: baselineReviewAgent ? `Commented on the baseline issue and assigned it to ${baselineReviewAgent.name}.` : undefined,
+        tone: "success",
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        title: "CEO review request failed",
+        body: error instanceof Error ? error.message : "Unable to request CEO review.",
+        tone: "error",
+      });
+    },
+  });
+
+  const acceptRepositoryBaseline = useMutation({
+    mutationFn: () => {
+      if (!project?.id || !primaryWorkspaceId) throw new Error("Repository acceptance requires a linked project workspace.");
+      return projectsApi.acceptRepositoryBaseline(project.id, primaryWorkspaceId, { acceptIssueGuidance: true }, resolvedCompanyId ?? lookupCompanyId);
+    },
+    onSuccess: () => {
+      invalidateProject();
+      if (baselineIssueId) queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(baselineIssueId) });
+      pushToast({
+        title: "Repository context accepted",
+        body: "Paperclip recorded the baseline as accepted repository context. The next primary step is staffing; execution clarifications remain optional hardening.",
+        tone: "success",
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Baseline acceptance failed",
+        body: error instanceof Error ? error.message : "Unable to accept repository context.",
+        tone: "error",
+      });
+    },
+  });
+
+  const saveExecutionContract = useMutation({
+    mutationFn: () => {
+      if (!project?.id || !primaryWorkspaceId) throw new Error("Execution clarifications require a linked project workspace.");
+      return projectsApi.updateExecutionContract(
+        project.id,
+        primaryWorkspaceId,
+        {
+          packageManager: normalizeExecutionContractText(executionContractDraft.packageManager),
+          installCommand: normalizeExecutionContractText(executionContractDraft.installCommand),
+          verificationCommands: normalizeExecutionContractCommands(executionContractDraft.verificationCommands),
+          envHandoff: normalizeExecutionContractText(executionContractDraft.envHandoff),
+          designAuthority: normalizeExecutionContractText(executionContractDraft.designAuthority),
+        },
+        resolvedCompanyId ?? lookupCompanyId,
+      );
+    },
+    onSuccess: () => {
+      invalidateProject();
+      pushToast({
+        title: "Execution clarifications saved",
+        body: "Paperclip updated the operator-side execution contract for this repository.",
+        tone: "success",
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Execution clarifications failed",
+        body: error instanceof Error ? error.message : "Unable to save execution clarifications.",
+        tone: "error",
+      });
+    },
+  });
+
+  const markExecutionContextReady = useMutation({
+    mutationFn: () => {
+      if (!project?.id || !primaryWorkspaceId) throw new Error("Execution readiness requires a linked project workspace.");
+      return projectsApi.markExecutionContextReady(project.id, primaryWorkspaceId, { ready: true }, resolvedCompanyId ?? lookupCompanyId);
+    },
+    onSuccess: () => {
+      invalidateProject();
+      pushToast({
+        title: "Execution context ready",
+        body: "Staffing can now proceed with a tighter operator contract.",
+        tone: "success",
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Execution readiness failed",
+        body: error instanceof Error ? error.message : "Unable to mark execution context ready.",
+        tone: "error",
+      });
+    },
+  });
+
+  const previewHiringBrief = useMutation({
+    mutationFn: () => {
+      if (!project?.id || !primaryWorkspaceId) throw new Error("Project Intake requires a primary workspace.");
+      return projectsApi.previewHiringBrief(project.id, primaryWorkspaceId, { role: "cto" }, resolvedCompanyId ?? lookupCompanyId);
+    },
+    onSuccess: () => {
+      setStaffingPreviewOpen(true);
+    },
+    onError: (error) => {
+      setStaffingPreviewOpen(false);
+      pushToast({
+        title: "Hiring brief failed",
+        body: error instanceof Error ? error.message : "Failed to generate hiring brief preview.",
+        tone: "error",
+      });
+    },
+  });
+
+  const createHiringIssue = useMutation({
+    mutationFn: () => {
+      if (!project?.id || !primaryWorkspaceId) throw new Error("Project Intake requires a primary workspace.");
+      return projectsApi.createHiringIssue(project.id, primaryWorkspaceId, { role: "cto" }, resolvedCompanyId ?? lookupCompanyId);
+    },
+    onSuccess: (result) => {
+      invalidateProject();
+      if (project?.companyId && project.id) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(project.companyId, project.id) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(project.companyId) });
+      }
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(result.issue.id) });
+      setStaffingPreviewOpen(false);
+      const issueRef = result.issue.identifier ?? result.issue.id;
+      navigate(companyPrefix ? `/${companyPrefix}/issues/${issueRef}` : `/issues/${issueRef}`);
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Hiring issue failed",
+        body: error instanceof Error ? error.message : "Failed to create hiring issue.",
+        tone: "error",
+      });
+    },
+  });
+
   const archiveProject = useMutation({
     mutationFn: (archived: boolean) =>
       projectsApi.update(
@@ -461,13 +785,6 @@ export function ProjectDetail() {
     },
   });
 
-  const uploadImage = useMutation({
-    mutationFn: async (file: File) => {
-      if (!resolvedCompanyId) throw new Error("No company selected");
-      return assetsApi.uploadImage(resolvedCompanyId, file, `projects/${projectLookupRef || "draft"}`);
-    },
-  });
-
   const { data: budgetOverview } = useQuery({
     queryKey: queryKeys.budgets.overview(resolvedCompanyId ?? "__none__"),
     queryFn: () => budgetsApi.overview(resolvedCompanyId!),
@@ -475,6 +792,53 @@ export function ProjectDetail() {
     refetchInterval: 30_000,
     staleTime: 5_000,
   });
+  const { data: baselineIssue } = useQuery({
+    queryKey: baselineIssueId ? queryKeys.issues.detail(baselineIssueId) : ["issues", "detail", "__none__"],
+    queryFn: () => issuesApi.get(baselineIssueId!),
+    enabled: Boolean(baselineIssueId),
+  });
+  const { data: baselineComments = [] } = useQuery({
+    queryKey: baselineIssueId ? ["issues", baselineIssueId, "comments-preview"] : ["issues", "comments-preview", "__none__"],
+    queryFn: () => issuesApi.listComments(baselineIssueId!, { limit: 100, order: "desc" }),
+    enabled: Boolean(baselineIssueId),
+  });
+  const { data: projectAgents = [] } = useQuery({
+    queryKey: resolvedCompanyId ? queryKeys.agents.list(resolvedCompanyId) : ["agents", "__none__"],
+    queryFn: () => agentsApi.list(resolvedCompanyId!),
+    enabled: Boolean(resolvedCompanyId),
+  });
+  const baselineReviewAgent = useMemo(
+    () =>
+      projectAgents.find((agent) => agent.status !== "terminated" && agent.role === "ceo")
+      ?? projectAgents.find((agent) => agent.status !== "terminated" && agent.name.trim().toLowerCase() === "ceo")
+      ?? null,
+    [projectAgents],
+  );
+  const repositoryContextAccepted = project?.operatingContext?.baselineStatus === "accepted";
+  const persistedExecutionContract = project?.operatingContext?.executionContract ?? null;
+  const executionContractComplete = isExecutionContractComplete(persistedExecutionContract);
+  const baselineReviewFingerprint = useMemo(
+    () => buildRepositoryBaselineReviewFingerprint({ project, baseline: repositoryBaseline }),
+    [project, repositoryBaseline],
+  );
+  const hasBaselineCeoReviewRequest = useMemo(
+    () => readBaselineReviewRequestPresentForFingerprint(baselineComments, baselineReviewFingerprint),
+    [baselineComments, baselineReviewFingerprint],
+  );
+  const hasCompletedBaselineCeoReview = useMemo(
+    () => readBaselineReviewResponsePresentForFingerprint(baselineComments, baselineReviewFingerprint),
+    [baselineComments, baselineReviewFingerprint],
+  );
+
+  useEffect(() => {
+    setExecutionContractDraft(buildExecutionContractDraft(persistedExecutionContract));
+  }, [
+    persistedExecutionContract?.packageManager,
+    persistedExecutionContract?.installCommand,
+    persistedExecutionContract?.verificationCommands,
+    persistedExecutionContract?.envHandoff,
+    persistedExecutionContract?.designAuthority,
+  ]);
 
   useEffect(() => {
     setBreadcrumbs([
@@ -492,6 +856,10 @@ export function ProjectDetail() {
     }
     if (activeTab === "overview") {
       navigate(`/projects/${canonicalProjectRef}/overview`, { replace: true });
+      return;
+    }
+    if (activeTab === "intake") {
+      navigate(`/projects/${canonicalProjectRef}/intake`, { replace: true });
       return;
     }
     if (activeTab === "configuration") {
@@ -620,7 +988,7 @@ export function ProjectDetail() {
     return <Navigate to={`/projects/${canonicalProjectRef}/issues`} replace />;
   }
 
-  // Redirect bare /projects/:id to cached tab or default /issues
+  // Redirect bare /projects/:id to cached tab or default route
   if (routeProjectRef && activeTab === null) {
     let cachedTab: string | null = null;
     if (project?.id) {
@@ -628,6 +996,9 @@ export function ProjectDetail() {
     }
     if (cachedTab === "overview") {
       return <Navigate to={`/projects/${canonicalProjectRef}/overview`} replace />;
+    }
+    if (cachedTab === "intake") {
+      return <Navigate to={`/projects/${canonicalProjectRef}/intake`} replace />;
     }
     if (cachedTab === "configuration") {
       return <Navigate to={`/projects/${canonicalProjectRef}/configuration`} replace />;
@@ -643,6 +1014,9 @@ export function ProjectDetail() {
     }
     if (isProjectPluginTab(cachedTab)) {
       return <Navigate to={`/projects/${canonicalProjectRef}?tab=${encodeURIComponent(cachedTab)}`} replace />;
+    }
+    if (shouldDefaultProjectRouteToIntake(project)) {
+      return <Navigate to={`/projects/${canonicalProjectRef}/intake`} replace />;
     }
     return <Navigate to={`/projects/${canonicalProjectRef}/issues`} replace />;
   }
@@ -662,6 +1036,8 @@ export function ProjectDetail() {
     }
     if (tab === "overview") {
       navigate(`/projects/${canonicalProjectRef}/overview`);
+    } else if (tab === "intake") {
+      navigate(`/projects/${canonicalProjectRef}/intake`);
     } else if (tab === "workspaces") {
       navigate(`/projects/${canonicalProjectRef}/workspaces`);
     } else if (tab === "budget") {
@@ -734,6 +1110,7 @@ export function ProjectDetail() {
           items={[
             { value: "list", label: "Issues" },
             { value: "overview", label: "Overview" },
+            { value: "intake", label: "Intake" },
             ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
             { value: "configuration", label: "Configuration" },
             { value: "budget", label: "Budget" },
@@ -751,11 +1128,48 @@ export function ProjectDetail() {
       {activeTab === "overview" && (
         <OverviewContent
           project={project}
-          onUpdate={(data) => updateProject.mutate(data)}
-          imageUploadHandler={async (file) => {
-            const asset = await uploadImage.mutateAsync(file);
-            return asset.contentPath;
-          }}
+          companyPrefix={companyPrefix}
+        />
+      )}
+
+      {activeTab === "intake" && (
+        <ProjectIntakePanel
+          project={project}
+          companyPrefix={companyPrefix}
+          baselineIssue={baselineIssue ? {
+            status: baselineIssue.status,
+            assigneeAgentId: baselineIssue.assigneeAgentId ?? null,
+          } : null}
+          repositoryBaseline={repositoryBaseline}
+          hasBaselineCeoReviewRequest={hasBaselineCeoReviewRequest || hasCompletedBaselineCeoReview}
+          baselineReviewAgentName={baselineReviewAgent?.name ?? null}
+          baselineActionMessage={baselineActionMessage}
+          isRefreshingBaseline={refreshRepositoryBaseline.isPending}
+          isApplyingRecommendations={applyRepositoryBaselineRecommendations.isPending}
+          isRequestingCeoReview={requestBaselineCeoReview.isPending}
+          isAcceptingRepositoryContext={acceptRepositoryBaseline.isPending}
+          isSavingExecutionClarifications={saveExecutionContract.isPending}
+          isMarkingExecutionReady={markExecutionContextReady.isPending}
+          onRefreshBaseline={() => refreshRepositoryBaseline.mutate({})}
+          onCreateOperatorIssue={() => refreshRepositoryBaseline.mutate({ createTrackingIssue: true })}
+          onRunAnalyzer={() => refreshRepositoryBaseline.mutate({ createTrackingIssue: true, runAnalyzer: true })}
+          onApplyRecommendations={() => applyRepositoryBaselineRecommendations.mutate()}
+          onRequestCeoReview={() => requestBaselineCeoReview.mutate()}
+          onAcceptRepositoryContext={() => acceptRepositoryBaseline.mutate()}
+          executionContractDraft={executionContractDraft}
+          onExecutionContractDraftChange={(patch) =>
+            setExecutionContractDraft((current) => ({ ...current, ...patch }))
+          }
+          executionContractComplete={executionContractComplete}
+          onSaveExecutionClarifications={() => saveExecutionContract.mutate()}
+          onMarkExecutionContextReady={() => markExecutionContextReady.mutate()}
+          staffingPreview={previewHiringBrief.data?.preview ?? null}
+          staffingPreviewOpen={staffingPreviewOpen}
+          onStaffingPreviewOpenChange={setStaffingPreviewOpen}
+          isGeneratingBrief={previewHiringBrief.isPending}
+          isCreatingHiringIssue={createHiringIssue.isPending}
+          onGenerateBrief={() => previewHiringBrief.mutate()}
+          onCreateHiringIssue={() => createHiringIssue.mutate()}
         />
       )}
 

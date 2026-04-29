@@ -31,6 +31,16 @@ Before making changes, read in this order:
 - `packages/plugins/`: plugin system packages
 - `doc/`: operational and product docs
 
+### Repo-owned governance surfaces
+
+- `.agents/skills/`: repository-maintained agent skills bundled with this fork
+- `skills/`: runtime skill assets shipped by the product where present
+- `doc/plans/`: dated decision and execution plans
+
+Do not document `~/.codex/skills/` as the authoring source for repo-governed
+workflow behavior. If a tracked Codex skill seed catalog is introduced later,
+record the tracked path here before treating it as authoritative.
+
 ## 4. Fork Operating Model
 
 This local repository is a fork used as a correction, backport, and adaptation

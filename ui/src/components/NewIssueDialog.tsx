@@ -59,6 +59,12 @@ import { issueStatusText, issueStatusTextDefault, priorityColor, priorityColorDe
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { AgentIcon } from "./AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
+import { ProjectIssueContextPanel } from "./ProjectIssueContextPanel";
+import {
+  appendProjectIssueContextSnippet,
+  getProjectIssueContextModel,
+  getProjectParticipantSuggestions,
+} from "../lib/project-operating-context";
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
@@ -81,6 +87,7 @@ interface IssueDraft {
   executionWorkspaceMode?: string;
   selectedExecutionWorkspaceId?: string;
   useIsolatedExecutionWorkspace?: boolean;
+  selectedLabelIds?: string[];
 }
 
 type StagedIssueFile = {
@@ -294,6 +301,7 @@ export function NewIssueDialog() {
   const [participantMenuOpen, setParticipantMenuOpen] = useState(false);
   const [projectId, setProjectId] = useState("");
   const [projectWorkspaceId, setProjectWorkspaceId] = useState("");
+  const [selectedLabelIds, setSelectedLabelIds] = useState<string[]>([]);
   const [assigneeOptionsOpen, setAssigneeOptionsOpen] = useState(false);
   const [assigneeModelOverride, setAssigneeModelOverride] = useState("");
   const [assigneeThinkingEffort, setAssigneeThinkingEffort] = useState("");
@@ -318,6 +326,8 @@ export function NewIssueDialog() {
   // Popover states
   const [statusOpen, setStatusOpen] = useState(false);
   const [priorityOpen, setPriorityOpen] = useState(false);
+  const [labelsOpen, setLabelsOpen] = useState(false);
+  const [labelSearch, setLabelSearch] = useState("");
   const [moreOpen, setMoreOpen] = useState(false);
   const [companyOpen, setCompanyOpen] = useState(false);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
@@ -334,6 +344,11 @@ export function NewIssueDialog() {
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(effectiveCompanyId!),
     queryFn: () => projectsApi.list(effectiveCompanyId!),
+    enabled: !!effectiveCompanyId && newIssueOpen,
+  });
+  const { data: labels } = useQuery({
+    queryKey: queryKeys.issues.labels(effectiveCompanyId!),
+    queryFn: () => issuesApi.listLabels(effectiveCompanyId!),
     enabled: !!effectiveCompanyId && newIssueOpen,
   });
   const { data: reusableExecutionWorkspaces } = useQuery({
@@ -500,6 +515,7 @@ export function NewIssueDialog() {
       approverValue,
       projectId,
       projectWorkspaceId,
+      selectedLabelIds,
       assigneeModelOverride,
       assigneeThinkingEffort,
       assigneeChrome,
@@ -516,6 +532,7 @@ export function NewIssueDialog() {
     approverValue,
     projectId,
     projectWorkspaceId,
+    selectedLabelIds,
     assigneeModelOverride,
     assigneeThinkingEffort,
     assigneeChrome,
@@ -547,6 +564,7 @@ export function NewIssueDialog() {
       setProjectId(defaultProjectId);
       setProjectWorkspaceId(defaultProjectWorkspaceId);
       setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
+      setSelectedLabelIds([]);
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
@@ -563,6 +581,7 @@ export function NewIssueDialog() {
       setProjectId(defaultProjectId);
       setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(defaultProject));
       setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
+      setSelectedLabelIds([]);
       setReviewerValue("");
       setApproverValue("");
       setShowReviewerRow(false);
@@ -591,6 +610,7 @@ export function NewIssueDialog() {
       setShowApproverRow(!!(draft.approverValue));
       setProjectId(restoredProjectId);
       setProjectWorkspaceId(draft.projectWorkspaceId ?? defaultProjectWorkspaceIdForProject(restoredProject));
+      setSelectedLabelIds(draft.selectedLabelIds ?? []);
       setAssigneeModelOverride(draft.assigneeModelOverride ?? "");
       setAssigneeThinkingEffort(draft.assigneeThinkingEffort ?? "");
       setAssigneeChrome(draft.assigneeChrome ?? false);
@@ -607,6 +627,7 @@ export function NewIssueDialog() {
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(defaultProjectId);
       setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(defaultProject));
+      setSelectedLabelIds([]);
       setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
       setReviewerValue("");
       setApproverValue("");
@@ -660,6 +681,7 @@ export function NewIssueDialog() {
     setShowApproverRow(false);
     setProjectId("");
     setProjectWorkspaceId("");
+    setSelectedLabelIds([]);
     setAssigneeOptionsOpen(false);
     setAssigneeModelOverride("");
     setAssigneeThinkingEffort("");
@@ -685,6 +707,7 @@ export function NewIssueDialog() {
     setShowApproverRow(false);
     setProjectId("");
     setProjectWorkspaceId("");
+    setSelectedLabelIds([]);
     setAssigneeModelOverride("");
     setAssigneeThinkingEffort("");
     setAssigneeChrome(false);
@@ -738,6 +761,7 @@ export function NewIssueDialog() {
       ...(newIssueDefaults.goalId ? { goalId: newIssueDefaults.goalId } : {}),
       ...(projectId ? { projectId } : {}),
       ...(projectWorkspaceId ? { projectWorkspaceId } : {}),
+      ...(selectedLabelIds.length > 0 ? { labelIds: selectedLabelIds } : {}),
       ...(assigneeAdapterOverrides ? { assigneeAdapterOverrides } : {}),
       ...(executionWorkspacePolicy?.enabled ? { executionWorkspacePreference: executionWorkspaceMode } : {}),
       ...(executionWorkspaceMode === "reuse_existing" && selectedExecutionWorkspaceId
@@ -825,6 +849,19 @@ export function NewIssueDialog() {
     ? (agents ?? []).find((a) => a.id === selectedAssigneeAgentId)
     : null;
   const currentProject = orderedProjects.find((project) => project.id === projectId);
+  const currentProjectIssueContext = getProjectIssueContextModel(currentProject);
+  const participantSuggestions = getProjectParticipantSuggestions(currentProject, agents ?? []);
+  const recommendedProjectLabels = useMemo(() => {
+    if (!labels?.length || !currentProjectIssueContext?.labelCatalog.length) return [];
+    const labelByName = new Map(labels.map((label) => [label.name.trim().toLowerCase(), label]));
+    return currentProjectIssueContext.labelCatalog
+      .map((entry) => labelByName.get(entry.name.trim().toLowerCase()) ?? null)
+      .filter((label): label is NonNullable<typeof labels>[number] => Boolean(label));
+  }, [currentProjectIssueContext, labels]);
+  const selectedLabels = useMemo(
+    () => (labels ?? []).filter((label) => selectedLabelIds.includes(label.id)),
+    [labels, selectedLabelIds],
+  );
   const currentProjectExecutionWorkspacePolicy =
     experimentalSettings?.enableIsolatedWorkspaces === true
       ? currentProject?.executionWorkspacePolicy ?? null
@@ -890,6 +927,104 @@ export function NewIssueDialog() {
       })),
     [orderedProjects],
   );
+  const toggleSelectedLabel = useCallback((labelId: string) => {
+    setSelectedLabelIds((current) =>
+      current.includes(labelId)
+        ? current.filter((candidate) => candidate !== labelId)
+        : [...current, labelId],
+    );
+  }, []);
+  const labelsTrigger = selectedLabels.length > 0 ? (
+    <div className="flex items-center gap-1 flex-wrap">
+      {selectedLabels.slice(0, 3).map((label) => (
+        <span
+          key={label.id}
+          className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium border"
+          style={{
+            borderColor: label.color,
+            backgroundColor: `${label.color}22`,
+            color: pickTextColorForSolidBg(label.color),
+          }}
+        >
+          {label.name}
+        </span>
+      ))}
+      {selectedLabels.length > 3 ? (
+        <span className="text-xs text-muted-foreground">+{selectedLabels.length - 3}</span>
+      ) : null}
+    </div>
+  ) : (
+    <>
+      <Tag className="h-3 w-3" />
+      Labels
+    </>
+  );
+  const labelsContent = (
+    <>
+      <input
+        className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
+        placeholder="Search labels..."
+        value={labelSearch}
+        onChange={(e) => setLabelSearch(e.target.value)}
+      />
+      {recommendedProjectLabels.length > 0 ? (
+        <div className="mb-2 space-y-1.5 border-b border-border pb-2">
+          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Project recommended</div>
+          <div className="flex flex-wrap gap-1">
+            {recommendedProjectLabels.map((label) => {
+              const selected = selectedLabelIds.includes(label.id);
+              return (
+                <button
+                  key={`recommended-${label.id}`}
+                  type="button"
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] transition-colors",
+                    selected ? "border-foreground/30 bg-accent text-foreground" : "border-border text-muted-foreground hover:bg-accent/50",
+                  )}
+                  onClick={() => toggleSelectedLabel(label.id)}
+                >
+                  <span className="h-2 w-2 rounded-full" style={{ backgroundColor: label.color }} />
+                  {label.name}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+      <div className="max-h-44 overflow-y-auto overscroll-contain space-y-0.5">
+        {(labels ?? [])
+          .filter((label) => {
+            if (!labelSearch.trim()) return true;
+            const query = labelSearch.toLowerCase();
+            return (
+              label.name.toLowerCase().includes(query) ||
+              (label.description ?? "").toLowerCase().includes(query)
+            );
+          })
+          .map((label) => {
+            const selected = selectedLabelIds.includes(label.id);
+            return (
+              <button
+                key={label.id}
+                className={cn(
+                  "flex items-start gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-left",
+                  selected && "bg-accent",
+                )}
+                onClick={() => toggleSelectedLabel(label.id)}
+              >
+                <span className="mt-0.5 h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: label.color }} />
+                <span className="min-w-0">
+                  <span className="block truncate">{label.name}</span>
+                  {label.description ? (
+                    <span className="block text-[11px] text-muted-foreground">{label.description}</span>
+                  ) : null}
+                </span>
+              </button>
+            );
+          })}
+      </div>
+    </>
+  );
   const savedDraft = loadDraft();
   const hasSavedDraft = Boolean(savedDraft?.title.trim() || savedDraft?.description.trim());
   const canDiscardDraft = hasDraft || hasSavedDraft;
@@ -906,6 +1041,10 @@ export function NewIssueDialog() {
     setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(nextProject));
     setSelectedExecutionWorkspaceId("");
   }, [orderedProjects]);
+  const insertProjectContextSnippet = useCallback((kind: "docs" | "verification") => {
+    setDescription((current) => appendProjectIssueContextSnippet(current, currentProjectIssueContext, kind));
+    descriptionEditorRef.current?.focus();
+  }, [currentProjectIssueContext]);
 
   useEffect(() => {
     if (!newIssueOpen || !projectId || executionWorkspaceDefaultProjectId.current === projectId) {
@@ -1350,6 +1489,82 @@ export function NewIssueDialog() {
             </div>
           ) : null}
 
+          {currentProject ? (
+            <div className="px-4 pb-3">
+              <ProjectIssueContextPanel
+                project={currentProject}
+                title="Project context"
+              />
+              {currentProjectIssueContext && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {participantSuggestions?.assigneeAgentId ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      className="h-7 px-2"
+                      onClick={() => {
+                        setAssigneeValue(assigneeValueFromSelection({ assigneeAgentId: participantSuggestions.assigneeAgentId }));
+                      }}
+                    >
+                      Suggest assignee
+                    </Button>
+                  ) : null}
+                  {participantSuggestions?.reviewerValue ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      className="h-7 px-2"
+                      onClick={() => {
+                        setShowReviewerRow(true);
+                        setReviewerValue(participantSuggestions.reviewerValue ?? "");
+                      }}
+                    >
+                      Suggest reviewer
+                    </Button>
+                  ) : null}
+                  {participantSuggestions?.approverValue ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      className="h-7 px-2"
+                      onClick={() => {
+                        setShowApproverRow(true);
+                        setApproverValue(participantSuggestions.approverValue ?? "");
+                      }}
+                    >
+                      Suggest approver
+                    </Button>
+                  ) : null}
+                  {currentProjectIssueContext.canonicalDocs.length > 0 ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      className="h-7 px-2"
+                      onClick={() => insertProjectContextSnippet("docs")}
+                    >
+                      Add docs section
+                    </Button>
+                  ) : null}
+                  {currentProjectIssueContext.verificationCommands.length > 0 ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      className="h-7 px-2"
+                      onClick={() => insertProjectContextSnippet("verification")}
+                    >
+                      Add verification section
+                    </Button>
+                  ) : null}
+                </div>
+              )}
+            </div>
+          ) : null}
+
           {currentProject && currentProjectSupportsExecutionWorkspace && (
             <div className="px-4 py-3 space-y-2">
             <div className="space-y-1.5">
@@ -1618,11 +1833,16 @@ export function NewIssueDialog() {
             </PopoverContent>
           </Popover>
 
-          {/* Labels chip — disabled, not wired up yet */}
-          {/* <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">
-            <Tag className="h-3 w-3" />
-            Labels
-          </button> */}
+          <Popover open={labelsOpen} onOpenChange={setLabelsOpen}>
+            <PopoverTrigger asChild>
+              <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">
+                {labelsTrigger}
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="w-72 p-1" align="start">
+              {labelsContent}
+            </PopoverContent>
+          </Popover>
 
           <input
             ref={stageFileInputRef}

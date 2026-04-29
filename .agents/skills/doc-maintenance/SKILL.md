@@ -27,9 +27,13 @@ Detect documentation drift and fix it via PR — no rewrites, no churn.
 | SPEC | `doc/SPEC.md` | No false "not supported" claims, major model/schema accuracy |
 | PRODUCT | `doc/PRODUCT.md` | Core concepts, feature list, principles accuracy |
 
-Out of scope: DEVELOPING.md, DATABASE.md, CLI.md, doc/plans/, skill files,
-release notes. These are dev-facing or ephemeral — lower risk of user-facing
-confusion.
+Out of scope by default: DEVELOPING.md, DATABASE.md, CLI.md, doc/plans/,
+skill files, release notes. These are dev-facing or ephemeral — lower risk of
+user-facing confusion.
+
+Narrow exception: governance drift reviews may include `AGENTS.md`,
+`.agents/skills/`, `skills/`, and any tracked Codex skill seed catalog when the
+change explicitly affects contributor/runtime governance.
 
 ## Workflow
 

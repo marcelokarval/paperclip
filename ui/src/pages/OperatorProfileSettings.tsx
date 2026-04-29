@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState, type ChangeEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { UserRound } from "lucide-react";
 import { operatorProfileApi } from "@/api/operatorProfile";
@@ -9,6 +9,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { queryKeys } from "@/lib/queryKeys";
+
+const OPERATOR_AVATAR_ACCEPT = "image/png,image/jpeg,image/webp";
+const OPERATOR_AVATAR_MAX_BYTES = 2 * 1024 * 1024;
 
 function initials(name: string) {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -26,6 +29,7 @@ export function OperatorProfileSettings() {
   const [image, setImage] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([
@@ -65,6 +69,25 @@ export function OperatorProfileSettings() {
     },
   });
 
+  const uploadAvatarMutation = useMutation({
+    mutationFn: operatorProfileApi.uploadAvatar,
+    onSuccess: async (profile) => {
+      setActionError(null);
+      setSaved(true);
+      setName(profile.name);
+      setEmail(profile.email);
+      setImage(profile.image ?? "");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.operatorProfile }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.auth.session }),
+      ]);
+    },
+    onError: (error) => {
+      setSaved(false);
+      setActionError(error instanceof Error ? error.message : "Failed to upload operator avatar.");
+    },
+  });
+
   if (profileQuery.isLoading) {
     return <div className="text-sm text-muted-foreground">Loading operator profile...</div>;
   }
@@ -83,7 +106,7 @@ export function OperatorProfileSettings() {
   if (!profile) return null;
 
   const isLocal = profile.source === "local_implicit";
-  const pending = updateMutation.isPending;
+  const pending = updateMutation.isPending || uploadAvatarMutation.isPending;
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -92,6 +115,36 @@ export function OperatorProfileSettings() {
       name,
       email,
       image,
+    });
+  }
+
+  function onAvatarFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    if (!OPERATOR_AVATAR_ACCEPT.split(",").includes(file.type)) {
+      setSaved(false);
+      setActionError("Upload a PNG, JPEG, or WEBP image.");
+      return;
+    }
+    if (file.size > OPERATOR_AVATAR_MAX_BYTES) {
+      setSaved(false);
+      setActionError(`Image exceeds ${OPERATOR_AVATAR_MAX_BYTES} bytes.`);
+      return;
+    }
+
+    setActionError(null);
+    setSaved(false);
+    uploadAvatarMutation.mutate(file);
+  }
+
+  function onRemoveAvatar() {
+    setSaved(false);
+    updateMutation.mutate({
+      name,
+      email,
+      image: null,
     });
   }
 
@@ -166,20 +219,45 @@ export function OperatorProfileSettings() {
               </div>
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="operator-image">Image URL</Label>
-              <Input
-                id="operator-image"
-                type="url"
-                value={image}
-                maxLength={2048}
-                onChange={(event) => setImage(event.target.value)}
-                disabled={pending}
-                placeholder="https://example.com/avatar.png"
+            <div className="space-y-3 rounded-lg border border-border bg-muted/20 p-3">
+              <div className="space-y-1">
+                <Label>Avatar image</Label>
+                <p className="text-xs text-muted-foreground">
+                  Upload a PNG, JPEG, or WEBP under 2 MiB. The server re-encodes it to a metadata-stripped PNG avatar before storing it.
+                </p>
+              </div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept={OPERATOR_AVATAR_ACCEPT}
+                className="hidden"
+                onChange={onAvatarFileChange}
               />
-              <p className="text-xs text-muted-foreground">
-                Upload-backed avatars can be added later; this field stores a URL today.
-              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={pending}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  {uploadAvatarMutation.isPending ? "Uploading..." : "Upload avatar"}
+                </Button>
+                {image ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    disabled={pending}
+                    onClick={onRemoveAvatar}
+                  >
+                    Remove avatar
+                  </Button>
+                ) : null}
+              </div>
+              {image ? (
+                <p className="break-all text-xs text-muted-foreground">
+                  Current image: {image}
+                </p>
+              ) : null}
             </div>
 
             <div className="flex justify-end">

@@ -1,16 +1,17 @@
 import { ChangeEvent, useEffect, useState } from "react";
 import { Link } from "@/lib/router";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION } from "@paperclipai/shared";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION, type IssueLabel } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
+import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, Check, Download, Upload } from "lucide-react";
+import { Settings, Check, Download, Upload, Plus, Trash2 } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
@@ -25,6 +26,29 @@ type AgentSnippetInput = {
 };
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
+
+type LabelDraft = {
+  name: string;
+  color: string;
+  description: string;
+};
+
+function readStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+    : [];
+}
+
+function readLabelBaselineMetadata(label: IssueLabel) {
+  const metadata = label.metadata && typeof label.metadata === "object"
+    ? label.metadata as Record<string, unknown>
+    : {};
+  const confidence = metadata.baselineConfidence;
+  return {
+    evidence: readStringArray(metadata.baselineEvidence),
+    confidence: confidence === "high" || confidence === "medium" || confidence === "low" ? confidence : null,
+  };
+}
 
 export function CompanySettings() {
   const {
@@ -42,6 +66,13 @@ export function CompanySettings() {
   const [brandColor, setBrandColor] = useState("");
   const [logoUrl, setLogoUrl] = useState("");
   const [logoUploadError, setLogoUploadError] = useState<string | null>(null);
+  const [newLabelDraft, setNewLabelDraft] = useState<LabelDraft>({
+    name: "",
+    color: "#64748b",
+    description: "",
+  });
+  const [editingLabelId, setEditingLabelId] = useState<string | null>(null);
+  const [editingLabelDraft, setEditingLabelDraft] = useState<LabelDraft | null>(null);
 
   // Sync local state from selected company
   useEffect(() => {
@@ -99,6 +130,76 @@ export function CompanySettings() {
     onError: (err) => {
       pushToast({
         title: "Failed to update feedback sharing",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+
+  const { data: issueLabels = [] } = useQuery({
+    queryKey: selectedCompanyId ? queryKeys.issues.labels(selectedCompanyId) : ["issues", "labels", "none"],
+    queryFn: () => issuesApi.listLabels(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+  });
+
+  const createLabelMutation = useMutation({
+    mutationFn: (draft: LabelDraft) =>
+      issuesApi.createLabel(selectedCompanyId!, {
+        name: draft.name.trim(),
+        color: draft.color,
+        description: draft.description.trim() || null,
+      }),
+    onSuccess: () => {
+      setNewLabelDraft({ name: "", color: "#64748b", description: "" });
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.labels(selectedCompanyId) });
+      }
+      pushToast({ title: "Label created", tone: "success" });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to create label",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+
+  const updateLabelMutation = useMutation({
+    mutationFn: ({ labelId, draft }: { labelId: string; draft: LabelDraft }) =>
+      issuesApi.updateLabel(labelId, {
+        name: draft.name.trim(),
+        color: draft.color,
+        description: draft.description.trim() || null,
+      }),
+    onSuccess: () => {
+      setEditingLabelId(null);
+      setEditingLabelDraft(null);
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.labels(selectedCompanyId) });
+      }
+      pushToast({ title: "Label updated", tone: "success" });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to update label",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+
+  const deleteLabelMutation = useMutation({
+    mutationFn: (labelId: string) => issuesApi.deleteLabel(labelId),
+    onSuccess: () => {
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.labels(selectedCompanyId) });
+      }
+      pushToast({ title: "Label deleted", tone: "success" });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to delete label",
         body: err instanceof Error ? err.message : "Unknown error",
         tone: "error",
       });
@@ -246,7 +347,7 @@ export function CompanySettings() {
   }
 
   return (
-    <div className="max-w-2xl space-y-6">
+    <div className="max-w-3xl space-y-6">
       <div className="flex items-center gap-2">
         <Settings className="h-5 w-5 text-muted-foreground" />
         <h1 className="text-lg font-semibold">Company Settings</h1>
@@ -427,6 +528,25 @@ export function CompanySettings() {
           />
         </div>
       </div>
+
+      <CompanyLabelsSettings
+        labels={issueLabels}
+        newLabelDraft={newLabelDraft}
+        setNewLabelDraft={setNewLabelDraft}
+        editingLabelId={editingLabelId}
+        editingLabelDraft={editingLabelDraft}
+        setEditingLabelId={setEditingLabelId}
+        setEditingLabelDraft={setEditingLabelDraft}
+        createPending={createLabelMutation.isPending}
+        updatePending={updateLabelMutation.isPending}
+        deletePending={deleteLabelMutation.isPending}
+        onCreate={() => createLabelMutation.mutate(newLabelDraft)}
+        onUpdate={(labelId, draft) => updateLabelMutation.mutate({ labelId, draft })}
+        onDelete={(label) => {
+          const confirmed = window.confirm(`Delete label "${label.name}"? Existing issue label links will be removed.`);
+          if (confirmed) deleteLabelMutation.mutate(label.id);
+        }}
+      />
 
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
@@ -627,6 +747,191 @@ export function CompanySettings() {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function CompanyLabelsSettings({
+  labels,
+  newLabelDraft,
+  setNewLabelDraft,
+  editingLabelId,
+  editingLabelDraft,
+  setEditingLabelId,
+  setEditingLabelDraft,
+  createPending,
+  updatePending,
+  deletePending,
+  onCreate,
+  onUpdate,
+  onDelete,
+}: {
+  labels: IssueLabel[];
+  newLabelDraft: LabelDraft;
+  setNewLabelDraft: (draft: LabelDraft) => void;
+  editingLabelId: string | null;
+  editingLabelDraft: LabelDraft | null;
+  setEditingLabelId: (id: string | null) => void;
+  setEditingLabelDraft: (draft: LabelDraft | null) => void;
+  createPending: boolean;
+  updatePending: boolean;
+  deletePending: boolean;
+  onCreate: () => void;
+  onUpdate: (labelId: string, draft: LabelDraft) => void;
+  onDelete: (label: IssueLabel) => void;
+}) {
+  const canCreate = newLabelDraft.name.trim().length > 0;
+  const startEditing = (label: IssueLabel) => {
+    setEditingLabelId(label.id);
+    setEditingLabelDraft({
+      name: label.name,
+      color: label.color,
+      description: label.description ?? "",
+    });
+  };
+
+  return (
+    <div className="space-y-4" data-testid="company-settings-labels-section">
+      <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        Issue Labels
+      </div>
+      <div className="space-y-4 rounded-md border border-border px-4 py-4">
+        <p className="text-sm text-muted-foreground">
+          Company-wide label vocabulary used by issue lists, issue creation, and agent context. Descriptions are shown
+          to agents as operational guidance.
+        </p>
+
+        <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_7rem]">
+          <input
+            className="rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+            value={newLabelDraft.name}
+            onChange={(event) => setNewLabelDraft({ ...newLabelDraft, name: event.target.value })}
+            placeholder="Label name"
+          />
+          <input
+            type="color"
+            className="h-9 w-full cursor-pointer rounded border border-border bg-transparent p-1"
+            value={newLabelDraft.color}
+            onChange={(event) => setNewLabelDraft({ ...newLabelDraft, color: event.target.value })}
+            aria-label="New label color"
+          />
+          <textarea
+            className="min-h-20 rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none sm:col-span-2"
+            value={newLabelDraft.description}
+            onChange={(event) => setNewLabelDraft({ ...newLabelDraft, description: event.target.value })}
+            placeholder="When should agents and operators use this label?"
+          />
+          <div className="sm:col-span-2">
+            <Button size="sm" disabled={!canCreate || createPending} onClick={onCreate}>
+              <Plus className="mr-1.5 h-3.5 w-3.5" />
+              {createPending ? "Creating..." : "Create label"}
+            </Button>
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          {labels.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No labels yet.</p>
+          ) : labels.map((label) => {
+            const editing = editingLabelId === label.id && editingLabelDraft;
+            return (
+              <div key={label.id} className="rounded-md border border-border bg-muted/20 px-3 py-3">
+                {editing ? (
+                  <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_7rem]">
+                    <input
+                      className="rounded-md border border-border bg-background px-2.5 py-1.5 text-sm outline-none"
+                      value={editingLabelDraft.name}
+                      onChange={(event) => setEditingLabelDraft({ ...editingLabelDraft, name: event.target.value })}
+                    />
+                    <input
+                      type="color"
+                      className="h-9 w-full cursor-pointer rounded border border-border bg-transparent p-1"
+                      value={editingLabelDraft.color}
+                      onChange={(event) => setEditingLabelDraft({ ...editingLabelDraft, color: event.target.value })}
+                      aria-label={`Edit ${label.name} color`}
+                    />
+                    <textarea
+                      className="min-h-20 rounded-md border border-border bg-background px-2.5 py-1.5 text-sm outline-none sm:col-span-2"
+                      value={editingLabelDraft.description}
+                      onChange={(event) => setEditingLabelDraft({ ...editingLabelDraft, description: event.target.value })}
+                    />
+                    <div className="flex flex-wrap gap-2 sm:col-span-2">
+                      <Button
+                        size="sm"
+                        disabled={!editingLabelDraft.name.trim() || updatePending}
+                        onClick={() => onUpdate(label.id, editingLabelDraft)}
+                      >
+                        {updatePending ? "Saving..." : "Save label"}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          setEditingLabelId(null);
+                          setEditingLabelDraft(null);
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: label.color }} aria-hidden="true" />
+                        <span className="text-sm font-medium">{label.name}</span>
+                        {(label.source ?? "manual") !== "manual" ? (
+                          <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+                            {(label.source ?? "manual").replace("_", " ")}
+                          </span>
+                        ) : null}
+                      </div>
+                      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                        {label.description?.trim() || "No guidance yet."}
+                      </p>
+                      <LabelMetadataSummary label={label} />
+                    </div>
+                    <div className="flex shrink-0 gap-2">
+                      <Button size="sm" variant="outline" onClick={() => startEditing(label)}>
+                        Edit
+                      </Button>
+                      <Button size="sm" variant="ghost" disabled={deletePending} onClick={() => onDelete(label)}>
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LabelMetadataSummary({ label }: { label: IssueLabel }) {
+  const { evidence, confidence } = readLabelBaselineMetadata(label);
+  if (!confidence && evidence.length === 0) return null;
+
+  return (
+    <div className="mt-2 space-y-1 rounded-md border border-border/70 bg-background/60 px-2.5 py-2">
+      <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+        {confidence ? (
+          <span className="rounded-full bg-muted px-1.5 py-0.5 uppercase tracking-[0.14em]">
+            {confidence} confidence
+          </span>
+        ) : null}
+        <span>Baseline-derived guidance for agents</span>
+      </div>
+      {evidence.length > 0 ? (
+        <div className="text-[11px] leading-relaxed text-muted-foreground">
+          <span className="font-medium text-foreground">Evidence:</span>{" "}
+          {evidence.slice(0, 4).join(", ")}
+          {evidence.length > 4 ? ` +${evidence.length - 4} more` : ""}
+        </div>
+      ) : null}
     </div>
   );
 }

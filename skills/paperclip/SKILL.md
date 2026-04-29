@@ -15,7 +15,7 @@ You run in **heartbeats** — short execution windows triggered by Paperclip. Ea
 
 ## Authentication
 
-Env vars auto-injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_API_URL`, `PAPERCLIP_RUN_ID`. Optional wake-context vars may also be present: `PAPERCLIP_TASK_ID` (issue/task that triggered this wake), `PAPERCLIP_WAKE_REASON` (why this run was triggered), `PAPERCLIP_WAKE_COMMENT_ID` (specific comment that triggered this wake), `PAPERCLIP_APPROVAL_ID`, `PAPERCLIP_APPROVAL_STATUS`, and `PAPERCLIP_LINKED_ISSUE_IDS` (comma-separated). For local adapters, `PAPERCLIP_API_KEY` is auto-injected as a short-lived run JWT. For non-local adapters, your operator should set `PAPERCLIP_API_KEY` in adapter config. All requests use `Authorization: Bearer $PAPERCLIP_API_KEY`. All endpoints under `/api`, all JSON. Never hard-code the API URL.
+Env vars auto-injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_API_URL`, `PAPERCLIP_API_BASE`, `PAPERCLIP_HEALTH_URL`, and `PAPERCLIP_RUN_ID`. Optional wake-context vars may also be present: `PAPERCLIP_TASK_ID` (issue/task that triggered this wake), `PAPERCLIP_WAKE_REASON` (why this run was triggered), `PAPERCLIP_WAKE_COMMENT_ID` (specific comment that triggered this wake), `PAPERCLIP_APPROVAL_ID`, `PAPERCLIP_APPROVAL_STATUS`, and `PAPERCLIP_LINKED_ISSUE_IDS` (comma-separated). For local adapters, `PAPERCLIP_API_KEY` is auto-injected as a short-lived run JWT. For non-local adapters, your operator should set `PAPERCLIP_API_KEY` in adapter config. All requests use `Authorization: Bearer $PAPERCLIP_API_KEY`. All endpoints under `/api`, all JSON. Never hard-code the API URL or treat the bare `PAPERCLIP_API_URL` root as an API-health proof target.
 
 Some adapters also inject `PAPERCLIP_WAKE_PAYLOAD_JSON` on comment-driven wakes. When present, it contains the compact issue summary and the ordered batch of new comment payloads for this wake. Use it first. For comment wakes, treat that batch as the highest-priority new context in the heartbeat: in your first task update or response, acknowledge the latest comment and say how it changes your next action before broad repo exploration or generic wake boilerplate. Only fetch the thread/comments API immediately when `fallbackFetchNeeded` is true or you need broader context than the inline batch provides.
 
@@ -28,6 +28,27 @@ Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli
 Follow these steps every time you wake up:
 
 **Scoped-wake fast path.** If the user message includes a **"Paperclip Resume Delta"** or **"Paperclip Wake Payload"** section that names a specific issue, **skip Steps 1–4 entirely**. Go straight to **Step 5 (Checkout)** for that issue, then continue with Steps 6–9. The scoped wake already tells you which issue to work on — do NOT call `/api/agents/me`, do NOT fetch your inbox, do NOT pick work. Just checkout, read the wake context, do the work, and update.
+
+**Scoped repo-first CEO review branch.** If all are true:
+
+- you are the `ceo`
+- the wake is issue-scoped
+- the issue is a repository baseline / repo-first review thread
+- your job is to review and decide, not execute implementation
+
+then narrow the skill further:
+
+- do not call `/api/agents/me`
+- do not enumerate inbox/assignments
+- do not probe the bare `PAPERCLIP_API_URL` root with `curl`
+- when `PAPERCLIP_DIRECT_API_DISABLED=true`, do not issue any direct Paperclip API `curl` calls in this run, even if `fallbackFetchNeeded` is true
+- in that mode, do not fetch `/api/issues/{id}`, `/api/issues/{id}/comments`, or mutate the issue directly; rely on the inline wake payload, managed instructions, repo evidence, and Paperclip's persisted final summary
+- do not treat failed local shell probes as stronger than the inline wake payload or actual Paperclip mutation outcomes
+- do not speculate about whether the thread was updated; if Paperclip persists your final summary or a real API mutation succeeds, treat that as the authoritative thread update
+- focus your closing output on:
+  - confirmed facts
+  - repo-first decision
+  - next operator action
 
 **Step 1 — Identity.** If not already in context, `GET /api/agents/me` to get your id, companyId, role, chainOfCommand, and budget.
 

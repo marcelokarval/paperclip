@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Project } from "@paperclipai/shared";
+import type { Project, ProjectIssueSystemGuidance } from "@paperclipai/shared";
 import { StatusBadge } from "./StatusBadge";
 import { cn, formatDate } from "../lib/utils";
 import { goalsApi } from "../api/goals";
@@ -22,6 +22,11 @@ import { DraftInput } from "./agent-config-primitives";
 import { InlineEditor } from "./InlineEditor";
 import { EnvVarEditor } from "./EnvVarEditor";
 import { readRepositoryDocumentationBaseline } from "../lib/repository-documentation-baseline";
+import {
+  buildKeepManualDescriptionPatch,
+  buildProjectDescriptionPatch,
+  buildUseBaselineDescriptionSuggestionPatch,
+} from "../lib/project-operating-context";
 
 const PROJECT_STATUSES = [
   { value: "backlog", label: "Backlog" },
@@ -53,7 +58,8 @@ export type ProjectConfigFieldKey =
   | "execution_workspace_branch_template"
   | "execution_workspace_worktree_parent_dir"
   | "execution_workspace_provision_command"
-  | "execution_workspace_teardown_command";
+  | "execution_workspace_teardown_command"
+  | "issue_system_guidance";
 
 function SaveIndicator({ state }: { state: ProjectFieldSaveState }) {
   if (state === "saving") {
@@ -220,6 +226,157 @@ function ArchiveDangerZone({
   );
 }
 
+const EMPTY_ISSUE_SYSTEM_GUIDANCE: ProjectIssueSystemGuidance = {
+  labelUsageGuidance: [],
+  parentChildGuidance: [],
+  blockingGuidance: [],
+  reviewGuidance: [],
+  approvalGuidance: [],
+  canonicalDocs: [],
+  suggestedVerificationCommands: [],
+};
+
+function guidanceToDraft(value: ProjectIssueSystemGuidance | null | undefined): Record<keyof ProjectIssueSystemGuidance, string> {
+  const guidance = value ?? EMPTY_ISSUE_SYSTEM_GUIDANCE;
+  return {
+    labelUsageGuidance: guidance.labelUsageGuidance.join("\n"),
+    parentChildGuidance: guidance.parentChildGuidance.join("\n"),
+    blockingGuidance: guidance.blockingGuidance.join("\n"),
+    reviewGuidance: guidance.reviewGuidance.join("\n"),
+    approvalGuidance: guidance.approvalGuidance.join("\n"),
+    canonicalDocs: guidance.canonicalDocs.join("\n"),
+    suggestedVerificationCommands: guidance.suggestedVerificationCommands.join("\n"),
+  };
+}
+
+function draftToGuidance(draft: Record<keyof ProjectIssueSystemGuidance, string>): ProjectIssueSystemGuidance {
+  const lines = (value: string) =>
+    value
+      .split("\n")
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  return {
+    labelUsageGuidance: lines(draft.labelUsageGuidance),
+    parentChildGuidance: lines(draft.parentChildGuidance),
+    blockingGuidance: lines(draft.blockingGuidance),
+    reviewGuidance: lines(draft.reviewGuidance),
+    approvalGuidance: lines(draft.approvalGuidance),
+    canonicalDocs: lines(draft.canonicalDocs),
+    suggestedVerificationCommands: lines(draft.suggestedVerificationCommands),
+  };
+}
+
+function ProjectIssueSystemGuidanceEditor({
+  value,
+  state,
+  onSave,
+}: {
+  value: ProjectIssueSystemGuidance | null;
+  state: ProjectFieldSaveState;
+  onSave: (guidance: ProjectIssueSystemGuidance) => void;
+}) {
+  const [draft, setDraft] = useState(() => guidanceToDraft(value));
+
+  useEffect(() => {
+    setDraft(guidanceToDraft(value));
+  }, [value]);
+
+  const updateDraft = (key: keyof ProjectIssueSystemGuidance, nextValue: string) => {
+    setDraft((current) => ({ ...current, [key]: nextValue }));
+  };
+
+  return (
+    <div className="space-y-3 rounded-md border border-border/70 bg-muted/20 px-3 py-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <span>Project issue system</span>
+            <SaveIndicator state={state} />
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Persistent project guidance sent to agents for labels, blocking, sub-issues, review, approval, docs, and verification.
+          </p>
+        </div>
+        <Button size="sm" variant="outline" onClick={() => onSave(draftToGuidance(draft))}>
+          Save guidance
+        </Button>
+      </div>
+      <div className="grid gap-3 md:grid-cols-2">
+        <GuidanceTextarea
+          label="Label usage"
+          value={draft.labelUsageGuidance}
+          onChange={(value) => updateDraft("labelUsageGuidance", value)}
+          placeholder="Use frontend when..."
+        />
+        <GuidanceTextarea
+          label="Parent/sub-issues"
+          value={draft.parentChildGuidance}
+          onChange={(value) => updateDraft("parentChildGuidance", value)}
+          placeholder="Use parentId only when..."
+        />
+        <GuidanceTextarea
+          label="Blocking"
+          value={draft.blockingGuidance}
+          onChange={(value) => updateDraft("blockingGuidance", value)}
+          placeholder="Use blockedBy only when..."
+        />
+        <GuidanceTextarea
+          label="Review"
+          value={draft.reviewGuidance}
+          onChange={(value) => updateDraft("reviewGuidance", value)}
+          placeholder="Request review when..."
+        />
+        <GuidanceTextarea
+          label="Approval"
+          value={draft.approvalGuidance}
+          onChange={(value) => updateDraft("approvalGuidance", value)}
+          placeholder="Require approval when..."
+        />
+        <GuidanceTextarea
+          label="Canonical docs"
+          value={draft.canonicalDocs}
+          onChange={(value) => updateDraft("canonicalDocs", value)}
+          placeholder="AGENTS.md"
+        />
+        <GuidanceTextarea
+          label="Verification commands"
+          value={draft.suggestedVerificationCommands}
+          onChange={(value) => updateDraft("suggestedVerificationCommands", value)}
+          placeholder="pnpm -r typecheck"
+          className="md:col-span-2"
+        />
+      </div>
+    </div>
+  );
+}
+
+function GuidanceTextarea({
+  label,
+  value,
+  onChange,
+  placeholder,
+  className,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  className?: string;
+}) {
+  return (
+    <label className={cn("space-y-1.5", className)}>
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <textarea
+        className="min-h-24 w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-xs outline-none"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+      />
+      <span className="block text-[11px] text-muted-foreground">One item per line.</span>
+    </label>
+  );
+}
+
 export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSaveState, onArchive, archivePending }: ProjectPropertiesProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
@@ -287,6 +444,15 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
   const repositoryBaselineStack = repositoryBaseline?.stack.filter(Boolean) ?? [];
   const repositoryBaselineDocs = repositoryBaseline?.documentationFiles.filter(Boolean) ?? [];
   const repositoryBaselineGaps = repositoryBaseline?.gaps?.filter(Boolean) ?? [];
+  const operatingContext = project.operatingContext ?? null;
+  const descriptionSuggestion = operatingContext?.configurationDescriptionSuggestion?.trim() || null;
+  const descriptionUsesSuggestion = operatingContext?.descriptionSource === "baseline";
+  const operatingContextLabels = operatingContext?.labelCatalog ?? [];
+  const operatingContextDocs = operatingContext?.canonicalDocs ?? [];
+  const operatingContextCommands = operatingContext?.verificationCommands ?? [];
+  const operatingContextOwnershipAreas = operatingContext?.ownershipAreas ?? [];
+  const operatingContextGuidance = operatingContext?.operatingGuidance ?? [];
+  const suggestedGoals = operatingContext?.suggestedGoals ?? [];
   const hasAdditionalLegacyWorkspaces = workspaces.some((workspace) => workspace.id !== primaryCodebaseWorkspace?.id);
   const executionWorkspacePolicy = project.executionWorkspacePolicy ?? null;
   const executionWorkspacesEnabled = executionWorkspacePolicy?.enabled === true;
@@ -356,7 +522,6 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
       setRepositoryBaselineMessage(error instanceof Error ? error.message : "Failed to refresh repository baseline.");
     },
   });
-
   const removeGoal = (goalId: string) => {
     if (!onUpdate && !onFieldUpdate) return;
     commitField("goals", { goalIds: linkedGoalIds.filter((id) => id !== goalId) });
@@ -529,15 +694,55 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
           valueClassName="space-y-0.5"
         >
           {onUpdate || onFieldUpdate ? (
-            <InlineEditor
-              value={project.description ?? ""}
-              onSave={(description) => commitField("description", { description })}
-              nullable
-              as="p"
-              className="text-sm text-muted-foreground"
-              placeholder="Add a description..."
-              multiline
-            />
+            <div className="space-y-2">
+              <InlineEditor
+                value={project.description ?? ""}
+                onSave={(description) => commitField("description", buildProjectDescriptionPatch(project, description))}
+                nullable
+                as="p"
+                className="text-sm text-muted-foreground"
+                placeholder="Add a description..."
+                multiline
+              />
+              {descriptionSuggestion ? (
+                <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="space-y-1">
+                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                        Baseline suggestion
+                      </div>
+                      <p className="text-xs text-muted-foreground">{descriptionSuggestion}</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        className="h-7 px-2"
+                        onClick={() => {
+                          const patch = buildUseBaselineDescriptionSuggestionPatch(project);
+                          if (patch) commitField("description", patch);
+                        }}
+                      >
+                        {descriptionUsesSuggestion ? "Reset to suggestion" : "Use suggestion"}
+                      </Button>
+                      {project.description?.trim() && !descriptionUsesSuggestion ? (
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          className="h-7 px-2"
+                          onClick={() => {
+                            const patch = buildKeepManualDescriptionPatch(project);
+                            if (patch) commitField("description", patch);
+                          }}
+                        >
+                          Keep manual override
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </div>
           ) : (
             <p className="text-sm text-muted-foreground">
               {project.description?.trim() || "No description"}
@@ -924,6 +1129,111 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                     </div>
                   </div>
                 ))}
+              </div>
+            ) : null}
+
+            <ProjectIssueSystemGuidanceEditor
+              value={project.issueSystemGuidance ?? null}
+              state={fieldState("issue_system_guidance")}
+              onSave={(guidance) => commitField("issue_system_guidance", { issueSystemGuidance: guidance })}
+            />
+
+            {operatingContext ? (
+              <div className="space-y-3 rounded-md border border-border/70 bg-muted/10 px-3 py-3">
+                <div>
+                  <div className="text-sm font-medium">Project operating context</div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Accepted repository baseline promoted into project-level context.
+                  </p>
+                </div>
+
+                {operatingContextLabels.length > 0 ? (
+                  <div className="space-y-1.5">
+                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Label catalog</div>
+                    <div className="space-y-1">
+                      {operatingContextLabels.map((label) => (
+                        <div key={label.name} className="rounded-md border border-border/70 bg-background px-2 py-1.5">
+                          <div className="flex items-center gap-2">
+                            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: label.color }} />
+                            <span className="text-xs font-medium">{label.name}</span>
+                          </div>
+                          <p className="mt-1 text-[11px] text-muted-foreground">{label.description}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {operatingContextDocs.length > 0 ? (
+                  <div className="space-y-1.5">
+                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Canonical docs</div>
+                    <div className="space-y-1 text-[11px] text-muted-foreground">
+                      {operatingContextDocs.map((doc) => (
+                        <div key={doc} className="font-mono break-all">{doc}</div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {operatingContextCommands.length > 0 ? (
+                  <div className="space-y-1.5">
+                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Verification commands</div>
+                    <div className="space-y-1 text-[11px] text-muted-foreground">
+                      {operatingContextCommands.map((command) => (
+                        <div key={command} className="font-mono break-all">{command}</div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {operatingContextOwnershipAreas.length > 0 ? (
+                  <div className="space-y-1.5">
+                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Ownership areas</div>
+                    <div className="space-y-2">
+                      {operatingContextOwnershipAreas.map((area) => (
+                        <div key={area.name} className="rounded-md border border-border/70 bg-background px-2 py-1.5">
+                          <div className="text-xs font-medium">{area.name}</div>
+                          {area.paths.length > 0 ? (
+                            <div className="mt-1 space-y-1 text-[11px] text-muted-foreground">
+                              {area.paths.map((entry) => (
+                                <div key={entry} className="font-mono break-all">{entry}</div>
+                              ))}
+                            </div>
+                          ) : null}
+                          {area.recommendedLabels.length > 0 ? (
+                            <div className="mt-1 flex flex-wrap gap-1">
+                              {area.recommendedLabels.map((label) => (
+                                <span key={label} className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
+                                  {label}
+                                </span>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {operatingContextGuidance.length > 0 ? (
+                  <div className="space-y-1.5">
+                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Operating guidance</div>
+                    <ul className="space-y-1 text-[11px] text-muted-foreground">
+                      {operatingContextGuidance.map((entry) => (
+                        <li key={entry}>{entry}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+
+                {suggestedGoals.length > 0 ? (
+                  <div className="space-y-1.5">
+                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Suggested goals</div>
+                    <div className="rounded-md border border-border/70 bg-background px-3 py-2 text-[11px] text-muted-foreground">
+                      Suggested goals now live in the <Link to={`/projects/${project.urlKey ?? project.id}/intake`} className="hover:underline">Project Intake</Link> flow so they stay close to repo onboarding and staffing.
+                    </div>
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </div>

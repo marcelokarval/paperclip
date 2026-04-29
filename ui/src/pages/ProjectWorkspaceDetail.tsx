@@ -271,6 +271,7 @@ export function ProjectWorkspaceDetail() {
     [project, routeWorkspaceId],
   );
   const canonicalProjectRef = project ? projectRouteRef(project) : routeProjectRef;
+  const intakeHref = `/projects/${canonicalProjectRef}/intake`;
   const initialState = useMemo(() => (workspace ? formStateFromWorkspace(workspace) : null), [workspace]);
   const repositoryBaseline = useMemo(
     () => readRepositoryDocumentationBaseline(workspace?.metadata),
@@ -360,6 +361,27 @@ export function ProjectWorkspaceDetail() {
     onError: (error) => {
       setBaselineActionMessage(null);
       setErrorMessage(error instanceof Error ? error.message : "Failed to refresh repository baseline.");
+    },
+  });
+
+  const applyRepositoryBaselineRecommendations = useMutation({
+    mutationFn: () =>
+      projectsApi.applyRepositoryBaselineRecommendations(project!.id, routeWorkspaceId, lookupCompanyId, {
+        applyLabels: true,
+        acceptIssueGuidance: true,
+      }),
+    onSuccess: (result) => {
+      invalidateProject();
+      const companyId = project!.companyId;
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.labels(companyId) });
+      setErrorMessage(null);
+      setBaselineActionMessage(
+        `Repository baseline recommendations applied. Created ${result.labels.created.length} labels; ${result.labels.existing.length} already existed. Repository context acceptance is still a separate operator step.`,
+      );
+    },
+    onError: (error) => {
+      setBaselineActionMessage(null);
+      setErrorMessage(error instanceof Error ? error.message : "Failed to apply repository baseline recommendations.");
     },
   });
 
@@ -621,15 +643,32 @@ export function ProjectWorkspaceDetail() {
               <RepositoryBaselinePanel
                 baseline={repositoryBaseline}
                 form={form.repositoryBaseline}
-                isRefreshing={refreshRepositoryBaseline.isPending}
+                isRefreshing={refreshRepositoryBaseline.isPending || applyRepositoryBaselineRecommendations.isPending}
                 actionMessage={baselineActionMessage}
                 onRefresh={(request) => refreshRepositoryBaseline.mutate(request ?? {})}
+                onRunAnalyzer={() => refreshRepositoryBaseline.mutate({ createTrackingIssue: true, runAnalyzer: true })}
+                onApplyRecommendations={() => applyRepositoryBaselineRecommendations.mutate()}
+                actionSurface="support"
+                intakeHref={intakeHref}
                 onChange={(repositoryBaselineForm) =>
                   setForm((current) =>
                     current ? { ...current, repositoryBaseline: repositoryBaselineForm } : current
                   )
                 }
               />
+
+              <div className="rounded-2xl border border-border bg-card p-5">
+                <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Workspace role</div>
+                <h2 className="mt-2 text-lg font-semibold">Technical support surface</h2>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Workspace detail still owns pathing, repo source, and runtime configuration. The primary repo-first operator flow now lives in Project Intake.
+                </p>
+                <div className="mt-4">
+                  <Button asChild type="button" variant="secondary">
+                    <Link to={intakeHref}>Open Project Intake</Link>
+                  </Button>
+                </div>
+              </div>
             </div>
 
             <div className="mt-5 flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-center">
