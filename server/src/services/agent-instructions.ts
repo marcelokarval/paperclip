@@ -573,7 +573,7 @@ export function agentInstructionsService() {
       return {
         adapterConfig,
         bundle: await getBundle({ ...agent, adapterConfig }),
-        healed: false,
+        healed: adapterConfig !== current.config,
       };
     }
 
