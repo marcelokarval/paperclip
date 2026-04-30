@@ -9,6 +9,7 @@ import type { AdapterRuntimeServiceReport } from "@paperclipai/adapter-utils";
 import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import {
+  type ExecutionWorkspace,
   listWorkspaceServiceCommandDefinitions,
   type WorkspaceRuntimeDesiredState,
   type WorkspaceRuntimeServiceStateMap,
@@ -733,6 +734,29 @@ async function validateLinkedGitWorktree(input: {
   }
 
   return { valid: true };
+}
+
+export async function validatePersistedGitExecutionWorkspace(input: {
+  baseCwd: string;
+  workspace: Pick<ExecutionWorkspace, "cwd" | "providerRef" | "strategyType" | "branchName">;
+}): Promise<{ valid: true } | { valid: false; reason: string }> {
+  if (input.workspace.strategyType !== "git_worktree") return { valid: true };
+
+  const worktreePath = input.workspace.providerRef ?? input.workspace.cwd;
+  if (!worktreePath) {
+    return { valid: false, reason: "persisted git worktree has no local path" };
+  }
+
+  const repoRoot = await resolveGitOwnerRepoRoot(input.baseCwd).catch(() => null);
+  if (!repoRoot) {
+    return { valid: false, reason: "base workspace is not a valid git checkout" };
+  }
+
+  return validateLinkedGitWorktree({
+    repoRoot,
+    worktreePath,
+    expectedBranchName: input.workspace.branchName ?? null,
+  });
 }
 
 function terminateChildProcess(child: ChildProcess) {

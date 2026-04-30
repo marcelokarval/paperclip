@@ -35,6 +35,7 @@ import {
   sanitizeRuntimeServiceBaseEnv,
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
+  validatePersistedGitExecutionWorkspace,
   type RealizedExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
 import { writeLocalServiceRegistryRecord } from "../services/local-service-supervisor.ts";
@@ -561,6 +562,30 @@ describe("realizeExecutionWorkspace", () => {
         },
       }),
     ).rejects.toThrow(/not a reusable git worktree \(worktree HEAD is on "unexpected-branch" instead of "PAP-447-add-worktree-support"\)\./);
+  });
+
+  it("rejects persisted git worktree reuse when HEAD drifted from the persisted branch", async () => {
+    const repoRoot = await createTempRepo();
+    const branchName = "PAP-1356-persisted-worktree";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", branchName);
+
+    await runGit(repoRoot, ["worktree", "add", "-b", branchName, worktreePath, "HEAD"]);
+    await runGit(worktreePath, ["checkout", "-b", "unexpected-branch"]);
+
+    const result = await validatePersistedGitExecutionWorkspace({
+      baseCwd: repoRoot,
+      workspace: {
+        strategyType: "git_worktree",
+        cwd: worktreePath,
+        providerRef: worktreePath,
+        branchName,
+      },
+    });
+
+    expect(result).toEqual({
+      valid: false,
+      reason: `worktree HEAD is on "unexpected-branch" instead of "${branchName}"`,
+    });
   });
 
   it("reuses an already checked out branch from git worktree metadata even when the target path differs", async () => {

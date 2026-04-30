@@ -124,6 +124,7 @@ describe("codex execute", () => {
       expect(capture.codexHome).toBe(managedCodexHome);
       expect(capture.argv).toEqual([
         "exec",
+        "--skip-git-repo-check",
         "--json",
         "--dangerously-bypass-approvals-and-sandbox",
         "-",

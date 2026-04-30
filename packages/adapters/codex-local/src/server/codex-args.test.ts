@@ -15,6 +15,7 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toEqual([
       "--search",
       "exec",
+      "--skip-git-repo-check",
       "--json",
       "--model",
       "gpt-5.4",
@@ -37,6 +38,7 @@ describe("buildCodexExecArgs", () => {
     expect(result.fastModeIgnoredReason).toContain("currently only supported on gpt-5.4");
     expect(result.args).toEqual([
       "exec",
+      "--skip-git-repo-check",
       "--json",
       "--model",
       "gpt-5.3-codex",

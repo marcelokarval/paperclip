@@ -64,6 +64,7 @@ import {
   type ExecutionWorkspaceInput,
   type RealizedExecutionWorkspace,
   sanitizeRuntimeServiceBaseEnv,
+  validatePersistedGitExecutionWorkspace,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
@@ -203,6 +204,32 @@ export function buildRealizedExecutionWorkspaceFromPersisted(input: {
     warnings: [],
     created: false,
   };
+}
+
+async function buildValidatedRealizedExecutionWorkspaceFromPersisted(input: {
+  base: ExecutionWorkspaceInput;
+  workspace: ExecutionWorkspace;
+}): Promise<RealizedExecutionWorkspace | null> {
+  const realized = buildRealizedExecutionWorkspaceFromPersisted(input);
+  if (!realized) return null;
+
+  const validation = await validatePersistedGitExecutionWorkspace({
+    baseCwd: input.base.baseCwd,
+    workspace: input.workspace,
+  });
+  if (validation.valid) return realized;
+
+  logger.warn(
+    {
+      executionWorkspaceId: input.workspace.id,
+      cwd: input.workspace.cwd,
+      providerRef: input.workspace.providerRef,
+      branchName: input.workspace.branchName,
+      reason: validation.reason,
+    },
+    "persisted execution workspace failed validation; provisioning a fresh workspace",
+  );
+  return null;
 }
 
 function buildExecutionWorkspaceConfigSnapshot(config: Record<string, unknown>): Partial<ExecutionWorkspaceConfig> | null {
@@ -3771,7 +3798,7 @@ export function heartbeatService(db: Db) {
       repoRef: resolvedWorkspace.repoRef,
     } satisfies ExecutionWorkspaceInput;
     const reusedExecutionWorkspace = shouldReuseExisting && existingExecutionWorkspace
-      ? buildRealizedExecutionWorkspaceFromPersisted({
+      ? await buildValidatedRealizedExecutionWorkspaceFromPersisted({
           base: executionWorkspaceBase,
           workspace: existingExecutionWorkspace,
         })
