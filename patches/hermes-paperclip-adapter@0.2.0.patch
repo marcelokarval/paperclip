@@ -33,7 +33,29 @@ index 93cddf8243271f5fb3ab101617f9114257e41328..c5661ae85ffdd389e3698a6f0757e73f
  // ---------------------------------------------------------------------------
  // Wake-up prompt builder
  // ---------------------------------------------------------------------------
-@@ -253,12 +258,10 @@ export async function execute(ctx) {
+@@ -242,6 +247,21 @@ function parseHermesOutput(stdout, stderr) {
+     }
+     return result;
+ }
++function isHermesUnknownSessionError(stdout, stderr) {
++    const combined = `${stdout}\n${stderr}`;
++    return /no conversation found with session id|unknown session|session(?: id)?\s+\S+\s+(?:not found|does not exist)|thread\s+\S+\s+not found/i.test(combined);
++}
++function removeResumeArgs(args) {
++    const freshArgs = [];
++    for (let i = 0; i < args.length; i += 1) {
++        if (args[i] === "--resume") {
++            i += 1;
++            continue;
++        }
++        freshArgs.push(args[i]);
++    }
++    return freshArgs;
++}
+ // ---------------------------------------------------------------------------
+ // Main execute
+ // ---------------------------------------------------------------------------
+@@ -253,12 +273,10 @@ export async function execute(ctx) {
      const persistSession = cfgBoolean(config.persistSession) !== false;
      const worktreeMode = cfgBoolean(config.worktreeMode) === true;
      const checkpoints = cfgBoolean(config.checkpoints) === true;
@@ -47,7 +69,7 @@ index 93cddf8243271f5fb3ab101617f9114257e41328..c5661ae85ffdd389e3698a6f0757e73f
      if (useQuiet)
          args.push("-Q");
      if (model) {
-@@ -310,6 +313,30 @@ export async function execute(ctx) {
+@@ -310,6 +328,30 @@ export async function execute(ctx) {
      catch {
          // Non-fatal
      }
@@ -78,3 +100,43 @@ index 93cddf8243271f5fb3ab101617f9114257e41328..c5661ae85ffdd389e3698a6f0757e73f
      // ── Log start ──────────────────────────────────────────────────────────
      await ctx.onLog("stdout", `[hermes] Starting Hermes Agent (model=${model ?? "configured-default"}, timeout=${timeoutSec}s)\n`);
      if (prevSessionId) {
+@@ -352,13 +394,28 @@ export async function execute(ctx) {
+         }
+         return ctx.onLog(stream, chunk);
+     };
+-    const result = await runChildProcess(ctx.runId, hermesCmd, args, {
++    let result = await runChildProcess(ctx.runId, hermesCmd, args, {
+         cwd,
+         env,
+         timeoutSec,
+         graceSec,
+         onLog: wrappedOnLog,
+     });
++    let retriedFreshSession = false;
++    if (prevSessionId &&
++        !result.timedOut &&
++        (result.exitCode ?? 0) !== 0 &&
++        isHermesUnknownSessionError(result.stdout || "", result.stderr || "")) {
++        await ctx.onLog("stdout", `[paperclip] Hermes resume session "${prevSessionId}" is unavailable; retrying with a fresh session.\n`);
++        result = await runChildProcess(ctx.runId, hermesCmd, removeResumeArgs(args), {
++            cwd,
++            env,
++            timeoutSec,
++            graceSec,
++            onLog: wrappedOnLog,
++        });
++        retriedFreshSession = true;
++    }
+     // ── Parse output ───────────────────────────────────────────────────────
+     const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+     await ctx.onLog("stdout", `[hermes] Exit code: ${result.exitCode ?? "null"}, timed out: ${result.timedOut}\n`);
+@@ -404,6 +464,9 @@ export async function execute(ctx) {
+         executionResult.sessionParams = { sessionId: parsed.sessionId };
+         executionResult.sessionDisplayId = parsed.sessionId.slice(0, 16);
+     }
++    else if (retriedFreshSession) {
++        executionResult.clearSession = true;
++    }
+     return executionResult;
+ }
+ //# sourceMappingURL=execute.js.map

@@ -647,8 +647,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     sessionId &&
     !initial.proc.timedOut &&
     (initial.proc.exitCode ?? 0) !== 0 &&
-    initial.parsed &&
-    isClaudeUnknownSessionError(initial.parsed)
+    isClaudeUnknownSessionError(initial.parsed, initial.proc.stdout, initial.proc.stderr)
   ) {
     await onLog(
       "stdout",

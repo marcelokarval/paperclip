@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { sessionCodec as claudeSessionCodec } from "@paperclipai/adapter-claude-local/server";
+import {
+  sessionCodec as claudeSessionCodec,
+  isClaudeUnknownSessionError,
+} from "@paperclipai/adapter-claude-local/server";
 import { sessionCodec as codexSessionCodec, isCodexUnknownSessionError } from "@paperclipai/adapter-codex-local/server";
 import {
   sessionCodec as cursorSessionCodec,
@@ -128,6 +131,24 @@ describe("codex resume recovery detection", () => {
         '{"type":"result","ok":true}',
         "",
       ),
+    ).toBe(false);
+  });
+});
+
+describe("claude resume recovery detection", () => {
+  it("detects unknown session errors from parsed output and raw stderr", () => {
+    expect(
+      isClaudeUnknownSessionError({
+        result: "No conversation found with session id abc",
+      }),
+    ).toBe(true);
+    expect(
+      isClaudeUnknownSessionError(null, "", "Error: unknown session stale-session"),
+    ).toBe(true);
+    expect(
+      isClaudeUnknownSessionError({
+        result: "Completed normally",
+      }),
     ).toBe(false);
   });
 });

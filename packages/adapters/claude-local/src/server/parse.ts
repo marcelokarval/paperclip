@@ -167,9 +167,14 @@ export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | 
   return /max(?:imum)?\s+turns?/i.test(resultText);
 }
 
-export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): boolean {
-  const resultText = asString(parsed.result, "").trim();
-  const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
+export function isClaudeUnknownSessionError(
+  parsed: Record<string, unknown> | null | undefined,
+  stdout = "",
+  stderr = "",
+): boolean {
+  const parsedResult = parsed ?? {};
+  const resultText = asString(parsedResult.result, "").trim();
+  const allMessages = [resultText, ...extractClaudeErrorMessages(parsedResult), stdout, stderr]
     .map((msg) => msg.trim())
     .filter(Boolean);
 
