@@ -22,11 +22,14 @@ const mockApprovalService = vi.hoisted(() => ({
   create: vi.fn(),
 }));
 const mockBudgetService = vi.hoisted(() => ({}));
-const mockHeartbeatService = vi.hoisted(() => ({}));
+const mockHeartbeatService = vi.hoisted(() => ({
+  wakeup: vi.fn(),
+}));
 const mockIssueApprovalService = vi.hoisted(() => ({
   linkManyForApproval: vi.fn(),
 }));
 const mockIssueService = vi.hoisted(() => ({
+  create: vi.fn(),
   getById: vi.fn(),
   update: vi.fn(),
 }));
@@ -148,6 +151,16 @@ function createDb(requireBoardApprovalForNewAgents = false) {
   };
 }
 
+function createDbWithProjectWorkspace(workspace: Record<string, unknown> | null) {
+  return {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(async () => workspace ? [workspace] : []),
+      })),
+    })),
+  };
+}
+
 async function createApp(db: Record<string, unknown> = createDb()) {
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
@@ -236,9 +249,10 @@ describe("agent skill routes", () => {
       entries: [],
       warnings: [],
     });
-    mockAgentService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeAgent("claude_local"),
+    mockAgentService.update.mockImplementation(async (id: string, patch: Record<string, unknown>) => ({
+      ...((await mockAgentService.getById(id)) ?? makeAgent("claude_local")),
       adapterConfig: patch.adapterConfig ?? {},
+      ...patch,
     }));
     mockAgentService.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
       ...makeAgent(String(input.adapterType ?? "claude_local")),
@@ -276,7 +290,30 @@ describe("agent skill routes", () => {
     mockAccessService.ensureMembership.mockResolvedValue(undefined);
     mockAccessService.setPrincipalPermission.mockResolvedValue(undefined);
     mockIssueService.getById.mockResolvedValue(null);
+    mockIssueService.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PCL-1",
+      ...input,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }));
     mockIssueService.update.mockResolvedValue(null);
+    mockAgentInstructionsService.getBundle.mockResolvedValue({
+      agentId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      mode: "managed",
+      rootPath: "/tmp/11111111-1111-4111-8111-111111111111/instructions",
+      managedRootPath: "/tmp/11111111-1111-4111-8111-111111111111/instructions",
+      entryFile: "AGENTS.md",
+      resolvedEntryPath: "/tmp/11111111-1111-4111-8111-111111111111/instructions/AGENTS.md",
+      editable: true,
+      warnings: [],
+      legacyPromptTemplateActive: false,
+      legacyBootstrapPromptTemplateActive: false,
+      files: [{ path: "AGENTS.md", size: 10, language: "markdown", markdown: true, isEntryFile: true, editable: true, deprecated: false, virtual: false }],
+    });
+    mockHeartbeatService.wakeup.mockResolvedValue({ id: "run-1" });
     mockProjectService.getById.mockResolvedValue(null);
   });
 
@@ -492,6 +529,28 @@ describe("agent skill routes", () => {
     });
   });
 
+  it("persists required bundled skills when creating agents without explicit desired skills", async () => {
+    const res = await request(await createApp())
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "Engineer",
+        role: "engineer",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      });
+
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    expect(mockSecretService.normalizeAdapterConfigForPersistence).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        paperclipSkillSync: expect.objectContaining({
+          desiredSkills: ["paperclipai/paperclip/paperclip"],
+        }),
+      }),
+      expect.any(Object),
+    );
+  });
+
   it("includes canonical desired skills in hire approvals", async () => {
     const db = createDb(true);
 
@@ -517,6 +576,128 @@ describe("agent skill routes", () => {
         }),
       }),
     );
+  });
+
+  it("includes required bundled skills in hire approvals without explicit desired skills", async () => {
+    const res = await request(await createApp(createDb(true)))
+      .post("/api/companies/company-1/agent-hires")
+      .send({
+        name: "QA Agent",
+        role: "engineer",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockApprovalService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          desiredSkills: ["paperclipai/paperclip/paperclip"],
+          requestedConfigurationSnapshot: expect.objectContaining({
+            desiredSkills: ["paperclipai/paperclip/paperclip"],
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("creates and wakes an operating pack audit issue for an agent", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent("claude_local"),
+      role: "ceo",
+      name: "CEO",
+      adapterConfig: {},
+    });
+
+    const res = await request(await createApp())
+      .post("/api/agents/11111111-1111-4111-8111-111111111111/operating-pack-audit-issue?companyId=company-1")
+      .send({ scope: "agent_operating_pack" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Audit and refresh CEO operating pack",
+        assigneeAgentId: "11111111-1111-4111-8111-111111111111",
+        status: "todo",
+        description: expect.stringContaining("Missing expected files"),
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        reason: "operating_pack_audit_requested",
+        payload: expect.objectContaining({ issueId: "issue-1" }),
+      }),
+    );
+    expect(res.body.audit.missingFiles).toContain("OPERATING_MODELS.md");
+    expect(res.body.audit.missingRequiredSkills).toEqual([]);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          paperclipSkillSync: expect.objectContaining({
+            desiredSkills: ["paperclipai/paperclip/paperclip"],
+          }),
+        }),
+      }),
+      expect.objectContaining({
+        recordRevision: expect.objectContaining({ source: "required_runtime_skills_refresh" }),
+      }),
+    );
+  });
+
+  it("rejects operating pack audit issues linked to another company project", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent("claude_local"),
+      role: "ceo",
+      name: "CEO",
+      adapterConfig: {},
+    });
+    mockProjectService.getById.mockResolvedValue({
+      id: "22222222-2222-4222-8222-222222222222",
+      companyId: "other-company",
+    });
+
+    const res = await request(await createApp())
+      .post("/api/agents/11111111-1111-4111-8111-111111111111/operating-pack-audit-issue?companyId=company-1")
+      .send({
+        projectId: "22222222-2222-4222-8222-222222222222",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(404);
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("rejects operating pack audit issues linked to a workspace outside the requested project", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent("claude_local"),
+      role: "ceo",
+      name: "CEO",
+      adapterConfig: {},
+    });
+    mockProjectService.getById.mockResolvedValue({
+      id: "22222222-2222-4222-8222-222222222222",
+      companyId: "company-1",
+    });
+    const db = createDbWithProjectWorkspace({
+      id: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      projectId: "44444444-4444-4444-8444-444444444444",
+    });
+
+    const res = await request(await createApp(db))
+      .post("/api/agents/11111111-1111-4111-8111-111111111111/operating-pack-audit-issue?companyId=company-1")
+      .send({
+        projectId: "22222222-2222-4222-8222-222222222222",
+        projectWorkspaceId: "33333333-3333-4333-8333-333333333333",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("uses managed AGENTS config in hire approval payloads", async () => {
@@ -714,5 +895,58 @@ describe("agent skill routes", () => {
         },
       }),
     );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(ceoAgentId, expect.objectContaining({
+      source: "assignment",
+      reason: "staffing_approval_requested",
+      payload: {
+        issueId: sourceIssueId,
+        approvalId: "approval-1",
+      },
+      contextSnapshot: expect.objectContaining({
+        issueId: sourceIssueId,
+        approvalId: "approval-1",
+        wakeReason: "staffing_approval_requested",
+        forceFreshSession: true,
+      }),
+    }));
+  });
+
+  it("still wakes the reviewer when a staffing source issue is already assigned", async () => {
+    const sourceIssueId = "11111111-2222-4333-8444-555555555555";
+    const ceoAgentId = "99999999-aaaa-4bbb-8ccc-dddddddddddd";
+    mockIssueService.getById.mockResolvedValue({
+      id: sourceIssueId,
+      companyId: "company-1",
+      projectId: "66666666-7777-4888-8999-000000000000",
+      originKind: "staffing_hiring",
+      status: "in_review",
+      assigneeAgentId: ceoAgentId,
+    });
+
+    const res = await request(await createApp(createDb(true)))
+      .post("/api/companies/company-1/agent-hires")
+      .send({
+        name: "CTO",
+        role: "cto",
+        reportsTo: ceoAgentId,
+        adapterType: "claude_local",
+        adapterConfig: {},
+        sourceIssueIds: [sourceIssueId],
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "issue.staffing_approval_requested" }),
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(ceoAgentId, expect.objectContaining({
+      source: "assignment",
+      reason: "staffing_approval_requested",
+      payload: {
+        issueId: sourceIssueId,
+        approvalId: "approval-1",
+      },
+    }));
   });
 });

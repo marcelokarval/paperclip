@@ -11,6 +11,7 @@ import type {
   AgentTaskSession,
   AgentWakeupResponse,
   HeartbeatRun,
+  Issue,
   Approval,
   AgentConfigRevision,
 } from "@paperclipai/shared";
@@ -61,6 +62,28 @@ export interface AgentHireResponse {
 export interface AgentPermissionUpdate {
   canCreateAgents: boolean;
   canAssignTasks: boolean;
+}
+
+export interface AgentOperatingPackAudit {
+  agentId: string;
+  agentName: string;
+  role: string;
+  adapterType: string;
+  bundleMode: string | null;
+  bundleRootPath: string | null;
+  entryFile: string;
+  expectedFiles: string[];
+  presentFiles: string[];
+  missingFiles: string[];
+  requiredSkills: string[];
+  desiredSkills: string[];
+  missingRequiredSkills: string[];
+  warnings: string[];
+}
+
+export interface AgentOperatingPackAuditIssueResponse {
+  issue: Issue;
+  audit: AgentOperatingPackAudit;
 }
 
 function withCompanyScope(path: string, companyId?: string) {
@@ -154,6 +177,15 @@ export const agentsApi = {
     api.get<AgentSkillSnapshot>(agentPath(id, companyId, "/skills")),
   syncSkills: (id: string, desiredSkills: string[], companyId?: string) =>
     api.post<AgentSkillSnapshot>(agentPath(id, companyId, "/skills/sync"), { desiredSkills }),
+  createOperatingPackAuditIssue: (
+    id: string,
+    data: { scope?: string; projectId?: string | null; projectWorkspaceId?: string | null } = {},
+    companyId?: string,
+  ) =>
+    api.post<AgentOperatingPackAuditIssueResponse>(
+      agentPath(id, companyId, "/operating-pack-audit-issue"),
+      data,
+    ),
   createKey: (id: string, name: string, companyId?: string) =>
     api.post<AgentKeyCreated>(agentPath(id, companyId, "/keys"), { name }),
   revokeKey: (agentId: string, keyId: string, companyId?: string) =>
@@ -164,9 +196,9 @@ export const agentsApi = {
     api.get<AgentTaskSession[]>(agentPath(id, companyId, "/task-sessions")),
   resetSession: (id: string, taskKey?: string | null, companyId?: string) =>
     api.post<void>(agentPath(id, companyId, "/runtime-state/reset-session"), { taskKey: taskKey ?? null }),
-  adapterModels: (companyId: string, type: string) =>
+  adapterModels: (companyId: string, type: string, options?: { refresh?: boolean }) =>
     api.get<AdapterModel[]>(
-      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/models`,
+      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/models${options?.refresh ? "?refresh=true" : ""}`,
     ),
   detectModel: (companyId: string, type: string) =>
     api.get<DetectedAdapterModel | null>(

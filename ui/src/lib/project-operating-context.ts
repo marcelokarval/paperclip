@@ -47,6 +47,7 @@ export interface ProjectIssueContextModel {
 export type ProjectIntakePhaseKey =
   | "repository_scan"
   | "ai_enrichment"
+  | "label_governance"
   | "ceo_review"
   | "repository_acceptance"
   | "execution_clarifications"
@@ -68,6 +69,8 @@ export interface ProjectIntakeModel {
   workspaceId: string | null;
   canonicalDocs: string[];
   suggestedGoalsCount: number;
+  suggestedLabelCount: number;
+  acceptedLabelCount: number;
   staffingStatusLabel: string | null;
 }
 
@@ -200,7 +203,7 @@ export function getProjectIssueContextModel(
 
 export function getProjectIntakeModel(input: {
   project: Pick<Project, "operatingContext" | "staffingState" | "workspaces" | "primaryWorkspace"> | null | undefined;
-  repositoryBaseline?: Pick<RepositoryDocumentationBaseline, "trackingIssueId" | "trackingIssueIdentifier"> | null;
+  repositoryBaseline?: Pick<RepositoryDocumentationBaseline, "trackingIssueId" | "trackingIssueIdentifier" | "recommendations" | "acceptedGuidance"> | null;
   baselineIssue?: Pick<Issue, "status" | "assigneeAgentId"> | null;
   hasBaselineCeoReviewRequest?: boolean;
 }): ProjectIntakeModel | null {
@@ -228,6 +231,12 @@ export function getProjectIntakeModel(input: {
   const ceoReviewCompleted = baselineIssue?.status === "in_review" || baselineIssue?.status === "done";
   const ceoReviewInProgress = !ceoReviewCompleted && (ceoReviewRequested || Boolean(baselineIssue?.assigneeAgentId));
   const executionStatus = operatingContext?.executionReadiness ?? "unknown";
+  const suggestedLabelCount = input.repositoryBaseline?.recommendations?.labels.length ?? 0;
+  const acceptedLabelCount = operatingContext?.labelCatalog.length ?? input.repositoryBaseline?.acceptedGuidance?.labels.length ?? 0;
+  const labelGovernanceCompleted = suggestedLabelCount === 0
+    ? Boolean(analyzerStatus)
+    : acceptedLabelCount >= suggestedLabelCount;
+  const labelGovernanceAvailable = Boolean(primaryWorkspace && suggestedLabelCount > 0);
 
   const phases: ProjectIntakePhaseModel[] = [
     {
@@ -245,6 +254,18 @@ export function getProjectIntakeModel(input: {
       description: analyzerStatus
         ? `AI enrichment recorded analyzer status: ${analyzerStatus}.`
         : "Run AI enrichment to turn the deterministic baseline into richer project context.",
+    },
+    {
+      key: "label_governance",
+      label: "Label governance",
+      status: labelGovernanceCompleted ? "completed" : labelGovernanceAvailable ? "in_progress" : "not_started",
+      description: labelGovernanceCompleted
+        ? suggestedLabelCount === 0
+          ? "No baseline labels were suggested for this repository context."
+          : `${acceptedLabelCount} baseline labels accepted for future issue routing.`
+        : labelGovernanceAvailable
+          ? "Review and sync the baseline label catalog before creating implementation issues."
+          : "Run baseline recommendations before syncing project labels.",
     },
     {
       key: "ceo_review",
@@ -290,6 +311,8 @@ export function getProjectIntakeModel(input: {
       ? "Open workspace details"
       : currentPhase === "ai_enrichment"
         ? "Run AI enrichment from the workspace"
+        : currentPhase === "label_governance"
+          ? "Sync labels and issue guidance from Project Intake"
         : currentPhase === "ceo_review"
           ? !baselineIssueExists
             ? "Create the operator issue from Project Intake"
@@ -316,6 +339,8 @@ export function getProjectIntakeModel(input: {
     workspaceId: primaryWorkspace?.id ?? null,
     canonicalDocs: uniqueStrings(operatingContext?.canonicalDocs ?? []),
     suggestedGoalsCount: operatingContext?.suggestedGoals.length ?? 0,
+    suggestedLabelCount,
+    acceptedLabelCount,
     staffingStatusLabel: staffing?.statusLabel ?? null,
   };
 }

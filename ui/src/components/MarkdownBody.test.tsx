@@ -166,6 +166,13 @@ describe("MarkdownBody", () => {
     expect(html).not.toContain('href="/issues/1778"');
   });
 
+  it("does not linkify issue-like fragments inside documentation file paths", () => {
+    const html = renderMarkdown("Read docs/plans/full-remaining-stack-execution-plan-2026-04-30.md.");
+
+    expect(html).toContain("docs/plans/full-remaining-stack-execution-plan-2026-04-30.md");
+    expect(html).not.toContain('href="/issues/PLAN-2026"');
+  });
+
   it("rewrites issue scheme links to internal issue links", () => {
     const html = renderMarkdown("See issue://PAP-1310 and issue://:PAP-1311.", [
       { identifier: "PAP-1310", status: "done" },

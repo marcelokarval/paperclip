@@ -65,8 +65,8 @@ export function ProjectIssueContextPanel({
         <div className="space-y-1.5">
           <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Ownership</div>
           <div className="space-y-2">
-            {context.ownershipAreas.map((area) => (
-              <div key={area.name} className="rounded-md border border-border/70 bg-background px-2 py-1.5">
+            {context.ownershipAreas.map((area, index) => (
+              <div key={`${area.name}:${area.paths.join("|")}:${index}`} className="rounded-md border border-border/70 bg-background px-2 py-1.5">
                 <div className="text-xs font-medium">{area.name}</div>
                 {area.paths.length > 0 ? (
                   <div className="mt-1 space-y-1 text-[11px] text-muted-foreground">

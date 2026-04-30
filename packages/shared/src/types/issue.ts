@@ -189,6 +189,11 @@ export interface IssueExecutionDecision {
   updatedAt: Date;
 }
 
+export interface IssueApprovalSummary {
+  pending: number;
+  total: number;
+}
+
 export interface Issue {
   id: string;
   companyId: string;
@@ -228,6 +233,7 @@ export interface Issue {
   hiddenAt: Date | null;
   labelIds?: string[];
   labels?: IssueLabel[];
+  approvalSummary?: IssueApprovalSummary;
   blockedBy?: IssueRelationIssueSummary[];
   blocks?: IssueRelationIssueSummary[];
   planDocument?: IssueDocument | null;

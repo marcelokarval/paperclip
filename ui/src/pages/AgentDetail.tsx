@@ -66,6 +66,7 @@ import {
   Eye,
   EyeOff,
   Copy,
+  RefreshCw,
   ChevronRight,
   ChevronDown,
   ArrowLeft,
@@ -622,6 +623,7 @@ export function AgentDetail() {
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { closePanel } = usePanel();
   const { openNewIssue } = useDialog();
+  const { pushToast } = useToastActions();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -849,6 +851,33 @@ export function AgentDetail() {
     },
   });
 
+  const createOperatingPackAuditIssue = useMutation({
+    mutationFn: () =>
+      agentsApi.createOperatingPackAuditIssue(
+        agentLookupRef,
+        { scope: "agent_operating_pack" },
+        resolvedCompanyId ?? undefined,
+      ),
+    onSuccess: (result) => {
+      setActionError(null);
+      if (resolvedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(resolvedCompanyId) });
+      }
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(result.issue.id) });
+      const issueRef = result.issue.identifier ?? result.issue.id;
+      navigate(companyPrefix ? `/${companyPrefix}/issues/${issueRef}` : `/issues/${issueRef}`);
+    },
+    onError: (err) => {
+      const message = err instanceof Error ? err.message : "Failed to create operating refresh issue.";
+      setActionError(message);
+      pushToast({
+        title: "Operating refresh issue failed",
+        body: message,
+        tone: "error",
+      });
+    },
+  });
+
   useEffect(() => {
     const crumbs: { label: string; href?: string }[] = [
       { label: "Agents", href: "/agents" },
@@ -929,6 +958,17 @@ export function AgentDetail() {
           >
             <Plus className="h-3.5 w-3.5 sm:mr-1" />
             <span className="hidden sm:inline">Assign Task</span>
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => createOperatingPackAuditIssue.mutate()}
+            disabled={createOperatingPackAuditIssue.isPending}
+          >
+            {createOperatingPackAuditIssue.isPending
+              ? <Loader2 className="h-3.5 w-3.5 sm:mr-1 animate-spin" />
+              : <RefreshCw className="h-3.5 w-3.5 sm:mr-1" />}
+            <span className="hidden sm:inline">Refresh Operating Pack</span>
           </Button>
           <RunButton
             onClick={() => agentAction.mutate("invoke")}

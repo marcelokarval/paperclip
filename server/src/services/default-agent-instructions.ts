@@ -1,9 +1,21 @@
 import fs from "node:fs/promises";
+import type { AdapterModel } from "@paperclipai/adapter-utils";
 import type { ProjectOperatingContext } from "@paperclipai/shared";
 
 const DEFAULT_AGENT_BUNDLE_FILES = {
   default: ["AGENTS.md"],
-  ceo: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
+  ceo: [
+    "AGENTS.md",
+    "CONTEXT_BOUNDARIES.md",
+    "DECISION_GATES.md",
+    "HEARTBEAT.md",
+    "HIRING_POLICY.md",
+    "ORG_OPERATING_MODEL.md",
+    "SELF_IMPROVEMENT.md",
+    "SOUL.md",
+    "TOOLS.md",
+    "WORKFLOW_PLAYBOOK.md",
+  ],
 } as const;
 
 type DefaultAgentBundleRole = keyof typeof DEFAULT_AGENT_BUNDLE_FILES;
@@ -30,6 +42,155 @@ export function resolveDefaultAgentInstructionsBundleRole(role: string): Default
 
 function formatBulletList(values: string[], emptyText: string) {
   return values.length > 0 ? values.map((value) => `- ${value}`).join("\n") : `- ${emptyText}`;
+}
+
+function formatIssueRoutingLabels(context: ProjectOperatingContext) {
+  return context.labelCatalog.length > 0
+    ? context.labelCatalog
+        .map((label) => `- \`${label.name}\`: ${label.description}`)
+        .join("\n")
+    : "- No accepted label catalog is recorded for this project.";
+}
+
+function formatOwnershipAreas(context: ProjectOperatingContext) {
+  return context.ownershipAreas.length > 0
+    ? context.ownershipAreas
+        .map((area) => {
+          const recommendedLabels = area.recommendedLabels ?? [];
+          const labels = recommendedLabels.length > 0
+            ? ` Recommended labels: ${recommendedLabels.map((label) => `\`${label}\``).join(", ")}.`
+            : "";
+          return `- ${area.name}: ${area.paths.join(", ") || "no paths recorded."}${labels}`;
+        })
+        .join("\n")
+    : "- No ownership areas are recorded for this project.";
+}
+
+export function buildIssueRoutingInstructionsFile(input: {
+  role: string;
+  projectName: string;
+  operatingContext: ProjectOperatingContext;
+}): string {
+  const context = input.operatingContext;
+  return [
+    "# Issue Routing",
+    "",
+    `Project: ${input.projectName}`,
+    context.baselineTrackingIssueIdentifier
+      ? `Baseline issue: ${context.baselineTrackingIssueIdentifier}`
+      : "Baseline issue: none recorded",
+    `Generated for role: ${input.role}`,
+    "",
+    "## Purpose",
+    "",
+    "This file is project-derived operating knowledge for issue labels, routing, review, and verification.",
+    "Use it before creating, assigning, reviewing, or decomposing project issues.",
+    "",
+    "## Label Catalog",
+    "",
+    formatIssueRoutingLabels(context),
+    "",
+    "## Ownership Areas",
+    "",
+    formatOwnershipAreas(context),
+    "",
+    "## Verification Defaults",
+    "",
+    formatBulletList(context.verificationCommands.map((entry) => `\`${entry}\``), "No verification defaults recorded."),
+    "",
+    "## Canonical Docs",
+    "",
+    formatBulletList(context.canonicalDocs.map((entry) => `\`${entry}\``), "No canonical docs recorded."),
+    "",
+    "## Routing Guidance",
+    "",
+    formatBulletList(context.operatingGuidance, "No operating guidance recorded."),
+    "",
+    "## Enforcement Rules",
+    "",
+    "- Do not invent labels outside this catalog unless the operator or project owner explicitly adds them.",
+    "- If the company label list is empty or missing these labels, ask for label sync before creating implementation issues.",
+    "- Keep repository baseline issues as context; do not turn them into backlog decomposition.",
+    "- Use review for technical correctness and approval for operator/business decisions; do not collapse the two.",
+  ].join("\n") + "\n";
+}
+
+function formatModelList(models: AdapterModel[]) {
+  return models.length > 0
+    ? models.map((model) => `- \`${model.id}\`${model.label && model.label !== model.id ? ` - ${model.label}` : ""}`).join("\n")
+    : "- No models were discovered. Use the configured adapter fallback and refresh this file before hiring.";
+}
+
+function codexRoutingPolicy(adapterType: string, modelIds: string[]) {
+  if (adapterType !== "codex_local") {
+    return [
+      "## Routing Policy",
+      "",
+      "- Use this adapter's discovered catalog as the local source of truth before hiring or reconfiguring agents.",
+      "- If the catalog is empty, refresh adapter discovery before making staffing decisions.",
+      "- Do not infer unsupported model or reasoning-effort values from memory.",
+    ].join("\n");
+  }
+
+  const has55 = modelIds.includes("gpt-5.5");
+  const has54 = modelIds.includes("gpt-5.4");
+  const hasSpark = modelIds.includes("gpt-5.3-codex-spark");
+
+  return [
+    "## Routing Policy",
+    "",
+    "- CEO strategic technical review: prefer `gpt-5.5` with `high` reasoning when available.",
+    "- CTO architecture, staffing policy, deep audits, and final technical review: prefer `gpt-5.5` with `high` reasoning when available.",
+    "- Routine technical execution: prefer `gpt-5.4` with `medium` reasoning when available.",
+    "- Fast bounded exploration, narrow edits, and parallel micro-tasks: prefer `gpt-5.3-codex-spark` with `low` or `medium` reasoning when available.",
+    "- Reserve `xhigh` for rare, ambiguous, high-consequence synthesis. Do not use it as an agent-wide default.",
+    "- If a preferred model is absent from the discovered catalog, refresh discovery first, then choose the nearest available model explicitly.",
+    "",
+    "## Current Availability Flags",
+    "",
+    `- gpt-5.5 discovered: ${has55 ? "yes" : "no"}`,
+    `- gpt-5.4 discovered: ${has54 ? "yes" : "no"}`,
+    `- gpt-5.3-codex-spark discovered: ${hasSpark ? "yes" : "no"}`,
+    "- Reasoning efforts to enforce for Codex-local hires: `low`, `medium`, `high`, `xhigh` only when supported by the selected model.",
+  ].join("\n");
+}
+
+export function buildOperatingModelsInstructionsFile(input: {
+  agentName: string;
+  role: string;
+  adapterType: string;
+  models: AdapterModel[];
+  auditedAt?: Date;
+}): string {
+  const auditedAt = (input.auditedAt ?? new Date()).toISOString();
+  const modelIds = input.models.map((model) => model.id);
+
+  return [
+    "# Operating Models",
+    "",
+    `Last generated: ${auditedAt}`,
+    `Agent: ${input.agentName}`,
+    `Role: ${input.role}`,
+    `Adapter: ${input.adapterType}`,
+    "",
+    "## Purpose",
+    "",
+    "This file is agent-owned operating knowledge. It belongs in the managed instructions bundle, not in the project repository.",
+    "Use it when hiring, configuring, reviewing, or refining agents. If model discovery changes, refresh this file before making staffing decisions.",
+    "",
+    "## Discovered Models",
+    "",
+    formatModelList(input.models),
+    "",
+    codexRoutingPolicy(input.adapterType, modelIds),
+    "",
+    "## Enforcement Rules",
+    "",
+    "- Treat this file as the current provider/model capability snapshot for this agent.",
+    "- Do not create project repository docs for general model-routing policy unless the board explicitly asks for project documentation.",
+    "- When creating or updating a technical hire, cite the selected model, reasoning effort, and why that pairing matches the task shape.",
+    "- When this file is stale, incomplete, or contradicted by live adapter discovery, propose a HITL update before changing hiring defaults.",
+  ].join("\n") + "\n";
 }
 
 function buildRoleSpecificProjectPacketGuidance(role: string) {
@@ -163,17 +324,27 @@ export function buildProjectPacketInstructionsBundle(input: {
   const nextFiles: Record<string, string> = {
     ...input.files,
     [PROJECT_PACKET_FILE_NAME]: packetContent,
+    "ISSUE_ROUTING.md": buildIssueRoutingInstructionsFile({
+      role: input.role,
+      projectName: input.projectName,
+      operatingContext,
+    }),
   };
   const existingAgents = nextFiles["AGENTS.md"] ?? "";
   const projectPacketSection = existingAgents.includes(PROJECT_PACKET_FILE_NAME)
     ? ""
     : "## Project packet\n" +
       `If \`${PROJECT_PACKET_FILE_NAME}\` exists beside this file, read it before planning or delegating project work.\n`;
+  const issueRoutingSection = existingAgents.includes("ISSUE_ROUTING.md")
+    ? ""
+    : "## Issue routing\n" +
+      "If `ISSUE_ROUTING.md` exists beside this file, read it before creating, assigning, labeling, reviewing, or decomposing project issues.\n";
   const roleSpecificGuidance = buildRoleSpecificProjectPacketGuidance(input.role);
-  if (projectPacketSection || roleSpecificGuidance) {
+  if (projectPacketSection || issueRoutingSection || roleSpecificGuidance) {
     nextFiles["AGENTS.md"] = [
       existingAgents.trimEnd(),
       projectPacketSection,
+      issueRoutingSection,
       roleSpecificGuidance,
     ]
       .filter(Boolean)

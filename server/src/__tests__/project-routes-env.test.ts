@@ -1302,7 +1302,15 @@ describe("project env routes", () => {
       documentationFiles: ["README.md", "AGENTS.md"],
       guardrails: ["Documentation only"],
       recommendations: {
-        labels: [],
+        labels: [
+          {
+            name: "frontend",
+            color: "#2563eb",
+            evidence: ["React"],
+            confidence: "high",
+            description: "UI and browser-visible behavior.",
+          },
+        ],
         issuePolicy: {
           parentChildGuidance: ["Use parentId only for explicit decomposition."],
           blockingGuidance: ["Use blockedByIssueIds only for concrete blockers."],
@@ -1345,6 +1353,18 @@ describe("project env routes", () => {
       .send({ acceptIssueGuidance: true });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.createLabel).toHaveBeenCalledWith("company-1", {
+      name: "frontend",
+      color: "#2563eb",
+      description: "UI and browser-visible behavior.",
+      source: "repository_baseline",
+      metadata: {
+        baselineEvidence: ["React"],
+        baselineConfidence: "high",
+        baselineProjectId: "project-1",
+        baselineWorkspaceId: "workspace-1",
+      },
+    });
     expect(mockProjectService.update).toHaveBeenCalledWith("project-1", {
       issueSystemGuidance: expect.objectContaining({
         labelUsageGuidance: ["Use frontend for UI work."],

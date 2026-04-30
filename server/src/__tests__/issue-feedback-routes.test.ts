@@ -70,6 +70,7 @@ function registerModuleMocks() {
     heartbeatService: () => mockHeartbeatService,
     instanceSettingsService: () => mockInstanceSettingsService,
     issueApprovalService: () => ({}),
+  approvalService: () => ({}),
     issueService: () => mockIssueService,
     logActivity: mockLogActivity,
     projectService: () => ({}),

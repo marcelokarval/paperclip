@@ -1164,7 +1164,20 @@ describe("heartbeat comment wake batching", () => {
           .select()
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 1 && runs[0]?.status === "succeeded" && runs[0]?.issueCommentStatus === "satisfied";
+        const [releasedIssue] = await db
+          .select({
+            checkoutRunId: issues.checkoutRunId,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .where(eq(issues.id, issueId));
+        return (
+          runs.length === 1 &&
+          runs[0]?.status === "succeeded" &&
+          runs[0]?.issueCommentStatus === "satisfied" &&
+          releasedIssue?.checkoutRunId === null &&
+          releasedIssue?.executionRunId === null
+        );
       });
 
       const runs = await db

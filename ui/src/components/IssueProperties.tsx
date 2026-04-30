@@ -991,7 +991,7 @@ export function IssueProperties({
               project={currentProject}
               title="Project context"
             />
-            {participantSuggestions ? (
+            {participantSuggestions && !isRepositoryBaselineTrackingIssue ? (
               <div className="mt-2 flex flex-wrap gap-2">
                 {participantSuggestions.assigneeAgentId && issue.assigneeAgentId !== participantSuggestions.assigneeAgentId ? (
                   <button

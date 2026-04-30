@@ -1,5 +1,5 @@
 import type { Issue, Project, RepositoryDocumentationBaseline } from "@paperclipai/shared";
-import { Check, FileSearch, Loader2, MessageSquare, Sparkles, TicketPlus, UserPlus } from "lucide-react";
+import { Check, FileSearch, Loader2, MessageSquare, Sparkles, Tags, TicketPlus, UserPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Link } from "../lib/router";
 import { getProjectIntakeModel } from "../lib/project-operating-context";
@@ -128,6 +128,9 @@ export function ProjectIntakePanel({
     && (hasBaselineCeoReviewRequest || baselineIssue?.status === "in_review" || baselineIssue?.status === "done")
     && !repositoryContextAccepted,
   );
+  const suggestedLabels = repositoryBaseline?.recommendations?.labels ?? [];
+  const acceptedLabels = project.operatingContext?.labelCatalog ?? repositoryBaseline?.acceptedGuidance?.labels ?? [];
+  const labelSyncComplete = suggestedLabels.length > 0 && acceptedLabels.length >= suggestedLabels.length;
 
   return (
     <div className="space-y-6">
@@ -180,13 +183,57 @@ export function ProjectIntakePanel({
                 {isRefreshingBaseline ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
                 Run AI enrichment
               </Button>
-              <Button type="button" variant="outline" disabled={!hasWorkspace || isApplyingRecommendations} onClick={onApplyRecommendations}>
-                {isApplyingRecommendations ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
-                Apply recommendations
-              </Button>
             </div>
             {baselineActionMessage ? <p className="mt-3 text-sm text-muted-foreground">{baselineActionMessage}</p> : null}
             {repositoryBaseline?.summary ? <p className="mt-3 text-sm text-muted-foreground">{repositoryBaseline.summary}</p> : null}
+          </div>
+
+          <div className="rounded-2xl border border-border bg-card p-5">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Step 1.5 · Label governance</div>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Validate and materialize the baseline label catalog before creating implementation issues.
+                  These labels also feed `ISSUE_ROUTING.md` for CEO/CTO project work.
+                </p>
+              </div>
+              <span className={`inline-flex w-fit rounded-full border px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.14em] ${
+                labelSyncComplete
+                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                  : "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-200"
+              }`}>
+                {labelSyncComplete ? "synced" : `${suggestedLabels.length} suggested`}
+              </span>
+            </div>
+            {suggestedLabels.length > 0 ? (
+              <div className="mt-4 grid gap-2 md:grid-cols-2">
+                {suggestedLabels.map((label) => {
+                  const accepted = acceptedLabels.some((entry) => entry.name === label.name);
+                  return (
+                    <div key={label.name} className="rounded-lg border border-border bg-background/70 px-3 py-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: label.color }} aria-hidden="true" />
+                          <span className="text-sm font-medium">{label.name}</span>
+                        </div>
+                        <span className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+                          {accepted ? "accepted" : label.confidence}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{label.description}</p>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="mt-3 text-sm text-muted-foreground">No baseline labels have been generated yet.</p>
+            )}
+            <div className="mt-4">
+              <Button type="button" variant="outline" disabled={!hasWorkspace || suggestedLabels.length === 0 || isApplyingRecommendations} onClick={onApplyRecommendations}>
+                {isApplyingRecommendations ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Tags className="mr-2 h-4 w-4" />}
+                {labelSyncComplete ? "Resync labels and guidance" : "Sync labels and issue guidance"}
+              </Button>
+            </div>
           </div>
 
           <div className="rounded-2xl border border-border bg-card p-5">

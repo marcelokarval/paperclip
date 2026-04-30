@@ -13,7 +13,9 @@ import {
   costEvents,
   feedbackVotes,
   financeEvents,
+  approvals,
   issueAttachments,
+  issueApprovals,
   issueInboxArchives,
   issueLabels,
   issueRelations,
@@ -160,7 +162,11 @@ type IssueActiveRunRow = {
   createdAt: Date;
 };
 type IssueWithLabels = IssueRow & { labels: IssueLabelRow[]; labelIds: string[] };
-type IssueWithLabelsAndRun = IssueWithLabels & { activeRun: IssueActiveRunRow | null };
+type IssueApprovalSummary = { pending: number; total: number };
+type IssueWithLabelsAndRun = IssueWithLabels & {
+  activeRun: IssueActiveRunRow | null;
+  approvalSummary?: IssueApprovalSummary;
+};
 type IssueUserCommentStats = {
   issueId: string;
   myLastCommentAt: Date | null;
@@ -615,11 +621,41 @@ async function activeRunMapForIssues(
 function withActiveRuns(
   issueRows: IssueWithLabels[],
   runMap: Map<string, IssueActiveRunRow>,
+  approvalSummaryMap?: Map<string, IssueApprovalSummary>,
 ): IssueWithLabelsAndRun[] {
   return issueRows.map((row) => ({
     ...row,
     activeRun: row.executionRunId ? (runMap.get(row.executionRunId) ?? null) : null,
+    approvalSummary: approvalSummaryMap?.get(row.id) ?? { pending: 0, total: 0 },
   }));
+}
+
+async function approvalSummaryMapForIssues(
+  dbOrTx: any,
+  issueIds: string[],
+): Promise<Map<string, IssueApprovalSummary>> {
+  const map = new Map<string, IssueApprovalSummary>();
+  if (issueIds.length === 0) return map;
+
+  const rows = await dbOrTx
+    .select({
+      issueId: issueApprovals.issueId,
+      status: approvals.status,
+    })
+    .from(issueApprovals)
+    .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+    .where(inArray(issueApprovals.issueId, issueIds));
+
+  for (const row of rows) {
+    const summary = map.get(row.issueId) ?? { pending: 0, total: 0 };
+    summary.total += 1;
+    if (row.status === "pending" || row.status === "revision_requested") {
+      summary.pending += 1;
+    }
+    map.set(row.issueId, summary);
+  }
+
+  return map;
 }
 
 export function issueService(db: Db) {
@@ -738,8 +774,12 @@ export function issueService(db: Db) {
         );
       const rows = limit === undefined ? await baseQuery : await baseQuery.limit(limit);
       const withLabels = await withIssueLabels(db, rows);
-      const runMap = await activeRunMapForIssues(db, withLabels);
-      const withRuns = withActiveRuns(withLabels, runMap);
+      const issueIdsForSummaries = withLabels.map((row) => row.id);
+      const [runMap, approvalSummaryMap] = await Promise.all([
+        activeRunMapForIssues(db, withLabels),
+        approvalSummaryMapForIssues(db, issueIdsForSummaries),
+      ]);
+      const withRuns = withActiveRuns(withLabels, runMap, approvalSummaryMap);
       if (withRuns.length === 0) {
         return withRuns;
       }

@@ -1001,6 +1001,14 @@ export function projectRoutes(db: Db) {
         return;
       }
 
+      await applySuggestedRepositoryLabels({
+        companyId: project.companyId,
+        projectId: project.id,
+        workspaceId: currentWorkspace.id,
+        baseline: existingBaseline,
+        applyLabels: true,
+      });
+
       const baseline: RepositoryDocumentationBaseline = {
         ...existingBaseline,
         acceptedGuidance,

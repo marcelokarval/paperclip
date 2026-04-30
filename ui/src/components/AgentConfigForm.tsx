@@ -286,6 +286,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryFn: () => agentsApi.adapterModels(selectedCompanyId!, adapterType),
     enabled: Boolean(selectedCompanyId),
   });
+  async function refreshAdapterModels() {
+    if (!selectedCompanyId) return;
+    const nextModels = await agentsApi.adapterModels(selectedCompanyId, adapterType, { refresh: true });
+    queryClient.setQueryData(queryKeys.agents.adapterModels(selectedCompanyId, adapterType), nextModels);
+  }
   const models = fetchedModels ?? externalModels ?? [];
   const {
     data: detectedModelData,
@@ -703,6 +708,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   const result = await refetchDetectedModel();
                   return result.data?.model ?? null;
                 }}
+                onRefreshModels={refreshAdapterModels}
                 detectModelLabel="Detect model"
                 emptyDetectHint="No model detected. Select or enter one manually."
               />
@@ -1045,6 +1051,7 @@ function ModelDropdown({
   detectedModel,
   detectedModelCandidates,
   onDetectModel,
+  onRefreshModels,
   detectModelLabel,
   emptyDetectHint,
 }: {
@@ -1060,11 +1067,13 @@ function ModelDropdown({
   detectedModel?: string | null;
   detectedModelCandidates?: string[];
   onDetectModel?: () => Promise<string | null>;
+  onRefreshModels?: () => Promise<void>;
   detectModelLabel?: string;
   emptyDetectHint?: string;
 }) {
   const [modelSearch, setModelSearch] = useState("");
   const [detectingModel, setDetectingModel] = useState(false);
+  const [refreshingModels, setRefreshingModels] = useState(false);
   const selected = models.find((m) => m.id === value);
   const manualModel = modelSearch.trim();
   const canCreateManualModel = Boolean(
@@ -1134,6 +1143,17 @@ function ModelDropdown({
     }
   }
 
+  async function handleRefreshModels() {
+    if (!onRefreshModels) return;
+    setRefreshingModels(true);
+    try {
+      await onRefreshModels();
+      setModelSearch("");
+    } finally {
+      setRefreshingModels(false);
+    }
+  }
+
   return (
     <Field label="Model" hint={help.model}>
       <Popover
@@ -1189,6 +1209,24 @@ function ModelDropdown({
                 <path d="M3 3v5h5" />
               </svg>
               {detectingModel ? "Detecting..." : detectedModel ? (detectModelLabel?.replace(/^Detect\b/, "Re-detect") ?? "Re-detect from config") : (detectModelLabel ?? "Detect from config")}
+            </button>
+          )}
+          {onRefreshModels && !modelSearch.trim() && (
+            <button
+              type="button"
+              className="flex items-center gap-1.5 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground"
+              onClick={() => {
+                void handleRefreshModels();
+              }}
+              disabled={refreshingModels}
+            >
+              <svg aria-hidden="true" focusable="false" className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 2v6h-6" />
+                <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+                <path d="M3 22v-6h6" />
+                <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+              </svg>
+              {refreshingModels ? "Refreshing models..." : "Refresh models"}
             </button>
           )}
           {value && (!models.some((m) => m.id === value) || promotedModelIds.has(value)) && (

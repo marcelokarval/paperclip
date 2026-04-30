@@ -4,7 +4,7 @@ import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-loca
 import { models as opencodeFallbackModels } from "@paperclipai/adapter-opencode-local";
 import { resetOpenCodeModelsCacheForTests } from "@paperclipai/adapter-opencode-local/server";
 import { listAdapterModels } from "../adapters/index.js";
-import { resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
+import { resetCodexModelsCacheForTests, setCodexModelsRunnerForTests } from "../adapters/codex-models.js";
 import { resetCursorModelsCacheForTests, setCursorModelsRunnerForTests } from "../adapters/cursor-models.js";
 
 describe("adapter model listing", () => {
@@ -12,6 +12,7 @@ describe("adapter model listing", () => {
     delete process.env.OPENAI_API_KEY;
     delete process.env.PAPERCLIP_OPENCODE_COMMAND;
     resetCodexModelsCacheForTests();
+    setCodexModelsRunnerForTests(null);
     resetCursorModelsCacheForTests();
     setCursorModelsRunnerForTests(null);
     resetOpenCodeModelsCacheForTests();
@@ -24,41 +25,72 @@ describe("adapter model listing", () => {
   });
 
   it("returns codex fallback models when no OpenAI key is available", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    setCodexModelsRunnerForTests(() => ({
+      status: null,
+      stdout: "",
+      stderr: "",
+      hasError: true,
+    }));
     const models = await listAdapterModels("codex_local");
 
     expect(models).toEqual(codexFallbackModels);
-    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("loads codex models dynamically and merges fallback options", async () => {
-    process.env.OPENAI_API_KEY = "sk-test";
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        data: [
-          { id: "gpt-5-pro" },
-          { id: "gpt-5" },
+  it("loads codex models from the local Codex catalog and merges fallback options", async () => {
+    const runner = vi.fn(() => ({
+      status: 0,
+      stdout: JSON.stringify({
+        models: [
+          { slug: "gpt-5.5", display_name: "GPT-5.5" },
+          { slug: "gpt-5", display_name: "GPT-5" },
         ],
       }),
-    } as Response);
+      stderr: "",
+      hasError: false,
+    }));
+    setCodexModelsRunnerForTests(runner);
 
     const first = await listAdapterModels("codex_local");
     const second = await listAdapterModels("codex_local");
 
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(runner).toHaveBeenCalledTimes(1);
     expect(first).toEqual(second);
-    expect(first.some((model) => model.id === "gpt-5-pro")).toBe(true);
+    expect(first.some((model) => model.id === "gpt-5.5")).toBe(true);
     expect(first.some((model) => model.id === "codex-mini-latest")).toBe(true);
   });
 
-  it("falls back to static codex models when OpenAI model discovery fails", async () => {
-    process.env.OPENAI_API_KEY = "sk-test";
-    vi.spyOn(globalThis, "fetch").mockResolvedValue({
-      ok: false,
-      status: 401,
-      json: async () => ({}),
-    } as Response);
+  it("refreshes codex models on demand instead of serving the cache", async () => {
+    const runner = vi
+      .fn()
+      .mockReturnValueOnce({
+        status: 0,
+        stdout: JSON.stringify({ models: [{ slug: "gpt-5.4", display_name: "GPT-5.4" }] }),
+        stderr: "",
+        hasError: false,
+      })
+      .mockReturnValueOnce({
+        status: 0,
+        stdout: JSON.stringify({ models: [{ slug: "gpt-5.5", display_name: "GPT-5.5" }] }),
+        stderr: "",
+        hasError: false,
+      });
+    setCodexModelsRunnerForTests(runner);
+
+    const first = await listAdapterModels("codex_local");
+    const second = await listAdapterModels("codex_local", { refresh: true });
+
+    expect(runner).toHaveBeenCalledTimes(2);
+    expect(first.some((model) => model.id === "gpt-5.4")).toBe(true);
+    expect(second.some((model) => model.id === "gpt-5.5")).toBe(true);
+  });
+
+  it("falls back to static codex models when Codex model discovery fails", async () => {
+    setCodexModelsRunnerForTests(() => ({
+      status: 1,
+      stdout: "",
+      stderr: "not authenticated",
+      hasError: false,
+    }));
 
     const models = await listAdapterModels("codex_local");
     expect(models).toEqual(codexFallbackModels);

@@ -32,6 +32,7 @@ const mockSecretService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockSyncInstructionsBundleConfigFromFilePath = vi.hoisted(() => vi.fn());
 const mockFindServerAdapter = vi.hoisted(() => vi.fn());
+const mockListAdapterModels = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
@@ -52,7 +53,7 @@ vi.mock("../services/index.js", () => ({
 
 vi.mock("../adapters/index.js", () => ({
   findServerAdapter: mockFindServerAdapter,
-  listAdapterModels: vi.fn(),
+  listAdapterModels: mockListAdapterModels,
 }));
 
 function registerModuleMocks() {
@@ -75,7 +76,7 @@ function registerModuleMocks() {
 
   vi.doMock("../adapters/index.js", () => ({
     findServerAdapter: mockFindServerAdapter,
-    listAdapterModels: vi.fn(),
+    listAdapterModels: mockListAdapterModels,
   }));
 }
 
@@ -146,6 +147,7 @@ describe("agent instructions bundle routes", () => {
     vi.resetAllMocks();
     mockSyncInstructionsBundleConfigFromFilePath.mockImplementation((_agent, config) => config);
     mockFindServerAdapter.mockImplementation((_type: string) => ({ type: _type }));
+    mockListAdapterModels.mockResolvedValue([{ id: "gpt-5.5", label: "GPT-5.5" }]);
     mockAgentService.getById.mockResolvedValue(makeAgent());
     mockAgentService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeAgent(),
@@ -219,6 +221,49 @@ describe("agent instructions bundle routes", () => {
       entryFile: "AGENTS.md",
     });
     expect(mockAgentInstructionsService.getBundle).toHaveBeenCalled();
+  });
+
+  it("refreshes operating model instructions from adapter discovery", async () => {
+    mockAgentInstructionsService.writeFile.mockResolvedValueOnce({
+      bundle: null,
+      file: {
+        path: "OPERATING_MODELS.md",
+        size: 512,
+        language: "markdown",
+        markdown: true,
+        isEntryFile: false,
+        editable: true,
+        deprecated: false,
+        virtual: false,
+        content: "# Operating Models\n",
+      },
+      adapterConfig: {
+        instructionsBundleMode: "managed",
+        instructionsRootPath: "/tmp/agent-1",
+        instructionsEntryFile: "AGENTS.md",
+        instructionsFilePath: "/tmp/agent-1/AGENTS.md",
+      },
+    });
+
+    const res = await request(await createApp())
+      .post("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle/operating-models/refresh?companyId=company-1");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({ path: "OPERATING_MODELS.md" });
+    expect(mockListAdapterModels).toHaveBeenCalledWith("codex_local", { refresh: true });
+    expect(mockAgentInstructionsService.writeFile).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "11111111-1111-4111-8111-111111111111" }),
+      "OPERATING_MODELS.md",
+      expect.stringContaining("gpt-5.5 discovered: yes"),
+      { clearLegacyPromptTemplate: false },
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "agent.operating_models_refreshed",
+        entityId: "11111111-1111-4111-8111-111111111111",
+      }),
+    );
   });
 
   it("writes a bundle file and persists compatibility config", async () => {

@@ -705,6 +705,12 @@ describe("project operating context helpers", () => {
           description: "AI enrichment recorded analyzer status: succeeded.",
         },
         {
+          key: "label_governance",
+          label: "Label governance",
+          status: "completed",
+          description: "No baseline labels were suggested for this repository context.",
+        },
+        {
           key: "ceo_review",
           label: "CEO review",
           status: "completed",
@@ -734,6 +740,8 @@ describe("project operating context helpers", () => {
       workspaceId: "workspace-1",
       canonicalDocs: ["README.md"],
       suggestedGoalsCount: 1,
+      suggestedLabelCount: 0,
+      acceptedLabelCount: 0,
       staffingStatusLabel: "Not started",
     });
   });

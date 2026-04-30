@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { Issue } from "@paperclipai/shared";
-import { Columns3 } from "lucide-react";
+import { Columns3, ShieldCheck } from "lucide-react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Button } from "@/components/ui/button";
 import {
@@ -182,6 +182,18 @@ export function InboxIssueMetaLeading({
           >
             Live
           </span>
+        </span>
+      )}
+      {(issue.approvalSummary?.pending ?? 0) > 0 && (
+        <span
+          className={cn(
+            "inline-flex items-center gap-1 rounded-full border border-amber-500/25 bg-amber-500/10 px-1.5 py-0.5 sm:gap-1.5 sm:px-2",
+            "text-amber-700 dark:text-amber-300",
+          )}
+          title={`${issue.approvalSummary?.pending ?? 0} pending approval${(issue.approvalSummary?.pending ?? 0) === 1 ? "" : "s"}`}
+        >
+          <ShieldCheck className="h-3 w-3" />
+          <span className="hidden text-[11px] font-medium sm:inline">HITL</span>
         </span>
       )}
     </>

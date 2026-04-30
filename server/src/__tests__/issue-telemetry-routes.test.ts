@@ -42,6 +42,7 @@ function registerModuleMocks() {
     }),
     instanceSettingsService: () => ({}),
     issueApprovalService: () => ({}),
+  approvalService: () => ({}),
     issueService: () => mockIssueService,
     logActivity: vi.fn(async () => undefined),
     projectService: () => ({}),

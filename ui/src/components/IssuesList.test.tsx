@@ -590,6 +590,27 @@ describe("IssuesList", () => {
     });
   });
 
+  it("shows a HITL badge for issues with pending approvals", async () => {
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[createIssue({ approvalSummary: { pending: 1, total: 1 } })]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("HITL");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("blurs the search input on Escape once the field is empty", async () => {
     const { root } = renderWithQueryClient(
       <IssuesList

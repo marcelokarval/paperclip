@@ -42,6 +42,7 @@ import {
   goalService,
   heartbeatService,
   instanceSettingsService,
+  approvalService,
   issueApprovalService,
   issueService,
   documentService,
@@ -229,6 +230,33 @@ function shouldImplicitlyReopenCommentForAgent(input: {
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   if (input.actorType === "agent" && input.actorId === input.assigneeAgentId) return false;
   return true;
+}
+
+export function parseDeferredHitlApprovalRequest(commentBody: string | null | undefined) {
+  if (!commentBody) return null;
+  const body = commentBody.trim();
+  if (!/\bHITL\b/i.test(body)) return null;
+  if (!/Deferred HITL items|Proposed\s+`?[^`\n]+`?\s+\(HITL\)|requires?\s+HITL|HITL approval/i.test(body)) {
+    return null;
+  }
+
+  const proposedItems = Array.from(body.matchAll(/Proposed\s+`?([^`\n]+?)`?\s+\(HITL\)/gi))
+    .map((match) => match[1]?.trim())
+    .filter((value): value is string => Boolean(value));
+  const uniqueProposedItems = Array.from(new Set(proposedItems));
+  const deferredStart = body.search(/Deferred HITL items/i);
+  const hitlSection = deferredStart >= 0 ? body.slice(deferredStart).trim() : body;
+  const summary =
+    uniqueProposedItems.length > 0
+      ? `Review HITL proposals: ${uniqueProposedItems.join(", ")}`
+      : "Review HITL proposal from issue closeout";
+
+  return {
+    title: summary,
+    summary,
+    proposedItems: uniqueProposedItems,
+    proposedComment: hitlSection,
+  };
 }
 
 function buildIssueRepositoryBaselineContext(project: {
@@ -437,6 +465,7 @@ export function issueRoutes(
   const projectsSvc = projectService(db);
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
+  const approvalsSvc = approvalService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
@@ -523,6 +552,86 @@ export function issueRoutes(
       throw forbidden("Missing permission: tasks:assign");
     }
     throw unauthorized();
+  }
+
+  async function materializeDeferredHitlApproval(input: {
+    issue: { id: string; companyId: string; identifier: string | null; title: string };
+    actor: ReturnType<typeof getActorInfo>;
+    commentId: string | null;
+    commentBody: string | null | undefined;
+  }) {
+    if (input.actor.actorType !== "agent") return null;
+    const parsed = parseDeferredHitlApprovalRequest(input.commentBody);
+    if (!parsed) return null;
+
+    const existingApprovals = await issueApprovalsSvc.listApprovalsForIssue(input.issue.id);
+    const existingActionable = existingApprovals.find((approval) => {
+      if (approval.type !== "request_board_approval") return false;
+      if (approval.status !== "pending" && approval.status !== "revision_requested") return false;
+      const payload = approval.payload as Record<string, unknown> | null;
+      return payload?.source === "issue_deferred_hitl";
+    });
+    if (existingActionable) return existingActionable;
+
+    const approval = await approvalsSvc.create(input.issue.companyId, {
+      type: "request_board_approval",
+      requestedByAgentId: input.actor.agentId ?? null,
+      requestedByUserId: null,
+      status: "pending",
+      payload: {
+        source: "issue_deferred_hitl",
+        title: parsed.title,
+        summary: `Issue ${input.issue.identifier ?? input.issue.id.slice(0, 8)} contains deferred HITL proposals that require board approval before becoming durable policy.`,
+        recommendedAction: "Review the proposed HITL changes and approve, reject, or request revision.",
+        nextActionOnApproval: "The requesting agent will be woken with the approval decision and linked issue context.",
+        proposedItems: parsed.proposedItems,
+        proposedComment: parsed.proposedComment,
+        issueId: input.issue.id,
+        issueIdentifier: input.issue.identifier,
+        issueTitle: input.issue.title,
+        sourceCommentId: input.commentId,
+      },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      updatedAt: new Date(),
+    });
+
+    await issueApprovalsSvc.link(input.issue.id, approval.id, {
+      agentId: input.actor.agentId,
+      userId: null,
+    });
+
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: input.actor.actorType,
+      actorId: input.actor.actorId,
+      agentId: input.actor.agentId,
+      runId: input.actor.runId,
+      action: "approval.created",
+      entityType: "approval",
+      entityId: approval.id,
+      details: {
+        type: approval.type,
+        issueId: input.issue.id,
+        source: "issue_deferred_hitl",
+        proposedItems: parsed.proposedItems,
+      },
+    });
+
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: input.actor.actorType,
+      actorId: input.actor.actorId,
+      agentId: input.actor.agentId,
+      runId: input.actor.runId,
+      action: "issue.approval_linked",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: { approvalId: approval.id, source: "issue_deferred_hitl" },
+    });
+
+    return approval;
   }
 
   function requireAgentRunId(req: Request, res: Response) {
@@ -1979,6 +2088,19 @@ export function issueRoutes(
     } else if (skipDuplicateBaselineReviewRequest) {
       logger.info({ issueId: id }, "skipping duplicate baseline CEO review request comment");
     }
+    const hitlApproval = comment
+      ? await materializeDeferredHitlApproval({
+          issue: {
+            id: issue.id,
+            companyId: issue.companyId,
+            identifier: issue.identifier,
+            title: issue.title,
+          },
+          actor,
+          commentId: comment.id,
+          commentBody: comment.body,
+        })
+      : null;
     const assigneeChanged =
       issue.assigneeAgentId !== existing.assigneeAgentId || issue.assigneeUserId !== existing.assigneeUserId;
     const statusChangedFromBacklog =
@@ -2186,7 +2308,7 @@ export function issueRoutes(
       }
     })();
 
-    res.json({ ...issueResponse, comment });
+    res.json({ ...issueResponse, comment, hitlApproval });
   });
 
   router.delete("/issues/:id", async (req, res) => {

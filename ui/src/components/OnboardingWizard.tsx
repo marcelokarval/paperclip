@@ -216,6 +216,7 @@ export function OnboardingWizard() {
   const [notice, setNotice] = useState<string | null>(null);
   const [modelOpen, setModelOpen] = useState(false);
   const [modelSearch, setModelSearch] = useState("");
+  const [refreshingModels, setRefreshingModels] = useState(false);
 
   // Step 1
   const [companyName, setCompanyName] = useState("");
@@ -328,6 +329,17 @@ export function OnboardingWizard() {
     queryFn: () => agentsApi.adapterModels(createdCompanyId!, adapterType),
     enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 2
   });
+  async function refreshAdapterModels() {
+    if (!createdCompanyId) return;
+    setRefreshingModels(true);
+    try {
+      const nextModels = await agentsApi.adapterModels(createdCompanyId, adapterType, { refresh: true });
+      queryClient.setQueryData(queryKeys.agents.adapterModels(createdCompanyId, adapterType), nextModels);
+      setModelSearch("");
+    } finally {
+      setRefreshingModels(false);
+    }
+  }
   const NONLOCAL_TYPES = new Set(["process", "http", "openclaw_gateway"]);
   const isLocalAdapter = !NONLOCAL_TYPES.has(adapterType);
 
@@ -1214,6 +1226,16 @@ export function OnboardingWizard() {
                                 Default
                               </button>
                             )}
+                            <button
+                              type="button"
+                              className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground"
+                              disabled={refreshingModels}
+                              onClick={() => {
+                                void refreshAdapterModels();
+                              }}
+                            >
+                              {refreshingModels ? "Refreshing models..." : "Refresh models"}
+                            </button>
                             <div className="max-h-[240px] overflow-y-auto">
                               {groupedModels.map((group) => (
                                 <div

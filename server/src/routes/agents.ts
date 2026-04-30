@@ -2,7 +2,7 @@ import { Router, type Request } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
+import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projectWorkspaces } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
@@ -67,6 +67,7 @@ import {
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import {
+  buildOperatingModelsInstructionsFile,
   buildProjectPacketInstructionsBundle,
   loadDefaultAgentInstructionsBundle,
   resolveDefaultAgentInstructionsBundleRole,
@@ -119,6 +120,10 @@ export function agentRoutes(db: Db) {
   function canCreateAgents(agent: { role: string; permissions: Record<string, unknown> | null | undefined }) {
     if (!agent.permissions || typeof agent.permissions !== "object") return false;
     return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
+  }
+
+  function stringArraysEqual(left: string[], right: string[]) {
+    return left.length === right.length && left.every((value, index) => value === right[index]);
   }
 
   async function buildAgentAccessState(agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>) {
@@ -579,14 +584,25 @@ export function agentRoutes(db: Db) {
             .filter(Boolean)
             .join("\n\n") + "\n",
         };
+    const discoveredAdapterModels = await Promise.resolve(listAdapterModels(agent.adapterType, { refresh: true })).catch(() => []);
+    const adapterModels = Array.isArray(discoveredAdapterModels) ? discoveredAdapterModels : [];
+    const operatingModelFiles = {
+      ...defaultFiles,
+      "OPERATING_MODELS.md": buildOperatingModelsInstructionsFile({
+        agentName: agent.name,
+        role: agent.role,
+        adapterType: agent.adapterType,
+        models: adapterModels,
+      }),
+    };
     const files = options?.bootstrapProjectName && options.bootstrapOperatingContext
       ? buildProjectPacketInstructionsBundle({
           role: agent.role,
           projectName: options.bootstrapProjectName,
           operatingContext: options.bootstrapOperatingContext,
-          files: defaultFiles,
+          files: operatingModelFiles,
         })
-      : defaultFiles;
+      : operatingModelFiles;
     const materialized = await instructions.materializeManagedBundle(
       agent,
       files,
@@ -597,6 +613,29 @@ export function agentRoutes(db: Db) {
 
     const updated = await svc.update(agent.id, { adapterConfig: nextAdapterConfig });
     return (updated as T | null) ?? { ...agent, adapterConfig: nextAdapterConfig };
+  }
+
+  async function refreshOperatingModelsFile<T extends {
+    id: string;
+    companyId: string;
+    name: string;
+    role: string;
+    adapterType: string;
+    adapterConfig: unknown;
+  }>(agent: T) {
+    const discoveredAdapterModels = await Promise.resolve(listAdapterModels(agent.adapterType, { refresh: true })).catch(() => []);
+    const adapterModels = Array.isArray(discoveredAdapterModels) ? discoveredAdapterModels : [];
+    return await instructions.writeFile(
+      agent,
+      "OPERATING_MODELS.md",
+      buildOperatingModelsInstructionsFile({
+        agentName: agent.name,
+        role: agent.role,
+        adapterType: agent.adapterType,
+        models: adapterModels,
+      }),
+      { clearLegacyPromptTemplate: false },
+    );
   }
 
   async function resolveBootstrapProjectContextForSourceIssues(input: {
@@ -636,31 +675,49 @@ export function agentRoutes(db: Db) {
         issue.status === "backlog" || issue.status === "todo"
           ? "in_review"
           : issue.status;
-      if (issue.assigneeAgentId === input.reviewerAgentId && issue.status === nextStatus) {
-        continue;
+      const assignmentAlreadyRecorded = issue.assigneeAgentId === input.reviewerAgentId && issue.status === nextStatus;
+      if (!assignmentAlreadyRecorded) {
+        await issuesSvc.update(issue.id, {
+          status: nextStatus,
+          assigneeAgentId: input.reviewerAgentId,
+          assigneeUserId: null,
+          actorAgentId: input.actor.actorType === "agent" ? input.actor.agentId : null,
+          actorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
+        });
+        await logActivity(db, {
+          companyId: input.companyId,
+          actorType: input.actor.actorType,
+          actorId: input.actor.actorId,
+          agentId: input.actor.agentId,
+          runId: input.actor.runId,
+          action: "issue.staffing_approval_requested",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            approvalId: input.approvalId,
+            reviewerAgentId: input.reviewerAgentId,
+          },
+        });
       }
-
-      await issuesSvc.update(issue.id, {
-        status: nextStatus,
-        assigneeAgentId: input.reviewerAgentId,
-        assigneeUserId: null,
-        actorAgentId: input.actor.actorType === "agent" ? input.actor.agentId : null,
-        actorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
-      });
-      await logActivity(db, {
-        companyId: input.companyId,
-        actorType: input.actor.actorType,
-        actorId: input.actor.actorId,
-        agentId: input.actor.agentId,
-        runId: input.actor.runId,
-        action: "issue.staffing_approval_requested",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
+      await heartbeat.wakeup(input.reviewerAgentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "staffing_approval_requested",
+        payload: {
+          issueId: issue.id,
           approvalId: input.approvalId,
-          reviewerAgentId: input.reviewerAgentId,
         },
-      });
+        requestedByActorType: "system",
+        requestedByActorId: "staffing_approval",
+        contextSnapshot: {
+          issueId: issue.id,
+          taskId: issue.id,
+          source: "staffing.approval_requested",
+          wakeReason: "staffing_approval_requested",
+          approvalId: input.approvalId,
+          forceFreshSession: true,
+        },
+      }).catch(() => null);
     }
   }
 
@@ -757,31 +814,213 @@ export function agentRoutes(db: Db) {
     adapterConfig: Record<string, unknown>,
     requestedDesiredSkills: string[] | undefined,
   ) {
-    if (!requestedDesiredSkills) {
-      return {
-        adapterConfig,
-        desiredSkills: null as string[] | null,
-        runtimeSkillEntries: null as Awaited<ReturnType<typeof companySkills.listRuntimeSkillEntries>> | null,
-      };
-    }
-
-    const resolvedRequestedSkills = await companySkills.resolveRequestedSkillKeys(
-      companyId,
-      requestedDesiredSkills,
-    );
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(companyId, {
       materializeMissing: shouldMaterializeRuntimeSkillsForAdapter(adapterType),
     });
     const requiredSkills = runtimeSkillEntries
       .filter((entry) => entry.required)
       .map((entry) => entry.key);
+    const existingPreference = readPaperclipSkillSyncPreference(adapterConfig);
+    const requestedOrExistingSkills = requestedDesiredSkills ?? existingPreference.desiredSkills;
+    const resolvedRequestedSkills = await companySkills.resolveRequestedSkillKeys(
+      companyId,
+      requestedOrExistingSkills,
+    );
     const desiredSkills = Array.from(new Set([...requiredSkills, ...resolvedRequestedSkills]));
 
     return {
-      adapterConfig: writePaperclipSkillSyncPreference(adapterConfig, desiredSkills),
-      desiredSkills,
+      adapterConfig: desiredSkills.length > 0
+        ? writePaperclipSkillSyncPreference(adapterConfig, desiredSkills)
+        : adapterConfig,
+      desiredSkills: desiredSkills.length > 0 ? desiredSkills : null,
       runtimeSkillEntries,
     };
+  }
+
+  function expectedOperatingPackFilesForAgent(agent: { role: string }) {
+    const role = agent.role.toLowerCase();
+    if (role === "ceo") {
+      return [
+        "AGENTS.md",
+        "HEARTBEAT.md",
+        "SOUL.md",
+        "TOOLS.md",
+        "OPERATING_MODELS.md",
+        "ORG_OPERATING_MODEL.md",
+        "HIRING_POLICY.md",
+        "DECISION_GATES.md",
+        "WORKFLOW_PLAYBOOK.md",
+        "CONTEXT_BOUNDARIES.md",
+        "SELF_IMPROVEMENT.md",
+      ];
+    }
+    if (role === "cto") {
+      return [
+        "AGENTS.md",
+        "OPERATING_MODELS.md",
+        "PROJECT_PACKET.md",
+        "ISSUE_ROUTING.md",
+        "TECHNICAL_OPERATING_MODEL.md",
+        "REVIEW_POLICY.md",
+        "DELEGATION_POLICY.md",
+        "SELF_IMPROVEMENT.md",
+      ];
+    }
+    return ["AGENTS.md", "OPERATING_MODELS.md", "SELF_IMPROVEMENT.md"];
+  }
+
+  async function buildOperatingPackAudit(targetAgent: Awaited<ReturnType<typeof svc.getById>>) {
+    if (!targetAgent) throw notFound("Agent not found");
+    const [bundle, runtimeSkillEntries] = await Promise.all([
+      instructions.getBundle(targetAgent),
+      companySkills.listRuntimeSkillEntries(targetAgent.companyId, {
+        materializeMissing: shouldMaterializeRuntimeSkillsForAdapter(targetAgent.adapterType),
+      }),
+    ]);
+    const existingPreference = readPaperclipSkillSyncPreference(
+      (targetAgent.adapterConfig ?? {}) as Record<string, unknown>,
+    );
+    const expectedFiles = expectedOperatingPackFilesForAgent(targetAgent);
+    const presentFiles = new Set(bundle.files.map((file) => file.path));
+    const requiredSkillKeys = runtimeSkillEntries
+      .filter((entry) => entry.required)
+      .map((entry) => entry.key);
+    const desiredSkillSet = new Set(existingPreference.desiredSkills);
+
+    return {
+      agentId: targetAgent.id,
+      agentName: targetAgent.name,
+      role: targetAgent.role,
+      adapterType: targetAgent.adapterType,
+      bundleMode: bundle.mode,
+      bundleRootPath: bundle.rootPath,
+      entryFile: bundle.entryFile,
+      expectedFiles,
+      presentFiles: bundle.files.map((file) => file.path).sort(),
+      missingFiles: expectedFiles.filter((file) => !presentFiles.has(file)),
+      requiredSkills: requiredSkillKeys,
+      desiredSkills: existingPreference.desiredSkills,
+      missingRequiredSkills: requiredSkillKeys.filter((key) => !desiredSkillSet.has(key)),
+      warnings: bundle.warnings,
+    };
+  }
+
+  function renderOperatingPackAuditIssueDescription(input: {
+    targetAgent: Awaited<ReturnType<typeof svc.getById>>;
+    audit: Awaited<ReturnType<typeof buildOperatingPackAudit>>;
+    requestedScope: string;
+  }) {
+    const { targetAgent, audit, requestedScope } = input;
+    if (!targetAgent) throw notFound("Agent not found");
+    const missingFiles = audit.missingFiles.length > 0 ? audit.missingFiles.join(", ") : "none";
+    const missingSkills = audit.missingRequiredSkills.length > 0 ? audit.missingRequiredSkills.join(", ") : "none";
+    const warnings = audit.warnings.length > 0 ? audit.warnings.join("; ") : "none";
+    return [
+      `Operating pack audit and refresh request for ${targetAgent.name} (${targetAgent.role}).`,
+      "",
+      "Scanner snapshot:",
+      `- Scope: ${requestedScope}`,
+      `- Adapter: ${audit.adapterType}`,
+      `- Instructions bundle: ${audit.bundleMode ?? "unconfigured"}`,
+      `- Entry file: ${audit.entryFile}`,
+      `- Present files: ${audit.presentFiles.length > 0 ? audit.presentFiles.join(", ") : "none"}`,
+      `- Missing expected files: ${missingFiles}`,
+      `- Missing required runtime skills: ${missingSkills}`,
+      `- Bundle warnings: ${warnings}`,
+      "",
+      "Required workflow:",
+      "1. Read AGENTS.md and every file in the agent instructions bundle before proposing changes.",
+      "2. Compare the bundle against the agent role, project/company context, runtime models, runtime tools, and required Paperclip skills.",
+      "3. Refresh OPERATING_MODELS.md when provider/model/enforcement facts changed or are missing.",
+      "4. For CEO/CTO governance changes, propose the exact file changes and mark which require HITL approval before applying.",
+      "5. Keep project implementation artifacts in the project/workspace, but keep durable agent operating knowledge in this agent instructions bundle.",
+      "6. Confirm whether para-memory-files and other required Paperclip skills are available and referenced where the role needs durable memory behavior.",
+      "7. Close this issue only after the refreshed operating pack is internally consistent and the final comment lists changed files, deferred HITL items, and verification performed.",
+    ].join("\n");
+  }
+
+  async function assertOperatingPackAuditProjectScope(input: {
+    companyId: string;
+    projectId: string | null;
+    projectWorkspaceId: string | null;
+  }) {
+    const { companyId, projectId, projectWorkspaceId } = input;
+    if (projectId) {
+      const project = await projectsSvc.getById(projectId);
+      if (!project || project.companyId !== companyId) {
+        throw notFound("Project not found");
+      }
+    }
+    if (!projectWorkspaceId) return;
+
+    const workspace = await db
+      .select({
+        id: projectWorkspaces.id,
+        companyId: projectWorkspaces.companyId,
+        projectId: projectWorkspaces.projectId,
+      })
+      .from(projectWorkspaces)
+      .where(and(
+        eq(projectWorkspaces.id, projectWorkspaceId),
+        eq(projectWorkspaces.companyId, companyId),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (!workspace) {
+      throw notFound("Project workspace not found");
+    }
+    if (projectId && workspace.projectId !== projectId) {
+      throw unprocessable("Project workspace does not belong to the requested project");
+    }
+  }
+
+  async function ensureRequiredRuntimeSkillsAssignedToAgent(input: {
+    agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>;
+    actor: ReturnType<typeof getActorInfo>;
+  }) {
+    const adapterConfig = (input.agent.adapterConfig ?? {}) as Record<string, unknown>;
+    const beforePreference = readPaperclipSkillSyncPreference(adapterConfig);
+    const assignment = await resolveDesiredSkillAssignment(
+      input.agent.companyId,
+      input.agent.adapterType,
+      adapterConfig,
+      undefined,
+    );
+    const afterPreference = readPaperclipSkillSyncPreference(assignment.adapterConfig);
+    if (stringArraysEqual(beforePreference.desiredSkills, afterPreference.desiredSkills)) {
+      return input.agent;
+    }
+
+    const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
+      input.agent.companyId,
+      assignment.adapterConfig,
+      { strictMode: strictSecretsMode },
+    );
+    const updated = await svc.update(
+      input.agent.id,
+      { adapterConfig: normalizedAdapterConfig },
+      {
+        recordRevision: {
+          createdByAgentId: input.actor.agentId,
+          createdByUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
+          source: "required_runtime_skills_refresh",
+        },
+      },
+    );
+    await logActivity(db, {
+      companyId: input.agent.companyId,
+      actorType: input.actor.actorType,
+      actorId: input.actor.actorId,
+      agentId: input.actor.agentId,
+      runId: input.actor.runId,
+      action: "agent.required_runtime_skills_refreshed",
+      entityType: "agent",
+      entityId: input.agent.id,
+      details: {
+        adapterType: input.agent.adapterType,
+        desiredSkills: afterPreference.desiredSkills,
+      },
+    });
+    return updated ?? { ...input.agent, adapterConfig: normalizedAdapterConfig };
   }
 
   function redactForRestrictedAgentView(agent: Awaited<ReturnType<typeof svc.getById>>) {
@@ -869,7 +1108,8 @@ export function agentRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const type = assertKnownAdapterType(req.params.type as string);
-    const models = await listAdapterModels(type);
+    const refresh = req.query.refresh === "true" || req.query.refresh === "1";
+    const models = await listAdapterModels(type, { refresh });
     res.json(models);
   });
 
@@ -1926,6 +2166,147 @@ export function agentRoutes(db: Db) {
     });
 
     res.json(result.file);
+  });
+
+  router.post("/agents/:id/instructions-bundle/operating-models/refresh", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertCanManageInstructionsPath(req, existing);
+    const bundle = await instructions.getBundle(existing);
+    if (bundle.mode === "external") {
+      assertCanUseHostFilesystemForInstructions(req);
+    }
+
+    const actor = getActorInfo(req);
+    const result = await refreshOperatingModelsFile(existing);
+    const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
+      existing.companyId,
+      result.adapterConfig,
+      { strictMode: strictSecretsMode },
+    );
+    await svc.update(
+      id,
+      { adapterConfig: normalizedAdapterConfig },
+      {
+        recordRevision: {
+          createdByAgentId: actor.agentId,
+          createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+          source: "operating_models_refresh",
+        },
+      },
+    );
+
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "agent.operating_models_refreshed",
+      entityType: "agent",
+      entityId: existing.id,
+      details: {
+        path: result.file.path,
+        size: result.file.size,
+        adapterType: existing.adapterType,
+      },
+    });
+
+    res.json(result.file);
+  });
+
+  router.post("/agents/:id/operating-pack-audit-issue", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertCanManageInstructionsPath(req, existing);
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const requestedScope =
+      typeof body.scope === "string" && body.scope.trim().length > 0
+        ? body.scope.trim()
+        : "agent_operating_pack";
+    const projectId =
+      typeof body.projectId === "string" && isUuidLike(body.projectId)
+        ? body.projectId
+        : null;
+    const projectWorkspaceId =
+      typeof body.projectWorkspaceId === "string" && isUuidLike(body.projectWorkspaceId)
+        ? body.projectWorkspaceId
+        : null;
+    await assertOperatingPackAuditProjectScope({
+      companyId: existing.companyId,
+      projectId,
+      projectWorkspaceId,
+    });
+    const actor = getActorInfo(req);
+    const refreshedAgent = await ensureRequiredRuntimeSkillsAssignedToAgent({ agent: existing, actor });
+    const audit = await buildOperatingPackAudit(refreshedAgent);
+    const issue = await issuesSvc.create(existing.companyId, {
+      title: `Audit and refresh ${refreshedAgent.name} operating pack`,
+      description: renderOperatingPackAuditIssueDescription({
+        targetAgent: refreshedAgent,
+        audit,
+        requestedScope,
+      }),
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: refreshedAgent.id,
+      assigneeUserId: null,
+      projectId,
+      projectWorkspaceId,
+      createdByAgentId: actor.agentId,
+      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+    });
+
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "agent.operating_pack_audit_issue_created",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        targetAgentId: refreshedAgent.id,
+        targetAgentRole: refreshedAgent.role,
+        missingFiles: audit.missingFiles,
+        missingRequiredSkills: audit.missingRequiredSkills,
+      },
+    });
+
+    void heartbeat.wakeup(refreshedAgent.id, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "operating_pack_audit_requested",
+      payload: {
+        issueId: issue.id,
+        issueIdentifier: issue.identifier,
+        targetAgentId: refreshedAgent.id,
+        scope: requestedScope,
+      },
+      requestedByActorType: actor.actorType,
+      requestedByActorId: actor.actorId,
+      contextSnapshot: {
+        issueId: issue.id,
+        taskId: issue.id,
+        issueIdentifier: issue.identifier,
+        source: "agent.operating_pack_audit_issue",
+        wakeReason: "operating_pack_audit_requested",
+        targetAgentId: refreshedAgent.id,
+        forceFreshSession: true,
+      },
+    }).catch(() => null);
+
+    res.status(201).json({ issue, audit });
   });
 
   router.delete("/agents/:id/instructions-bundle/file", async (req, res) => {
