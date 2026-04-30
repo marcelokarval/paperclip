@@ -236,6 +236,43 @@ describe("agent instructions service", () => {
     expect(exported.files).toEqual({ "AGENTS.md": "# Managed Agent\n" });
   });
 
+  it("prepares managed instructions for execution when the configured root was deleted", async () => {
+    const paperclipHome = await makeTempDir("paperclip-agent-instructions-prep-");
+    cleanupDirs.add(paperclipHome);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "test-instance";
+
+    const managedRoot = path.join(
+      paperclipHome,
+      "instances",
+      "test-instance",
+      "companies",
+      "company-1",
+      "agents",
+      "agent-1",
+      "instructions",
+    );
+
+    const svc = agentInstructionsService();
+    const agent = makeAgent({
+      instructionsBundleMode: "managed",
+      instructionsRootPath: managedRoot,
+      instructionsEntryFile: "AGENTS.md",
+      instructionsFilePath: path.join(managedRoot, "AGENTS.md"),
+      promptTemplate: "# Restored from legacy prompt\n",
+    });
+
+    const result = await svc.prepareForExecution(agent);
+
+    expect(result.healed).toBe(true);
+    expect(result.bundle.mode).toBe("managed");
+    expect(result.bundle.files.map((file) => file.path)).toEqual(["AGENTS.md"]);
+    expect(result.adapterConfig.instructionsFilePath).toBe(path.join(managedRoot, "AGENTS.md"));
+    await expect(fs.readFile(path.join(managedRoot, "AGENTS.md"), "utf8")).resolves.toBe(
+      "# Restored from legacy prompt",
+    );
+  });
+
   it("heals stale managed metadata when writing bundle files", async () => {
     const paperclipHome = await makeTempDir("paperclip-agent-instructions-heal-write-");
     const staleRoot = await makeTempDir("paperclip-agent-instructions-heal-write-stale-");

@@ -41,6 +41,7 @@ import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
+import { agentInstructionsService } from "./agent-instructions.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
@@ -1539,6 +1540,7 @@ export function heartbeatService(db: Db) {
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
   const companySkills = companySkillService(db);
+  const agentInstructions = agentInstructionsService();
   const issuesSvc = issueService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
@@ -3779,6 +3781,44 @@ export function heartbeatService(db: Db) {
       projectEnv: projectContext?.env ?? null,
       secretsSvc,
     });
+    const instructionsExecutionPrep = await agentInstructions.prepareForExecution(agent).catch(async (err) => {
+      logger.warn(
+        {
+          err,
+          agentId: agent.id,
+          companyId: agent.companyId,
+          runId: run.id,
+        },
+        "failed to prepare agent instructions before execution",
+      );
+      return null;
+    });
+    if (instructionsExecutionPrep?.healed) {
+      const updatedAgent = await db
+        .update(agents)
+        .set({ adapterConfig: instructionsExecutionPrep.adapterConfig, updatedAt: new Date() })
+        .where(eq(agents.id, agent.id))
+        .returning()
+        .then((rows) => rows[0] ?? null)
+        .catch((err) => {
+          logger.warn(
+            {
+              err,
+              agentId: agent.id,
+              companyId: agent.companyId,
+              runId: run.id,
+            },
+            "failed to persist healed agent instructions config",
+          );
+          return null;
+        });
+      if (updatedAgent) {
+        agent.adapterConfig = updatedAgent.adapterConfig;
+      } else {
+        agent.adapterConfig = instructionsExecutionPrep.adapterConfig;
+      }
+      Object.assign(resolvedConfig, instructionsExecutionPrep.adapterConfig);
+    }
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
     const runtimeConfig = {
       ...resolvedConfig,

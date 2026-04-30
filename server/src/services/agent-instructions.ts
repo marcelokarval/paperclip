@@ -545,6 +545,65 @@ export function agentInstructionsService() {
     };
   }
 
+  async function prepareForExecution(agent: AgentLike): Promise<{
+    adapterConfig: Record<string, unknown>;
+    bundle: AgentInstructionsBundle;
+    healed: boolean;
+  }> {
+    const derived = deriveBundleState(agent);
+    const current = await recoverManagedBundleState(agent, derived);
+    if (current.mode !== "managed") {
+      const adapterConfig = buildPersistedBundleConfig(derived, current);
+      return {
+        adapterConfig,
+        bundle: await getBundle({ ...agent, adapterConfig }),
+        healed: false,
+      };
+    }
+
+    const rootPath = current.rootPath ?? resolveManagedInstructionsRoot(agent);
+    const entryFile = current.entryFile || ENTRY_FILE_DEFAULT;
+    const entryPath = resolvePathWithinRoot(rootPath, entryFile);
+    const [rootStat, entryStat] = await Promise.all([
+      statIfExists(rootPath),
+      statIfExists(entryPath),
+    ]);
+    if (rootStat?.isDirectory() && entryStat?.isFile()) {
+      const adapterConfig = buildPersistedBundleConfig(derived, current);
+      return {
+        adapterConfig,
+        bundle: await getBundle({ ...agent, adapterConfig }),
+        healed: false,
+      };
+    }
+
+    await fs.mkdir(rootPath, { recursive: true });
+    const legacyInstructions = await readLegacyInstructions(agent, current.config);
+    const body = legacyInstructions.trim().length > 0
+      ? legacyInstructions
+      : [
+          `# ${agent.name}`,
+          "",
+          "Paperclip restored this managed instructions bundle before execution because the configured root was missing.",
+          "Review and refine these instructions from the agent configuration screen.",
+          "",
+        ].join("\n");
+    await fs.mkdir(path.dirname(entryPath), { recursive: true });
+    await fs.writeFile(entryPath, body, "utf8");
+
+    const healedConfig = applyBundleConfig(current.config, {
+      mode: "managed",
+      rootPath,
+      entryFile,
+      clearLegacyPromptTemplate: true,
+    });
+    return {
+      adapterConfig: healedConfig,
+      bundle: await getBundle({ ...agent, adapterConfig: healedConfig }),
+      healed: true,
+    };
+  }
+
   async function updateBundle(
     agent: AgentLike,
     input: {
@@ -731,5 +790,6 @@ export function agentInstructionsService() {
     exportFiles,
     ensureManagedBundle: ensureWritableBundle,
     materializeManagedBundle,
+    prepareForExecution,
   };
 }
