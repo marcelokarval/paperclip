@@ -26,6 +26,10 @@ function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(a
   };
 }
 
+function currentBoardDecisionUserId(req: Request) {
+  return req.actor.type === "board" ? req.actor.userId ?? "board" : "board";
+}
+
 export function approvalRoutes(db: Db) {
   const router = Router();
   const svc = approvalService(db);
@@ -136,7 +140,7 @@ export function approvalRoutes(db: Db) {
     }
     const { approval, applied } = await svc.approve(
       id,
-      req.body.decidedByUserId ?? "board",
+      currentBoardDecisionUserId(req),
       req.body.decisionNote,
     );
 
@@ -235,7 +239,7 @@ export function approvalRoutes(db: Db) {
     }
     const { approval, applied } = await svc.reject(
       id,
-      req.body.decidedByUserId ?? "board",
+      currentBoardDecisionUserId(req),
       req.body.decisionNote,
     );
 
@@ -266,7 +270,7 @@ export function approvalRoutes(db: Db) {
       }
       const approval = await svc.requestRevision(
         id,
-        req.body.decidedByUserId ?? "board",
+        currentBoardDecisionUserId(req),
         req.body.decisionNote,
       );
 

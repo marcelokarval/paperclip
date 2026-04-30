@@ -1,4 +1,5 @@
 import os from "node:os";
+import { REDACTED_EVENT_VALUE, sanitizeRecord } from "./redaction.js";
 
 export const CURRENT_USER_REDACTION_TOKEN = "*";
 
@@ -20,6 +21,15 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   const proto = Object.getPrototypeOf(value);
   return proto === Object.prototype || proto === null;
 }
+
+const SENSITIVE_ASSIGNMENT_RE =
+  /\b(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)\s*[:=]\s*([^\s,;]+)/gi;
+const BEARER_TOKEN_RE = /Bearer\s+[A-Za-z0-9._~+/-]+=*/gi;
+const PROVIDER_API_KEY_RE = /\bsk-(?:ant-)?[A-Za-z0-9_-]{12,}\b/g;
+const GITHUB_TOKEN_RE = /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g;
+const JWT_VALUE_RE = /\b[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?\b/g;
+const CONNECTION_STRING_RE =
+  /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp|kafka|nats|mssql):\/\/[^\s<>'")]+/gi;
 
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -141,6 +151,35 @@ export function redactCurrentUserValue<T>(value: T, opts?: CurrentUserRedactionO
   const redacted: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value)) {
     redacted[key] = redactCurrentUserValue(entry, opts);
+  }
+  return redacted as T;
+}
+
+export function redactSensitiveLogText(input: string, opts?: CurrentUserRedactionOptions) {
+  return redactCurrentUserText(input, opts)
+    .replace(SENSITIVE_ASSIGNMENT_RE, (_match, key: string) => `${key}=${REDACTED_EVENT_VALUE}`)
+    .replace(BEARER_TOKEN_RE, `Bearer ${REDACTED_EVENT_VALUE}`)
+    .replace(PROVIDER_API_KEY_RE, REDACTED_EVENT_VALUE)
+    .replace(GITHUB_TOKEN_RE, REDACTED_EVENT_VALUE)
+    .replace(JWT_VALUE_RE, REDACTED_EVENT_VALUE)
+    .replace(CONNECTION_STRING_RE, REDACTED_EVENT_VALUE);
+}
+
+export function redactLogValue<T>(value: T, opts?: CurrentUserRedactionOptions): T {
+  if (typeof value === "string") {
+    return redactSensitiveLogText(value, opts) as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => redactLogValue(entry, opts)) as T;
+  }
+  if (!isPlainObject(value)) {
+    return value;
+  }
+
+  const structurallyRedacted = sanitizeRecord(value);
+  const redacted: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(structurallyRedacted)) {
+    redacted[key] = redactLogValue(entry, opts);
   }
   return redacted as T;
 }

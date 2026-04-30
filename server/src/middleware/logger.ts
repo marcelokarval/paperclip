@@ -4,6 +4,7 @@ import pino from "pino";
 import { pinoHttp } from "pino-http";
 import { readConfigFile } from "../config-file.js";
 import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
+import { redactLogValue } from "../log-redaction.js";
 import { shouldSilenceHttpSuccessLog } from "./http-log-policy.js";
 
 function resolveServerLogDir(): string {
@@ -29,7 +30,13 @@ const sharedOpts = {
 
 export const logger = pino({
   level: "debug",
-  redact: ["req.headers.authorization"],
+  redact: [
+    "req.headers.authorization",
+    "req.headers.cookie",
+    "req.headers['set-cookie']",
+    "req.headers['x-api-key']",
+    "req.headers['x-auth-token']",
+  ],
 }, pino.transport({
   targets: [
     {
@@ -68,7 +75,7 @@ export const httpLogger = pinoHttp({
       const ctx = (res as any).__errorContext;
       if (ctx) {
         return {
-          errorContext: ctx.error,
+          errorContext: redactLogValue(ctx.error),
           method: ctx.method,
           url: ctx.url,
         };

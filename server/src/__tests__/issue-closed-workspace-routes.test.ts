@@ -12,6 +12,8 @@ const mockIssueService = vi.hoisted(() => ({
   update: vi.fn(),
   checkout: vi.fn(),
   addComment: vi.fn(),
+  listWakeableBlockedDependents: vi.fn(async () => []),
+  getWakeableParentAfterChildCompletion: vi.fn(async () => null),
 }));
 
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
@@ -36,6 +38,9 @@ const mockProjectService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockWorkProductService = vi.hoisted(() => ({
+  listForIssue: vi.fn(async () => []),
+}));
 
 function registerServiceMocks() {
   vi.doMock("@paperclipai/shared/telemetry", () => ({
@@ -80,11 +85,11 @@ function registerServiceMocks() {
     routineService: () => ({
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
-    workProductService: () => ({}),
+    workProductService: () => mockWorkProductService,
   }));
 }
 
-async function createApp() {
+async function createApp(actorOverrides: Record<string, unknown> = {}) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -98,6 +103,7 @@ async function createApp() {
       companyIds: ["company-1"],
       source: "local_implicit",
       isInstanceAdmin: false,
+      ...actorOverrides,
     };
     next();
   });
@@ -147,6 +153,7 @@ describe("closed isolated workspace issue routes", () => {
     vi.resetAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockExecutionWorkspaceService.getById.mockResolvedValue(makeClosedWorkspace());
+    mockWorkProductService.listForIssue.mockResolvedValue([]);
   });
 
   it("rejects new issue comments when the linked isolated workspace is closed", async () => {
@@ -195,5 +202,68 @@ describe("closed isolated workspace issue routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.executionWorkspaceId).toBe(nextWorkspaceId);
+  });
+
+  it("rejects agent completion from an execution run without verifiable close evidence", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue(),
+      executionWorkspaceId: null,
+      executionRunId: null,
+    });
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId,
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+      source: "agent_jwt",
+    }))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done", comment: "Finished." });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("verifiable evidence");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows agent completion when an issue work product supplies verifiable evidence", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue(),
+      executionWorkspaceId: null,
+      executionRunId: null,
+    });
+    mockIssueService.update.mockResolvedValue({
+      ...makeIssue(),
+      status: "done",
+      executionWorkspaceId: null,
+      executionRunId: null,
+    });
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-1",
+      body: "Finished.",
+    });
+    mockWorkProductService.listForIssue.mockResolvedValue([
+      {
+        type: "commit",
+        externalId: "abc1234",
+        url: null,
+        summary: null,
+        metadata: null,
+      },
+    ]);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId,
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+      source: "agent_jwt",
+    }))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done", comment: "Finished." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalled();
   });
 });

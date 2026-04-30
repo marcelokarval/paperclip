@@ -162,6 +162,69 @@ describe("approval routes idempotent retries", () => {
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
+  it("records approval decisions with the authenticated board user, not a spoofed body user", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-1",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: null,
+    });
+    mockApprovalService.approve.mockResolvedValue({
+      approval: {
+        id: "approval-1",
+        companyId: "company-1",
+        type: "hire_agent",
+        status: "approved",
+        payload: {},
+        requestedByAgentId: null,
+      },
+      applied: true,
+    });
+
+    const res = await request(await createApp({ userId: "real-user" }))
+      .post("/api/approvals/approval-1/approve")
+      .send({ decidedByUserId: "spoofed-user", decisionNote: "approve" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockApprovalService.approve).toHaveBeenCalledWith(
+      "approval-1",
+      "real-user",
+      "approve",
+    );
+  });
+
+  it("records revision requests with the authenticated board user, not a spoofed body user", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-1",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: null,
+    });
+    mockApprovalService.requestRevision.mockResolvedValue({
+      id: "approval-1",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "revision_requested",
+      payload: {},
+      requestedByAgentId: null,
+    });
+
+    const res = await request(await createApp({ userId: "real-user" }))
+      .post("/api/approvals/approval-1/request-revision")
+      .send({ decidedByUserId: "spoofed-user", decisionNote: "revise" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockApprovalService.requestRevision).toHaveBeenCalledWith(
+      "approval-1",
+      "real-user",
+      "revise",
+    );
+  });
+
   it("rejects approval decisions for companies outside the caller scope", async () => {
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-2",

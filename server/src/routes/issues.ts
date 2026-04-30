@@ -51,7 +51,7 @@ import {
   workProductService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
-import { conflict, forbidden, HttpError, notFound, unauthorized } from "../errors.js";
+import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
@@ -88,6 +88,56 @@ async function shouldSkipDuplicateBaselineReviewRequestComment(
   const fingerprint = readRepositoryBaselineReviewRequestFingerprint(commentBody);
   const existingComments = await svc.listComments(issueId, { limit: 200, order: "desc" });
   return hasRepositoryBaselineReviewRequestForFingerprint(existingComments, fingerprint);
+}
+
+const COMPLETION_EVIDENCE_TEXT_RE =
+  /\b(commit|sha|pull request|pr|branch|diff|verification|verified|test|build|artifact|work product|url|https?:\/\/)\b/i;
+
+function workProductHasCompletionEvidence(product: unknown) {
+  if (!product || typeof product !== "object") return false;
+  const record = product as Record<string, unknown>;
+  const type = typeof record.type === "string" ? record.type : "";
+  if (!["commit", "pull_request", "branch", "artifact", "document"].includes(type)) return false;
+  if (typeof record.url === "string" && record.url.trim()) return true;
+  if (typeof record.externalId === "string" && record.externalId.trim()) return true;
+  if (typeof record.summary === "string" && COMPLETION_EVIDENCE_TEXT_RE.test(record.summary)) return true;
+  const metadata = record.metadata;
+  if (metadata && typeof metadata === "object") {
+    return ["sha", "commit", "commitSha", "pullRequest", "pullRequestUrl", "branch", "artifactPath"]
+      .some((key) => typeof (metadata as Record<string, unknown>)[key] === "string" && String((metadata as Record<string, unknown>)[key]).trim());
+  }
+  return false;
+}
+
+async function assertAgentCompletionHasEvidence(input: {
+  actor: ReturnType<typeof getActorInfo>;
+  existing: { id: string; status: string; executionRunId?: string | null; executionWorkspaceId?: string | null };
+  nextStatus: unknown;
+  commentBody: string | null | undefined;
+  workProductsSvc: ReturnType<typeof workProductService>;
+}) {
+  if (input.actor.actorType !== "agent") return;
+  if (input.existing.status === "done" || input.nextStatus !== "done") return;
+  const hasExecutionContext = Boolean(
+    input.actor.runId ||
+    input.existing.executionRunId ||
+    input.existing.executionWorkspaceId,
+  );
+  if (!hasExecutionContext) return;
+  if (input.commentBody && COMPLETION_EVIDENCE_TEXT_RE.test(input.commentBody)) return;
+
+  const listForIssue = (input.workProductsSvc as { listForIssue?: (issueId: string) => Promise<unknown[]> }).listForIssue;
+  const workProducts = listForIssue ? await listForIssue(input.existing.id) : [];
+  if (workProducts.some(workProductHasCompletionEvidence)) return;
+
+  throw unprocessable(
+    "Agent completion requires verifiable evidence in the close comment or an issue work product",
+    {
+      requiredEvidence: [
+        "commit SHA, branch, pull request, artifact, URL, or verification/test output",
+      ],
+    },
+  );
 }
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
@@ -1663,6 +1713,13 @@ export function issueRoutes(
     if (req.body.assigneeAdapterOverrides !== undefined) {
       await assertCanAssignTasks(req, existing.companyId);
     }
+    await assertAgentCompletionHasEvidence({
+      actor,
+      existing,
+      nextStatus: updateFields.status,
+      commentBody,
+      workProductsSvc,
+    });
 
     let issue;
     try {
