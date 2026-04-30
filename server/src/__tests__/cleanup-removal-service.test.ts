@@ -8,9 +8,13 @@ import {
   companySkills,
   costEvents,
   createDb,
+  feedbackVotes,
+  financeEvents,
   heartbeatRuns,
+  heartbeatRunEvents,
   issueComments,
   issueExecutionDecisions,
+  issueInboxArchives,
   issueReadStates,
   issues,
 } from "@paperclipai/db";
@@ -20,6 +24,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { agentService } from "../services/agents.ts";
 import { companyService } from "../services/companies.ts";
+import { issueService } from "../services/issues.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -40,13 +45,18 @@ describeEmbeddedPostgres("cleanup removal services", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(financeEvents);
     await db.delete(costEvents);
     await db.delete(activityLog);
+    await db.delete(feedbackVotes);
+    await db.delete(issueInboxArchives);
     await db.delete(issueReadStates);
     await db.delete(issueComments);
     await db.delete(issueExecutionDecisions);
+    await db.delete(heartbeatRunEvents);
     await db.delete(companySkills);
     await db.delete(heartbeatRuns);
+    await db.update(issues).set({ parentId: null });
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
@@ -140,6 +150,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     });
 
     const costEventId = randomUUID();
+    const financeEventId = randomUUID();
     await db.insert(costEvents).values({
       id: costEventId,
       companyId,
@@ -151,6 +162,27 @@ describeEmbeddedPostgres("cleanup removal services", () => {
       costCents: 42,
       occurredAt: new Date("2026-04-17T12:00:00.000Z"),
     });
+    await db.insert(financeEvents).values({
+      id: financeEventId,
+      companyId,
+      agentId,
+      heartbeatRunId: runId,
+      issueId,
+      eventKind: "llm_usage",
+      direction: "debit",
+      biller: "openai",
+      amountCents: 42,
+      currency: "USD",
+      occurredAt: new Date("2026-04-17T12:00:00.000Z"),
+    });
+    await db.insert(heartbeatRunEvents).values({
+      companyId,
+      runId,
+      agentId,
+      seq: 1,
+      eventType: "lifecycle",
+      message: "completed",
+    });
 
     const removed = await agentService(db).remove(agentId);
 
@@ -159,11 +191,112 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))).resolves.toHaveLength(0);
     await expect(db.select().from(issueComments).where(eq(issueComments.issueId, issueId))).resolves.toHaveLength(0);
     await expect(db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).resolves.toHaveLength(0);
+    await expect(db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.companyId, companyId))).resolves.toHaveLength(0);
     await expect(db.select().from(costEvents).where(eq(costEvents.id, costEventId))).resolves.toMatchObject([
       {
         id: costEventId,
         agentId: null,
         heartbeatRunId: null,
+      },
+    ]);
+    await expect(db.select().from(financeEvents).where(eq(financeEvents.id, financeEventId))).resolves.toMatchObject([
+      {
+        id: financeEventId,
+        agentId: null,
+        heartbeatRunId: null,
+      },
+    ]);
+  });
+
+  it("removes an issue after clearing non-cascading issue dependents", async () => {
+    const { companyId, issueId, runId } = await seedFixture();
+    const childIssueId = randomUUID();
+    const costEventId = randomUUID();
+    const financeEventId = randomUUID();
+
+    await db.insert(issues).values({
+      id: childIssueId,
+      companyId,
+      parentId: issueId,
+      title: "Child issue",
+      status: "todo",
+      priority: "medium",
+    });
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      body: "Comment",
+      createdByRunId: runId,
+    });
+    await db.insert(issueReadStates).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      userId: "user-1",
+    });
+    await db.insert(issueInboxArchives).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      userId: "user-1",
+    });
+    await db.insert(feedbackVotes).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      targetType: "issue_comment",
+      targetId: "comment-1",
+      authorUserId: "user-1",
+      vote: "up",
+    });
+    await db.insert(costEvents).values({
+      id: costEventId,
+      companyId,
+      heartbeatRunId: runId,
+      issueId,
+      provider: "openai",
+      model: "gpt-5",
+      costCents: 42,
+      occurredAt: new Date("2026-04-17T12:00:00.000Z"),
+    });
+    await db.insert(financeEvents).values({
+      id: financeEventId,
+      companyId,
+      heartbeatRunId: runId,
+      issueId,
+      eventKind: "llm_usage",
+      direction: "debit",
+      biller: "openai",
+      amountCents: 42,
+      currency: "USD",
+      occurredAt: new Date("2026-04-17T12:00:00.000Z"),
+    });
+
+    const removed = await issueService(db).remove(issueId);
+
+    expect(removed?.id).toBe(issueId);
+    await expect(db.select().from(issues).where(eq(issues.id, issueId))).resolves.toHaveLength(0);
+    await expect(db.select().from(issueComments).where(eq(issueComments.issueId, issueId))).resolves.toHaveLength(0);
+    await expect(db.select().from(issueReadStates).where(eq(issueReadStates.issueId, issueId))).resolves.toHaveLength(0);
+    await expect(db.select().from(issueInboxArchives).where(eq(issueInboxArchives.issueId, issueId))).resolves.toHaveLength(0);
+    await expect(db.select().from(feedbackVotes).where(eq(feedbackVotes.issueId, issueId))).resolves.toHaveLength(0);
+    await expect(db.select().from(issues).where(eq(issues.id, childIssueId))).resolves.toMatchObject([
+      {
+        id: childIssueId,
+        parentId: null,
+      },
+    ]);
+    await expect(db.select().from(costEvents).where(eq(costEvents.id, costEventId))).resolves.toMatchObject([
+      {
+        id: costEventId,
+        issueId: null,
+      },
+    ]);
+    await expect(db.select().from(financeEvents).where(eq(financeEvents.id, financeEventId))).resolves.toMatchObject([
+      {
+        id: financeEventId,
+        issueId: null,
       },
     ]);
   });
@@ -198,6 +331,21 @@ describeEmbeddedPostgres("cleanup removal services", () => {
       runId,
       details: {},
     });
+    await db.insert(issueInboxArchives).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      userId: "user-1",
+    });
+    await db.insert(feedbackVotes).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      targetType: "issue",
+      targetId: issueId,
+      authorUserId: "user-1",
+      vote: "down",
+    });
 
     const removed = await companyService(db).remove(companyId);
 
@@ -205,6 +353,8 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await expect(db.select().from(companies).where(eq(companies.id, companyId))).resolves.toHaveLength(0);
     await expect(db.select().from(issues).where(eq(issues.id, issueId))).resolves.toHaveLength(0);
     await expect(db.select().from(issueReadStates).where(eq(issueReadStates.companyId, companyId))).resolves.toHaveLength(0);
+    await expect(db.select().from(issueInboxArchives).where(eq(issueInboxArchives.companyId, companyId))).resolves.toHaveLength(0);
+    await expect(db.select().from(feedbackVotes).where(eq(feedbackVotes.companyId, companyId))).resolves.toHaveLength(0);
     await expect(db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).resolves.toHaveLength(0);
   });
 });

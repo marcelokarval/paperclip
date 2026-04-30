@@ -466,6 +466,64 @@ describe("issue comment reopen routes", () => {
     expect(res.status).toBe(201);
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
+
+  it("drops stale run attribution on POST comments instead of failing the comment", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockHeartbeatService.getRun.mockResolvedValue(null);
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "board",
+        userId: "local-board",
+        companyIds: ["company-1"],
+        source: "session",
+        isInstanceAdmin: false,
+        runId: "99999999-9999-4999-8999-999999999999",
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "hello" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "hello",
+      expect.objectContaining({ runId: null }),
+    );
+    expect(mockHeartbeatService.reportRunActivity).not.toHaveBeenCalled();
+  });
+
+  it("preserves valid same-company run attribution on POST comments", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "99999999-9999-4999-8999-999999999999",
+      companyId: "company-1",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      status: "running",
+    });
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "board",
+        userId: "local-board",
+        companyIds: ["company-1"],
+        source: "session",
+        isInstanceAdmin: false,
+        runId: "99999999-9999-4999-8999-999999999999",
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "hello" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "hello",
+      expect.objectContaining({ runId: "99999999-9999-4999-8999-999999999999" }),
+    );
+    expect(mockHeartbeatService.reportRunActivity).toHaveBeenCalledWith("99999999-9999-4999-8999-999999999999");
+  });
+
   it("interrupts an active run before a combined comment update", async () => {
     const issue = {
       ...makeIssue("todo"),

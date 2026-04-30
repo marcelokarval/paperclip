@@ -2587,6 +2587,25 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    let effectiveRunId = actor.runId;
+    if (effectiveRunId) {
+      const run = await heartbeat.getRun(effectiveRunId).catch((err) => {
+        logger.warn({ err, runId: effectiveRunId, issueId: id }, "failed to resolve issue comment run id");
+        return null;
+      });
+      if (!run || run.companyId !== issue.companyId) {
+        logger.warn(
+          {
+            runId: effectiveRunId,
+            issueId: id,
+            issueCompanyId: issue.companyId,
+            runCompanyId: run?.companyId ?? null,
+          },
+          "ignoring stale issue comment run id",
+        );
+        effectiveRunId = null;
+      }
+    }
     const reopenRequested = req.body.reopen === true;
     const interruptRequested = req.body.interrupt === true;
     const isClosed = isClosedIssueStatus(issue.status);
@@ -2618,7 +2637,7 @@ export function issueRoutes(
         actorType: actor.actorType,
         actorId: actor.actorId,
         agentId: actor.agentId,
-        runId: actor.runId,
+        runId: effectiveRunId,
         action: "issue.updated",
         entityType: "issue",
         entityId: currentIssue.id,
@@ -2648,7 +2667,7 @@ export function issueRoutes(
             actorType: actor.actorType,
             actorId: actor.actorId,
             agentId: actor.agentId,
-            runId: actor.runId,
+            runId: effectiveRunId,
             action: "heartbeat.cancelled",
             entityType: "heartbeat_run",
             entityId: cancelled.id,
@@ -2664,12 +2683,12 @@ export function issueRoutes(
       : await svc.addComment(id, req.body.body, {
           agentId: actor.agentId ?? undefined,
           userId: actor.actorType === "user" ? actor.actorId : undefined,
-          runId: actor.runId,
+          runId: effectiveRunId,
         });
 
-    if (actor.runId) {
-      await heartbeat.reportRunActivity(actor.runId).catch((err) =>
-        logger.warn({ err, runId: actor.runId }, "failed to clear detached run warning after issue comment"));
+    if (effectiveRunId) {
+      await heartbeat.reportRunActivity(effectiveRunId).catch((err) =>
+        logger.warn({ err, runId: effectiveRunId }, "failed to clear detached run warning after issue comment"));
     }
 
     if (comment) {
@@ -2678,7 +2697,7 @@ export function issueRoutes(
         actorType: actor.actorType,
         actorId: actor.actorId,
         agentId: actor.agentId,
-        runId: actor.runId,
+        runId: effectiveRunId,
         action: "issue.comment_added",
         entityType: "issue",
         entityId: currentIssue.id,
