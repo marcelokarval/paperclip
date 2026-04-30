@@ -524,6 +524,41 @@ describe("issue comment reopen routes", () => {
     expect(mockHeartbeatService.reportRunActivity).toHaveBeenCalledWith("99999999-9999-4999-8999-999999999999");
   });
 
+  it("drops same-company run attribution when the run belongs to another issue", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "99999999-9999-4999-8999-999999999999",
+      companyId: "company-1",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      status: "running",
+      contextSnapshot: {
+        issueId: "33333333-3333-4333-8333-333333333333",
+        taskId: "33333333-3333-4333-8333-333333333333",
+      },
+    });
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "board",
+        userId: "local-board",
+        companyIds: ["company-1"],
+        source: "session",
+        isInstanceAdmin: false,
+        runId: "99999999-9999-4999-8999-999999999999",
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "hello" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "hello",
+      expect.objectContaining({ runId: null }),
+    );
+    expect(mockHeartbeatService.reportRunActivity).not.toHaveBeenCalled();
+  });
+
   it("interrupts an active run before a combined comment update", async () => {
     const issue = {
       ...makeIssue("todo"),

@@ -315,6 +315,16 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       }
     }
   });
+
+  it("fails cleanly before bundled skill upserts when the company does not exist", async () => {
+    const companyId = randomUUID();
+
+    await expect(companySkillService(db).list(companyId)).rejects.toMatchObject({
+      status: 404,
+      message: "Company not found",
+    });
+    await expect(db.select().from(companySkills).where(eq(companySkills.companyId, companyId))).resolves.toHaveLength(0);
+  });
 });
 
 describe("missing local skill reconciliation", () => {

@@ -2593,13 +2593,20 @@ export function issueRoutes(
         logger.warn({ err, runId: effectiveRunId, issueId: id }, "failed to resolve issue comment run id");
         return null;
       });
-      if (!run || run.companyId !== issue.companyId) {
+      const runContext = run?.contextSnapshot && typeof run.contextSnapshot === "object"
+        ? run.contextSnapshot as Record<string, unknown>
+        : null;
+      const runIssueRefs = [runContext?.issueId, runContext?.taskId]
+        .filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+      const mismatchedRunIssue = runIssueRefs.length > 0 && runIssueRefs.some((runIssueId) => runIssueId !== issue.id);
+      if (!run || run.companyId !== issue.companyId || mismatchedRunIssue) {
         logger.warn(
           {
             runId: effectiveRunId,
             issueId: id,
             issueCompanyId: issue.companyId,
             runCompanyId: run?.companyId ?? null,
+            runIssueRefs,
           },
           "ignoring stale issue comment run id",
         );
