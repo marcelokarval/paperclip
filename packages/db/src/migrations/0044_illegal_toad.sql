@@ -49,6 +49,16 @@ DO $$ BEGIN
  END IF;
 END $$;--> statement-breakpoint
 DROP INDEX IF EXISTS "board_api_keys_key_hash_idx";--> statement-breakpoint
+DO $$ BEGIN
+ IF EXISTS (
+  SELECT 1
+  FROM "board_api_keys"
+  GROUP BY "key_hash"
+  HAVING count(*) > 1
+ ) THEN
+  RAISE EXCEPTION 'Cannot create unique index board_api_keys_key_hash_idx: duplicate board_api_keys.key_hash rows exist. Revoke or remove duplicate board API keys before rerunning migrations.';
+ END IF;
+END $$;--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "board_api_keys_key_hash_idx" ON "board_api_keys" USING btree ("key_hash");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "board_api_keys_user_idx" ON "board_api_keys" USING btree ("user_id");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "cli_auth_challenges_secret_hash_idx" ON "cli_auth_challenges" USING btree ("secret_hash");--> statement-breakpoint

@@ -80,6 +80,17 @@ DO $$ BEGIN
   ALTER TABLE "feedback_votes" ADD CONSTRAINT "feedback_votes_issue_id_issues_id_fk" FOREIGN KEY ("issue_id") REFERENCES "public"."issues"("id") ON DELETE no action ON UPDATE no action;
  END IF;
 END $$;--> statement-breakpoint
+DO $$ BEGIN
+ IF EXISTS (
+  SELECT 1
+  FROM "feedback_exports"
+  WHERE "feedback_vote_id" IS NOT NULL
+  GROUP BY "feedback_vote_id"
+  HAVING count(*) > 1
+ ) THEN
+  RAISE EXCEPTION 'Cannot create unique index feedback_exports_feedback_vote_idx: duplicate feedback_exports.feedback_vote_id rows exist. Resolve duplicate feedback exports before rerunning migrations.';
+ END IF;
+END $$;--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "feedback_exports_feedback_vote_idx" ON "feedback_exports" USING btree ("feedback_vote_id");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "feedback_exports_company_created_idx" ON "feedback_exports" USING btree ("company_id","created_at");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "feedback_exports_company_status_idx" ON "feedback_exports" USING btree ("company_id","status","created_at");--> statement-breakpoint
@@ -89,6 +100,16 @@ CREATE INDEX IF NOT EXISTS "feedback_exports_company_author_idx" ON "feedback_ex
 CREATE INDEX IF NOT EXISTS "feedback_votes_company_issue_idx" ON "feedback_votes" USING btree ("company_id","issue_id");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "feedback_votes_issue_target_idx" ON "feedback_votes" USING btree ("issue_id","target_type","target_id");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "feedback_votes_author_idx" ON "feedback_votes" USING btree ("author_user_id","created_at");--> statement-breakpoint
+DO $$ BEGIN
+ IF EXISTS (
+  SELECT 1
+  FROM "feedback_votes"
+  GROUP BY "company_id","target_type","target_id","author_user_id"
+  HAVING count(*) > 1
+ ) THEN
+  RAISE EXCEPTION 'Cannot create unique index feedback_votes_company_target_author_idx: duplicate feedback vote rows exist for the same company, target, and author. Resolve duplicate feedback votes before rerunning migrations.';
+ END IF;
+END $$;--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "feedback_votes_company_target_author_idx" ON "feedback_votes" USING btree ("company_id","target_type","target_id","author_user_id");--> statement-breakpoint
 DO $$ BEGIN
  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'document_revisions_created_by_run_id_heartbeat_runs_id_fk') THEN
