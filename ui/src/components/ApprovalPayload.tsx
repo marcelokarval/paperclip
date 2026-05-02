@@ -81,6 +81,23 @@ function SkillList({ values }: { values: unknown }) {
 }
 
 export function HireAgentPayload({ payload }: { payload: Record<string, unknown> }) {
+  const adapterConfig = typeof payload.adapterConfig === "object" && payload.adapterConfig !== null && !Array.isArray(payload.adapterConfig)
+    ? payload.adapterConfig as Record<string, unknown>
+    : {};
+  const operatingModel = typeof payload.operatingModel === "object" && payload.operatingModel !== null && !Array.isArray(payload.operatingModel)
+    ? payload.operatingModel as Record<string, unknown>
+    : null;
+  const selectedModel = typeof adapterConfig.model === "string"
+    ? adapterConfig.model
+    : typeof operatingModel?.selectedModel === "string"
+      ? operatingModel.selectedModel
+      : null;
+  const reasoningEffort = typeof adapterConfig.modelReasoningEffort === "string"
+    ? adapterConfig.modelReasoningEffort
+    : typeof operatingModel?.reasoningEffort === "string"
+      ? operatingModel.reasoningEffort
+      : null;
+
   return (
     <div className="mt-3 space-y-1.5 text-sm">
       <div className="flex items-center gap-2">
@@ -102,6 +119,18 @@ export function HireAgentPayload({ payload }: { payload: Record<string, unknown>
           <span className="font-mono text-xs bg-muted px-1.5 py-0.5 rounded">
             {String(payload.adapterType)}
           </span>
+        </div>
+      )}
+      {selectedModel && <PayloadField label="Model" value={selectedModel} />}
+      {reasoningEffort && <PayloadField label="Reasoning" value={reasoningEffort} />}
+      {operatingModel && (
+        <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+          <div className="font-medium text-foreground">Operating model snapshot</div>
+          <div>Model discovered: {operatingModel.selectedModelDiscovered === false ? "no" : operatingModel.selectedModelDiscovered === true ? "yes" : "unknown"}</div>
+          <div>OPERATING_MODELS.md: {operatingModel.operatingModelsStale ? "stale or missing" : "fresh"}</div>
+          {typeof operatingModel.operatingModelsGeneratedAt === "string" && (
+            <div>Generated: {operatingModel.operatingModelsGeneratedAt}</div>
+          )}
         </div>
       )}
       <SkillList values={payload.desiredSkills} />

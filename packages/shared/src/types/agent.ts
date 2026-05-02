@@ -42,7 +42,18 @@ export interface AgentInstructionsBundle {
   warnings: string[];
   legacyPromptTemplateActive: boolean;
   legacyBootstrapPromptTemplateActive: boolean;
+  operatingPack?: AgentOperatingPackStatus;
   files: AgentInstructionsFileSummary[];
+}
+
+export interface AgentOperatingPackStatus {
+  status: "healthy" | "missing_required_files" | "stale_models" | "warning";
+  expectedFiles: string[];
+  presentFiles: string[];
+  missingFiles: string[];
+  operatingModelsGeneratedAt: string | null;
+  stale: boolean;
+  warnings: string[];
 }
 
 export interface AgentAccessState {

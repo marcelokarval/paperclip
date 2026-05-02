@@ -124,10 +124,15 @@ function OverviewContent({
 
           {overview.topRisks.length > 0 ? (
             <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-3">
-              <div className="text-[11px] uppercase tracking-wide text-amber-800 dark:text-amber-200">Top risks</div>
+              <div className="text-[11px] uppercase tracking-wide text-amber-800 dark:text-amber-200">
+                Baseline confidence risks
+              </div>
+              <p className="mt-1 text-[11px] text-amber-900/80 dark:text-amber-100/80">
+                Analyzer warnings about missing or ambiguous repository context. Use them to guide CEO/CTO validation; they are not execution tasks by themselves.
+              </p>
               <ul className="mt-2 space-y-1 text-xs text-amber-900 dark:text-amber-100">
-                {overview.topRisks.slice(0, 4).map((risk) => (
-                  <li key={risk}>{risk}</li>
+                {overview.topRisks.slice(0, 4).map((risk, index) => (
+                  <li key={`${risk}-${index}`}>{risk}</li>
                 ))}
               </ul>
             </div>
@@ -802,6 +807,18 @@ export function ProjectDetail() {
     queryFn: () => issuesApi.listComments(baselineIssueId!, { limit: 100, order: "desc" }),
     enabled: Boolean(baselineIssueId),
   });
+  const { data: projectIntakeIssues = [] } = useQuery({
+    queryKey: project?.id && resolvedCompanyId
+      ? queryKeys.issues.listByProject(resolvedCompanyId, project.id)
+      : ["issues", "__project-intake__", "disabled"],
+    queryFn: () => issuesApi.list(resolvedCompanyId!, { projectId: project!.id }),
+    enabled: Boolean(project?.id && resolvedCompanyId && activeTab === "intake"),
+  });
+  const { data: companyLabels = [] } = useQuery({
+    queryKey: resolvedCompanyId ? queryKeys.issues.labels(resolvedCompanyId) : ["issues", "__labels__", "disabled"],
+    queryFn: () => issuesApi.listLabels(resolvedCompanyId!),
+    enabled: Boolean(resolvedCompanyId && activeTab === "intake"),
+  });
   const { data: projectAgents = [] } = useQuery({
     queryKey: resolvedCompanyId ? queryKeys.agents.list(resolvedCompanyId) : ["agents", "__none__"],
     queryFn: () => agentsApi.list(resolvedCompanyId!),
@@ -1141,6 +1158,8 @@ export function ProjectDetail() {
             assigneeAgentId: baselineIssue.assigneeAgentId ?? null,
           } : null}
           repositoryBaseline={repositoryBaseline}
+          companyLabels={companyLabels}
+          projectIssues={projectIntakeIssues}
           hasBaselineCeoReviewRequest={hasBaselineCeoReviewRequest || hasCompletedBaselineCeoReview}
           baselineReviewAgentName={baselineReviewAgent?.name ?? null}
           baselineActionMessage={baselineActionMessage}

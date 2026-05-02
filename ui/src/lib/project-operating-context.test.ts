@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { Project } from "@paperclipai/shared";
+import type { Issue, Project, RepositoryDocumentationBaseline } from "@paperclipai/shared";
 import {
   appendProjectIssueContextSnippet,
   buildKeepManualDescriptionPatch,
   buildProjectDescriptionPatch,
   buildUseBaselineDescriptionSuggestionPatch,
   getProjectIntakeModel,
+  getProjectLabelGovernanceStatus,
   getProjectParticipantSuggestions,
   getProjectIssueContextModel,
   getProjectOverviewModel,
@@ -840,6 +841,144 @@ describe("project operating context helpers", () => {
     })).toMatchObject({
       currentPhase: "ceo_review",
       nextActionLabel: "Create the operator issue from Project Intake",
+    });
+  });
+});
+
+describe("getProjectLabelGovernanceStatus", () => {
+  const baseline: Pick<RepositoryDocumentationBaseline, "recommendations"> = {
+    recommendations: {
+      labels: [
+        {
+          name: "frontend",
+          color: "#2563eb",
+          description: "UI work",
+          confidence: "high",
+          evidence: [],
+        },
+      ],
+      issuePolicy: {
+        labelUsageGuidance: [],
+        parentChildGuidance: [],
+        blockingGuidance: [],
+        reviewGuidance: [],
+        approvalGuidance: [],
+      },
+      projectDefaults: {
+        canonicalDocs: [],
+        suggestedVerificationCommands: [],
+        ownershipAreas: [],
+      },
+    },
+  };
+
+  it("detects suggested labels that still need acceptance", () => {
+    expect(getProjectLabelGovernanceStatus({ repositoryBaseline: baseline })).toMatchObject({
+      status: "needs_acceptance",
+      suggestedCount: 1,
+      acceptedCount: 0,
+      materializedCount: 0,
+      inUseCount: 0,
+    });
+  });
+
+  it("detects accepted labels that still need materialization", () => {
+    expect(getProjectLabelGovernanceStatus({
+      repositoryBaseline: baseline,
+      project: createProject({
+        operatingContext: {
+          labelCatalog: [{ name: "frontend", color: "#2563eb", description: "UI work" }],
+        } as Project["operatingContext"],
+      }),
+    })).toMatchObject({
+      status: "needs_materialization",
+      acceptedCount: 1,
+      materializedCount: 0,
+    });
+  });
+
+  it("detects materialized labels that are not in use yet", () => {
+    expect(getProjectLabelGovernanceStatus({
+      repositoryBaseline: baseline,
+      project: createProject({
+        operatingContext: {
+          labelCatalog: [{ name: "frontend", color: "#2563eb", description: "UI work" }],
+        } as Project["operatingContext"],
+      }),
+      companyLabels: [{
+        id: "label-1",
+        companyId: "company-1",
+        name: "Frontend",
+        color: "#2563eb",
+        description: "UI work",
+        source: "repository_baseline",
+        metadata: { baselineProjectId: "project-1" },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }],
+      projectIssues: [],
+    })).toMatchObject({
+      status: "unused",
+      materializedCount: 1,
+      inUseCount: 0,
+    });
+  });
+
+  it("detects fully consistent labels case-insensitively", () => {
+    expect(getProjectLabelGovernanceStatus({
+      repositoryBaseline: baseline,
+      project: createProject({
+        operatingContext: {
+          labelCatalog: [{ name: "Frontend", color: "#2563eb", description: "UI work" }],
+        } as Project["operatingContext"],
+      }),
+      companyLabels: [{
+        id: "label-1",
+        companyId: "company-1",
+        name: "frontend",
+        color: "#2563eb",
+        description: "UI work",
+        source: "repository_baseline",
+        metadata: { baselineProjectId: "project-1" },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }],
+      projectIssues: [{
+        id: "issue-1",
+        labelIds: ["label-1"],
+        labels: [],
+      } as unknown as Issue],
+    })).toMatchObject({
+      status: "consistent",
+      acceptedCount: 1,
+      materializedCount: 1,
+      inUseCount: 1,
+    });
+  });
+
+  it("does not treat same-name manual labels as materialized baseline labels", () => {
+    expect(getProjectLabelGovernanceStatus({
+      repositoryBaseline: baseline,
+      project: createProject({
+        operatingContext: {
+          labelCatalog: [{ name: "frontend", color: "#2563eb", description: "UI work" }],
+        } as Project["operatingContext"],
+      }),
+      companyLabels: [{
+        id: "label-1",
+        companyId: "company-1",
+        name: "frontend",
+        color: "#2563eb",
+        description: "UI work",
+        source: "manual",
+        metadata: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }],
+      projectIssues: [],
+    })).toMatchObject({
+      status: "needs_materialization",
+      materializedCount: 0,
     });
   });
 });

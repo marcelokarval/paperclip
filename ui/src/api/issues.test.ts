@@ -37,4 +37,21 @@ describe("issuesApi.list", () => {
       body: "hello",
     });
   });
+
+  it("returns the explicit HITL approval envelope", async () => {
+    mockApi.post.mockResolvedValue({ comment: null, hitlApproval: { id: "approval-1" } });
+
+    await expect(issuesApi.requestHitlApproval("issue-1", {
+      summary: "Approve this HITL request.",
+      proposedItems: [],
+    })).resolves.toEqual({
+      comment: null,
+      hitlApproval: { id: "approval-1" },
+    });
+
+    expect(mockApi.post).toHaveBeenCalledWith("/issues/issue-1/hitl-approval", {
+      summary: "Approve this HITL request.",
+      proposedItems: [],
+    });
+  });
 });

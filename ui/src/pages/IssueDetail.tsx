@@ -115,6 +115,7 @@ import {
   isClosedIsolatedExecutionWorkspace,
   type ActivityEvent,
   type Agent,
+  type Approval,
   type FeedbackVote,
   type Issue,
   type IssueAttachment,
@@ -129,6 +130,17 @@ type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
   queueState?: "queued";
   queueTargetRunId?: string | null;
 };
+
+function isIssueHitlApproval(approval: Approval): boolean {
+  const payload =
+    approval.payload && typeof approval.payload === "object" && !Array.isArray(approval.payload)
+      ? (approval.payload as Record<string, unknown>)
+      : null;
+  return (
+    approval.type === "request_board_approval" &&
+    (payload?.source === "issue_deferred_hitl" || payload?.source === "issue_hitl_request")
+  );
+}
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 const ISSUE_COMMENT_PAGE_SIZE = 50;
@@ -354,6 +366,12 @@ function isDuplicateBaselineReviewRequestResponse(
     && "skipped" in response
     && response.skipped === "duplicate_baseline_review_request"
   );
+}
+
+function issueCommentFromAddResponse(response: IssueAddCommentResponse): IssueComment | null {
+  if (isDuplicateBaselineReviewRequestResponse(response)) return null;
+  if ("comment" in response) return response.comment;
+  return response;
 }
 
 function IssueDetailLoadingState({
@@ -793,6 +811,10 @@ function IssueDetailActivityTab({
     queryFn: () => issuesApi.listApprovals(issueId),
     placeholderData: keepPreviousDataForSameQueryTail<Awaited<ReturnType<typeof issuesApi.listApprovals>>>(issueId),
   });
+  const pendingHitlApprovals = useMemo(
+    () => (linkedApprovals ?? []).filter((approval) => isIssueHitlApproval(approval) && (approval.status === "pending" || approval.status === "revision_requested")),
+    [linkedApprovals],
+  );
   const initialLoading =
     (activityLoading && activity === undefined)
     || (linkedRunsLoading && linkedRuns === undefined);
@@ -841,6 +863,26 @@ function IssueDetailActivityTab({
 
   return (
     <>
+      {pendingHitlApprovals.length > 0 && (
+        <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <div className="text-sm font-medium text-amber-900 dark:text-amber-200">
+                HITL approval pending
+              </div>
+              <div className="text-xs text-muted-foreground">
+                This issue is waiting for operator approval before the workflow can continue.
+              </div>
+            </div>
+            <Link
+              to={`/approvals/${pendingHitlApprovals[0]!.id}`}
+              className="text-xs font-medium text-amber-900 underline-offset-4 hover:underline dark:text-amber-200"
+            >
+              Open approval
+            </Link>
+          </div>
+        </div>
+      )}
       {linkedApprovals && linkedApprovals.length > 0 && (
         <div className="mb-3 space-y-3">
           {linkedApprovals.map((approval) => (
@@ -1622,10 +1664,12 @@ export function IssueDetail() {
         invalidateIssueCollections();
         return;
       }
+      const addedComment = issueCommentFromAddResponse(comment);
+      if (!addedComment) return;
       if (context?.optimisticCommentId && cancelledQueuedOptimisticCommentIdsRef.current.has(context.optimisticCommentId)) {
         cancelledQueuedOptimisticCommentIdsRef.current.delete(context.optimisticCommentId);
         try {
-          await issuesApi.cancelComment(issueId!, comment.id);
+          await issuesApi.cancelComment(issueId!, addedComment.id);
           invalidateIssueDetail();
           invalidateIssueThreadLazily();
           invalidateIssueCollections();
@@ -1642,10 +1686,10 @@ export function IssueDetail() {
         queryKeys.issues.comments(issueId!),
         (current) => current ? {
           ...current,
-          pages: upsertIssueCommentInPages(current.pages, comment),
+          pages: upsertIssueCommentInPages(current.pages, addedComment),
         } : {
           pageParams: [null],
-          pages: upsertIssueCommentInPages(undefined, comment),
+          pages: upsertIssueCommentInPages(undefined, addedComment),
         },
       );
     },

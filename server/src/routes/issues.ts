@@ -26,7 +26,9 @@ import {
   isIssueIdentifierRef,
   isClosedIsolatedExecutionWorkspace,
   readRepositoryDocumentationBaselineFromMetadata,
+  issueHitlRequestSchema,
   projectIssueSystemGuidanceSchema,
+  type IssueHitlRequest,
   type ExecutionWorkspace,
   type IssueLabel,
 } from "@paperclipai/shared";
@@ -559,18 +561,24 @@ export function issueRoutes(
     actor: ReturnType<typeof getActorInfo>;
     commentId: string | null;
     commentBody: string | null | undefined;
+    hitlRequest?: IssueHitlRequest | null;
   }) {
     if (input.actor.actorType !== "agent") return null;
-    const parsed = parseDeferredHitlApprovalRequest(input.commentBody);
+    const explicit = input.hitlRequest
+      ? {
+          title: input.hitlRequest.title?.trim() || "Review HITL request from issue",
+          summary: input.hitlRequest.summary,
+          proposedItems: Array.from(new Set(input.hitlRequest.proposedItems ?? [])),
+          proposedComment: input.hitlRequest.proposedComment?.trim() || input.commentBody || input.hitlRequest.summary,
+          recommendedAction: input.hitlRequest.recommendedAction,
+          nextActionOnApproval: input.hitlRequest.nextActionOnApproval,
+        }
+      : null;
+    const parsed = explicit ?? parseDeferredHitlApprovalRequest(input.commentBody);
     if (!parsed) return null;
+    const source = explicit ? "issue_hitl_request" : "issue_deferred_hitl";
 
-    const existingApprovals = await issueApprovalsSvc.listApprovalsForIssue(input.issue.id);
-    const existingActionable = existingApprovals.find((approval) => {
-      if (approval.type !== "request_board_approval") return false;
-      if (approval.status !== "pending" && approval.status !== "revision_requested") return false;
-      const payload = approval.payload as Record<string, unknown> | null;
-      return payload?.source === "issue_deferred_hitl";
-    });
+    const existingActionable = await findExistingIssueHitlApproval(input.issue.id);
     if (existingActionable) return existingActionable;
 
     const approval = await approvalsSvc.create(input.issue.companyId, {
@@ -579,11 +587,11 @@ export function issueRoutes(
       requestedByUserId: null,
       status: "pending",
       payload: {
-        source: "issue_deferred_hitl",
+        source,
         title: parsed.title,
-        summary: `Issue ${input.issue.identifier ?? input.issue.id.slice(0, 8)} contains deferred HITL proposals that require board approval before becoming durable policy.`,
-        recommendedAction: "Review the proposed HITL changes and approve, reject, or request revision.",
-        nextActionOnApproval: "The requesting agent will be woken with the approval decision and linked issue context.",
+        summary: explicit?.summary ?? `Issue ${input.issue.identifier ?? input.issue.id.slice(0, 8)} contains deferred HITL proposals that require board approval before becoming durable policy.`,
+        recommendedAction: explicit?.recommendedAction ?? "Review the proposed HITL changes and approve, reject, or request revision.",
+        nextActionOnApproval: explicit?.nextActionOnApproval ?? "The requesting agent will be woken with the approval decision and linked issue context.",
         proposedItems: parsed.proposedItems,
         proposedComment: parsed.proposedComment,
         issueId: input.issue.id,
@@ -608,13 +616,14 @@ export function issueRoutes(
       actorId: input.actor.actorId,
       agentId: input.actor.agentId,
       runId: input.actor.runId,
-      action: "approval.created",
+        action: "approval.created",
       entityType: "approval",
       entityId: approval.id,
       details: {
         type: approval.type,
         issueId: input.issue.id,
-        source: "issue_deferred_hitl",
+        source,
+        explicit: Boolean(explicit),
         proposedItems: parsed.proposedItems,
       },
     });
@@ -628,10 +637,20 @@ export function issueRoutes(
       action: "issue.approval_linked",
       entityType: "issue",
       entityId: input.issue.id,
-      details: { approvalId: approval.id, source: "issue_deferred_hitl" },
+      details: { approvalId: approval.id, source, explicit: Boolean(explicit) },
     });
 
     return approval;
+  }
+
+  async function findExistingIssueHitlApproval(issueId: string) {
+    const existingApprovals = await issueApprovalsSvc.listApprovalsForIssue(issueId);
+    return existingApprovals.find((approval) => {
+      if (approval.type !== "request_board_approval") return false;
+      if (approval.status !== "pending" && approval.status !== "revision_requested") return false;
+      const payload = approval.payload as Record<string, unknown> | null;
+      return payload?.source === "issue_deferred_hitl" || payload?.source === "issue_hitl_request";
+    }) ?? null;
   }
 
   function requireAgentRunId(req: Request, res: Response) {
@@ -1575,6 +1594,57 @@ export function issueRoutes(
     res.status(201).json(approvals);
   });
 
+  router.post("/issues/:id/hitl-approval", validate(issueHitlRequestSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type !== "agent") {
+      res.status(403).json({ error: "Agent authentication required" });
+      return;
+    }
+    if (!(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
+    const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
+    if (closedExecutionWorkspace) {
+      respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const commentBody = req.body.proposedComment ?? req.body.summary;
+    const existingApproval = await findExistingIssueHitlApproval(issue.id);
+    if (existingApproval) {
+      res.status(200).json({ comment: null, hitlApproval: existingApproval });
+      return;
+    }
+
+    const comment = await svc.addComment(issue.id, commentBody, {
+      ...(actor.agentId ? { agentId: actor.agentId } : {}),
+      ...(actor.actorType === "user" && actor.actorId ? { userId: actor.actorId } : {}),
+      ...(actor.runId ? { runId: actor.runId } : {}),
+    });
+    const approval = await materializeDeferredHitlApproval({
+      issue: {
+        id: issue.id,
+        companyId: issue.companyId,
+        identifier: issue.identifier,
+        title: issue.title,
+      },
+      actor,
+      commentId: comment.id,
+      commentBody: comment.body,
+      hitlRequest: req.body,
+    });
+    if (!approval) {
+      res.status(422).json({ error: "Unable to create HITL approval request" });
+      return;
+    }
+    res.status(201).json({ comment, hitlApproval: approval });
+  });
+
   router.delete("/issues/:id/approvals/:approvalId", async (req, res) => {
     const id = req.params.id as string;
     const approvalId = req.params.approvalId as string;
@@ -2099,6 +2169,7 @@ export function issueRoutes(
           actor,
           commentId: comment.id,
           commentBody: comment.body,
+          hitlRequest: req.body.hitlRequest,
         })
       : null;
     const assigneeChanged =
@@ -2840,6 +2911,20 @@ export function issueRoutes(
         },
       });
     }
+    const hitlApproval = comment
+      ? await materializeDeferredHitlApproval({
+          issue: {
+            id: currentIssue.id,
+            companyId: currentIssue.companyId,
+            identifier: currentIssue.identifier,
+            title: currentIssue.title,
+          },
+          actor,
+          commentId: comment.id,
+          commentBody: comment.body,
+          hitlRequest: req.body.hitlRequest,
+        })
+      : null;
 
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
     if (comment) void (async () => {
@@ -2941,7 +3026,7 @@ export function issueRoutes(
       return;
     }
 
-    res.status(201).json(comment);
+    res.status(201).json(hitlApproval ? { comment, hitlApproval } : comment);
   });
 
   router.post("/issues/:id/feedback-votes", validate(upsertIssueFeedbackVoteSchema), async (req, res) => {

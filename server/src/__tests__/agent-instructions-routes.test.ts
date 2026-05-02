@@ -219,6 +219,15 @@ describe("agent instructions bundle routes", () => {
       rootPath: "/tmp/agent-1",
       managedRootPath: "/tmp/agent-1",
       entryFile: "AGENTS.md",
+      operatingPack: {
+        status: "missing_required_files",
+        expectedFiles: ["AGENTS.md", "OPERATING_MODELS.md", "SELF_IMPROVEMENT.md"],
+        presentFiles: ["AGENTS.md"],
+        missingFiles: ["OPERATING_MODELS.md", "SELF_IMPROVEMENT.md"],
+        operatingModelsGeneratedAt: null,
+        stale: true,
+        warnings: [],
+      },
     });
     expect(mockAgentInstructionsService.getBundle).toHaveBeenCalled();
   });

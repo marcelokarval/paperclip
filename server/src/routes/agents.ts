@@ -869,6 +869,93 @@ export function agentRoutes(db: Db) {
     return ["AGENTS.md", "OPERATING_MODELS.md", "SELF_IMPROVEMENT.md"];
   }
 
+  function parseOperatingModelsGeneratedAt(content: string | null) {
+    if (!content) return null;
+    const match = content.match(/^Last generated:\s*(.+)$/m);
+    if (!match?.[1]) return null;
+    const generatedAt = new Date(match[1].trim());
+    return Number.isNaN(generatedAt.getTime()) ? null : generatedAt.toISOString();
+  }
+
+  async function readOperatingModelsGeneratedAt(agent: {
+    id: string;
+    companyId: string;
+    name: string;
+    adapterConfig: unknown;
+  }) {
+    const bundle = await instructions.getBundle(agent).catch(() => null);
+    if (!bundle?.files.some((file) => file.path === "OPERATING_MODELS.md")) return null;
+    const detail = await instructions.readFile(agent, "OPERATING_MODELS.md").catch(() => null);
+    return parseOperatingModelsGeneratedAt(detail?.content ?? null);
+  }
+
+  async function buildHireOperatingModelSnapshot(input: {
+    agent: {
+      id: string;
+      companyId: string;
+      name: string;
+      adapterType: string;
+      adapterConfig: unknown;
+    };
+    adapterConfig: Record<string, unknown>;
+  }) {
+    const discoveredModels = await Promise.resolve(listAdapterModels(input.agent.adapterType, { refresh: false })).catch(() => []);
+    const selectedModel = typeof input.adapterConfig.model === "string" && input.adapterConfig.model.trim().length > 0
+      ? input.adapterConfig.model.trim()
+      : null;
+    const reasoningEffort =
+      typeof input.adapterConfig.modelReasoningEffort === "string" && input.adapterConfig.modelReasoningEffort.trim().length > 0
+        ? input.adapterConfig.modelReasoningEffort.trim()
+        : null;
+    const operatingModelsGeneratedAt = await readOperatingModelsGeneratedAt(input.agent);
+    const generatedAtTime = operatingModelsGeneratedAt ? new Date(operatingModelsGeneratedAt).getTime() : null;
+    const operatingModelsStale = generatedAtTime === null
+      || Date.now() - generatedAtTime > 1000 * 60 * 60 * 24 * 7;
+
+    return {
+      adapterType: input.agent.adapterType,
+      selectedModel,
+      reasoningEffort,
+      discoveredModels: discoveredModels.map((model) => model.id),
+      selectedModelDiscovered: selectedModel ? discoveredModels.some((model) => model.id === selectedModel) : null,
+      operatingModelsGeneratedAt,
+      operatingModelsStale,
+    };
+  }
+
+  async function buildOperatingPackStatus(targetAgent: Awaited<ReturnType<typeof svc.getById>>, bundle: Awaited<ReturnType<typeof instructions.getBundle>>) {
+    if (!targetAgent) throw notFound("Agent not found");
+    const expectedFiles = expectedOperatingPackFilesForAgent(targetAgent);
+    const presentFiles = bundle.files.map((file) => file.path).sort();
+    const presentFileSet = new Set(presentFiles);
+    const missingFiles = expectedFiles.filter((file) => !presentFileSet.has(file));
+    let operatingModelsGeneratedAt: string | null = null;
+    if (presentFileSet.has("OPERATING_MODELS.md")) {
+      const detail = await instructions.readFile(targetAgent, "OPERATING_MODELS.md").catch(() => null);
+      operatingModelsGeneratedAt = parseOperatingModelsGeneratedAt(detail?.content ?? null);
+    }
+    const generatedAtTime = operatingModelsGeneratedAt ? new Date(operatingModelsGeneratedAt).getTime() : null;
+    const stale = generatedAtTime === null
+      || Date.now() - generatedAtTime > 1000 * 60 * 60 * 24 * 7;
+    const status = missingFiles.length > 0
+      ? "missing_required_files"
+      : stale
+        ? "stale_models"
+        : bundle.warnings.length > 0
+          ? "warning"
+          : "healthy";
+
+    return {
+      status,
+      expectedFiles,
+      presentFiles,
+      missingFiles,
+      operatingModelsGeneratedAt,
+      stale,
+      warnings: bundle.warnings,
+    };
+  }
+
   async function buildOperatingPackAudit(targetAgent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!targetAgent) throw notFound("Agent not found");
     const [bundle, runtimeSkillEntries] = await Promise.all([
@@ -1687,6 +1774,10 @@ export function agentRoutes(db: Db) {
       bootstrapProjectName: bootstrapProjectContext?.projectName ?? null,
       bootstrapOperatingContext: bootstrapProjectContext?.operatingContext ?? null,
     });
+    const hireOperatingModelSnapshot = await buildHireOperatingModelSnapshot({
+      agent,
+      adapterConfig: normalizedAdapterConfig,
+    });
 
     let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
     const actor = getActorInfo(req);
@@ -1733,7 +1824,9 @@ export function agentRoutes(db: Db) {
             adapterConfig: requestedAdapterConfig,
             runtimeConfig: requestedRuntimeConfig,
             desiredSkills: desiredSkillAssignment.desiredSkills,
+            operatingModel: hireOperatingModelSnapshot,
           },
+          operatingModel: hireOperatingModelSnapshot,
         },
         decisionNote: null,
         decidedByUserId: null,
@@ -1775,6 +1868,7 @@ export function agentRoutes(db: Db) {
         approvalId: approval?.id ?? null,
         issueIds: sourceIssueIds,
         desiredSkills: desiredSkillAssignment.desiredSkills,
+        operatingModel: hireOperatingModelSnapshot,
       },
     });
     const telemetryClient = getTelemetryClient();
@@ -2034,7 +2128,10 @@ export function agentRoutes(db: Db) {
     if (bundle.mode === "external") {
       assertCanUseHostFilesystemForInstructions(req);
     }
-    res.json(bundle);
+    res.json({
+      ...bundle,
+      operatingPack: await buildOperatingPackStatus(existing, bundle),
+    });
   });
 
   router.patch("/agents/:id/instructions-bundle", validate(updateAgentInstructionsBundleSchema), async (req, res) => {

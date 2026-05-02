@@ -67,6 +67,7 @@ describe("buildStaffingHireDraft", () => {
       role: "ceo",
       adapterConfig: {
         model: "gpt-5.4-mini",
+        modelReasoningEffort: "high",
         instructionsFilePath: "/tmp/ceo/AGENTS.md",
         instructionsRootPath: "/tmp/ceo",
         env: { OPENAI_API_KEY: "secret:openai" },
@@ -96,6 +97,7 @@ describe("buildStaffingHireDraft", () => {
     });
     expect(draft?.request.adapterConfig).toEqual({
       model: "gpt-5.4-mini",
+      modelReasoningEffort: "high",
       env: { OPENAI_API_KEY: "secret:openai" },
     });
   });

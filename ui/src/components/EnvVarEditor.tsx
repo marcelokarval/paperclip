@@ -168,12 +168,14 @@ export function EnvVarEditor({
         return (
           <div key={index} className="flex items-center gap-1.5">
             <input
+              name={`env-key-${index}`}
               className={cn(inputClass, "flex-[2]")}
               placeholder="KEY"
               value={row.key}
               onChange={(event) => updateRow(index, { key: event.target.value })}
             />
             <select
+              name={`env-source-${index}`}
               className={cn(inputClass, "flex-[1] bg-background")}
               value={row.source}
               onChange={(event) =>
@@ -189,6 +191,7 @@ export function EnvVarEditor({
             {row.source === "secret" ? (
               <>
                 <select
+                  name={`env-secret-${index}`}
                   className={cn(inputClass, "flex-[3] bg-background")}
                   value={row.secretId}
                   onChange={(event) => updateRow(index, { secretId: event.target.value })}
@@ -213,6 +216,7 @@ export function EnvVarEditor({
             ) : (
               <>
                 <input
+                  name={`env-value-${index}`}
                   className={cn(inputClass, "flex-[3]")}
                   placeholder="value"
                   value={row.plainValue}

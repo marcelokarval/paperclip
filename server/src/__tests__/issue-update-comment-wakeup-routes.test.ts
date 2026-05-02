@@ -23,6 +23,17 @@ const mockHeartbeatService = vi.hoisted(() => ({
   cancelRun: vi.fn(async () => null),
 }));
 
+const mockApprovalService = vi.hoisted(() => ({
+  create: vi.fn(),
+}));
+
+const mockIssueApprovalService = vi.hoisted(() => ({
+  listApprovalsForIssue: vi.fn(async () => []),
+  link: vi.fn(async () => undefined),
+}));
+
+const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+
 vi.mock("../services/index.js", () => ({
   accessService: () => ({
     canUser: vi.fn(async () => true),
@@ -53,10 +64,10 @@ vi.mock("../services/index.js", () => ({
     })),
     listCompanyIds: vi.fn(async () => ["company-1"]),
   }),
-  issueApprovalService: () => ({}),
-  approvalService: () => ({}),
+  issueApprovalService: () => mockIssueApprovalService,
+  approvalService: () => mockApprovalService,
   issueService: () => mockIssueService,
-  logActivity: vi.fn(async () => undefined),
+  logActivity: mockLogActivity,
   projectService: () => ({}),
   routineService: () => ({
     syncRunStatusForIssue: vi.fn(async () => undefined),
@@ -95,10 +106,10 @@ function registerModuleMocks() {
       })),
       listCompanyIds: vi.fn(async () => ["company-1"]),
     }),
-    issueApprovalService: () => ({}),
-  approvalService: () => ({}),
+    issueApprovalService: () => mockIssueApprovalService,
+    approvalService: () => mockApprovalService,
     issueService: () => mockIssueService,
-    logActivity: vi.fn(async () => undefined),
+    logActivity: mockLogActivity,
     projectService: () => ({}),
     routineService: () => ({
       syncRunStatusForIssue: vi.fn(async () => undefined),
@@ -107,7 +118,7 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp() {
+async function createApp(actor: Record<string, unknown> = {}) {
   const [{ errorHandler }, { issueRoutes }] = await Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
@@ -121,6 +132,7 @@ async function createApp() {
       companyIds: ["company-1"],
       source: "local_implicit",
       isInstanceAdmin: false,
+      ...actor,
     };
     next();
   });
@@ -163,6 +175,29 @@ describe("issue update comment wakeups", () => {
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-hitl-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      body: "Proposed `HIRING_POLICY.md` (HITL)",
+    });
+    mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
+    mockIssueApprovalService.link.mockResolvedValue(undefined);
+    mockApprovalService.create.mockResolvedValue({
+      id: "approval-1",
+      companyId: "company-1",
+      type: "request_board_approval",
+      requestedByAgentId: ASSIGNEE_AGENT_ID,
+      requestedByUserId: null,
+      status: "pending",
+      payload: {},
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-05-02T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-02T00:00:00.000Z"),
+    });
+    mockLogActivity.mockResolvedValue(undefined);
   });
 
   it("includes the new comment in assignment wakes from issue updates", async () => {
@@ -281,5 +316,116 @@ describe("issue update comment wakeups", () => {
     expect(res.status).toBe(200);
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("lets agents explicitly request issue-linked HITL approval without relying on prose parsing", async () => {
+    const issue = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+    });
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      source: "api_key",
+      isInstanceAdmin: false,
+    }))
+      .post(`/api/issues/${issue.id}/hitl-approval`)
+      .send({
+        summary: "Approve changing CEO hiring policy.",
+        proposedItems: ["HIRING_POLICY.md"],
+        proposedComment: "Proposed `HIRING_POLICY.md` (HITL)",
+        recommendedAction: "Approve or request revision.",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body).toMatchObject({
+      comment: { id: "comment-hitl-1" },
+      hitlApproval: { id: "approval-1" },
+    });
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issue.id,
+      "Proposed `HIRING_POLICY.md` (HITL)",
+      { agentId: ASSIGNEE_AGENT_ID },
+    );
+    expect(mockApprovalService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        type: "request_board_approval",
+        requestedByAgentId: ASSIGNEE_AGENT_ID,
+        payload: expect.objectContaining({
+          source: "issue_hitl_request",
+          sourceCommentId: "comment-hitl-1",
+          proposedItems: ["HIRING_POLICY.md"],
+          issueId: issue.id,
+          issueIdentifier: issue.identifier,
+        }),
+      }),
+    );
+    expect(mockIssueApprovalService.link).toHaveBeenCalledWith(
+      issue.id,
+      "approval-1",
+      { agentId: ASSIGNEE_AGENT_ID, userId: null },
+    );
+  });
+
+  it("rejects board callers for the explicit HITL approval endpoint", async () => {
+    const issue = makeIssue();
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${issue.id}/hitl-approval`)
+      .send({
+        summary: "Approve changing CEO hiring policy.",
+      });
+
+    expect(res.status).toBe(403);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+  });
+
+  it("does not create duplicate HITL comments or approvals when an actionable HITL approval already exists", async () => {
+    const issue = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+    });
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([{
+      id: "approval-existing",
+      companyId: "company-1",
+      type: "request_board_approval",
+      requestedByAgentId: ASSIGNEE_AGENT_ID,
+      requestedByUserId: null,
+      status: "pending",
+      payload: { source: "issue_hitl_request" },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-05-02T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-02T00:00:00.000Z"),
+    }]);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      source: "api_key",
+      isInstanceAdmin: false,
+    }))
+      .post(`/api/issues/${issue.id}/hitl-approval`)
+      .send({
+        summary: "Approve changing CEO hiring policy.",
+        proposedComment: "Proposed `HIRING_POLICY.md` (HITL)",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      comment: null,
+      hitlApproval: { id: "approval-existing" },
+    });
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
   });
 });

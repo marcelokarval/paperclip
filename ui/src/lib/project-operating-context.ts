@@ -1,4 +1,4 @@
-import type { Agent, Issue, Project, RepositoryDocumentationBaseline } from "@paperclipai/shared";
+import type { Agent, Issue, IssueLabel, Project, RepositoryDocumentationBaseline } from "@paperclipai/shared";
 
 function uniqueStrings(values: Array<string | null | undefined>): string[] {
   return [...new Set(
@@ -74,6 +74,33 @@ export interface ProjectIntakeModel {
   staffingStatusLabel: string | null;
 }
 
+export type ProjectLabelGovernanceAggregateStatus =
+  | "not_started"
+  | "needs_acceptance"
+  | "needs_materialization"
+  | "unused"
+  | "consistent";
+
+export interface ProjectLabelGovernanceRow {
+  name: string;
+  color: string | null;
+  description: string | null;
+  confidence: string | null;
+  suggested: boolean;
+  accepted: boolean;
+  materializedLabelId: string | null;
+  inUseIssueCount: number;
+}
+
+export interface ProjectLabelGovernanceStatus {
+  status: ProjectLabelGovernanceAggregateStatus;
+  rows: ProjectLabelGovernanceRow[];
+  suggestedCount: number;
+  acceptedCount: number;
+  materializedCount: number;
+  inUseCount: number;
+}
+
 export type ProjectIssueContextInsertKind = "docs" | "verification";
 
 export interface ProjectParticipantSuggestions {
@@ -97,6 +124,78 @@ const STAFFING_STATUS_LABELS: Record<NonNullable<Project["staffingState"]>["stat
   hire_approved: "Hire approved",
   role_onboarded: "Role onboarded",
 };
+
+function normalizeLabelName(name: string) {
+  return name.trim().toLowerCase();
+}
+
+function isBaselineMaterializedLabel(label: IssueLabel, projectId: string | null) {
+  if (label.source !== "repository_baseline") return false;
+  if (!projectId) return true;
+  return label.metadata?.baselineProjectId === projectId;
+}
+
+export function getProjectLabelGovernanceStatus(input: {
+  repositoryBaseline?: Pick<RepositoryDocumentationBaseline, "recommendations"> | null;
+  project?: Pick<Project, "id" | "operatingContext"> | null;
+  companyLabels?: IssueLabel[] | null;
+  projectIssues?: Issue[] | null;
+}): ProjectLabelGovernanceStatus {
+  const suggestedLabels = input.repositoryBaseline?.recommendations?.labels ?? [];
+  const acceptedLabels = input.project?.operatingContext?.labelCatalog ?? [];
+  const projectId = input.project?.id ?? null;
+  const companyLabelByName = new Map(
+    (input.companyLabels ?? [])
+      .filter((label) => isBaselineMaterializedLabel(label, projectId))
+      .map((label) => [normalizeLabelName(label.name), label]),
+  );
+  const acceptedByName = new Map(acceptedLabels.map((label) => [normalizeLabelName(label.name), label]));
+
+  const rows = suggestedLabels.map((label) => {
+    const normalizedName = normalizeLabelName(label.name);
+    const materialized = companyLabelByName.get(normalizedName) ?? null;
+    const inUseIssueCount = materialized
+      ? (input.projectIssues ?? []).filter((issue) =>
+          (issue.labelIds ?? []).includes(materialized.id)
+          || (issue.labels ?? []).some((issueLabel) => normalizeLabelName(issueLabel.name) === normalizedName),
+        ).length
+      : 0;
+    return {
+      name: label.name,
+      color: label.color ?? null,
+      description: label.description ?? null,
+      confidence: label.confidence ?? null,
+      suggested: true,
+      accepted: acceptedByName.has(normalizedName),
+      materializedLabelId: materialized?.id ?? null,
+      inUseIssueCount,
+    };
+  });
+
+  const suggestedCount = rows.length;
+  const acceptedCount = rows.filter((row) => row.accepted).length;
+  const materializedCount = rows.filter((row) => row.materializedLabelId).length;
+  const inUseCount = rows.filter((row) => row.inUseIssueCount > 0).length;
+  const status: ProjectLabelGovernanceAggregateStatus =
+    suggestedCount === 0
+      ? "not_started"
+      : acceptedCount < suggestedCount
+        ? "needs_acceptance"
+        : materializedCount < suggestedCount
+          ? "needs_materialization"
+          : inUseCount < suggestedCount
+            ? "unused"
+            : "consistent";
+
+  return {
+    status,
+    rows,
+    suggestedCount,
+    acceptedCount,
+    materializedCount,
+    inUseCount,
+  };
+}
 
 export function getProjectOverviewModel(
   project: Pick<Project, "description" | "operatingContext">,

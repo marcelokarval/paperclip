@@ -1,8 +1,8 @@
-import type { Issue, Project, RepositoryDocumentationBaseline } from "@paperclipai/shared";
+import type { Issue, IssueLabel, Project, RepositoryDocumentationBaseline } from "@paperclipai/shared";
 import { Check, FileSearch, Loader2, MessageSquare, Sparkles, Tags, TicketPlus, UserPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Link } from "../lib/router";
-import { getProjectIntakeModel } from "../lib/project-operating-context";
+import { getProjectIntakeModel, getProjectLabelGovernanceStatus } from "../lib/project-operating-context";
 import { ProjectStaffingPanel } from "./ProjectStaffingPanel";
 import { ProjectSuggestedGoalsPanel } from "./ProjectSuggestedGoalsPanel";
 
@@ -19,6 +19,8 @@ type ProjectIntakePanelProps = {
   companyPrefix?: string;
   baselineIssue?: Pick<Issue, "status" | "assigneeAgentId"> | null;
   repositoryBaseline?: RepositoryDocumentationBaseline | null;
+  companyLabels?: IssueLabel[];
+  projectIssues?: Issue[];
   hasBaselineCeoReviewRequest: boolean;
   baselineReviewAgentName?: string | null;
   baselineActionMessage?: string | null;
@@ -64,6 +66,8 @@ export function ProjectIntakePanel({
   companyPrefix,
   baselineIssue,
   repositoryBaseline,
+  companyLabels = [],
+  projectIssues = [],
   hasBaselineCeoReviewRequest,
   baselineReviewAgentName,
   baselineActionMessage,
@@ -129,8 +133,19 @@ export function ProjectIntakePanel({
     && !repositoryContextAccepted,
   );
   const suggestedLabels = repositoryBaseline?.recommendations?.labels ?? [];
-  const acceptedLabels = project.operatingContext?.labelCatalog ?? repositoryBaseline?.acceptedGuidance?.labels ?? [];
-  const labelSyncComplete = suggestedLabels.length > 0 && acceptedLabels.length >= suggestedLabels.length;
+  const labelGovernance = getProjectLabelGovernanceStatus({
+    repositoryBaseline,
+    project,
+    companyLabels,
+    projectIssues,
+  });
+  const labelGovernanceLabels: Record<typeof labelGovernance.status, string> = {
+    not_started: "not started",
+    needs_acceptance: "needs acceptance",
+    needs_materialization: "needs materialization",
+    unused: "materialized, unused",
+    consistent: "consistent",
+  };
 
   return (
     <div className="space-y-6">
@@ -198,29 +213,40 @@ export function ProjectIntakePanel({
                 </p>
               </div>
               <span className={`inline-flex w-fit rounded-full border px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.14em] ${
-                labelSyncComplete
+                labelGovernance.status === "consistent"
                   ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-                  : "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-200"
+                  : labelGovernance.status === "not_started"
+                    ? "border-border bg-muted/20 text-muted-foreground"
+                    : "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-200"
               }`}>
-                {labelSyncComplete ? "synced" : `${suggestedLabels.length} suggested`}
+                {labelGovernanceLabels[labelGovernance.status]}
               </span>
             </div>
             {suggestedLabels.length > 0 ? (
               <div className="mt-4 grid gap-2 md:grid-cols-2">
-                {suggestedLabels.map((label) => {
-                  const accepted = acceptedLabels.some((entry) => entry.name === label.name);
+                {labelGovernance.rows.map((label) => {
                   return (
                     <div key={label.name} className="rounded-lg border border-border bg-background/70 px-3 py-2">
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2">
-                          <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: label.color }} aria-hidden="true" />
+                          <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: label.color ?? undefined }} aria-hidden="true" />
                           <span className="text-sm font-medium">{label.name}</span>
                         </div>
-                        <span className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-                          {accepted ? "accepted" : label.confidence}
-                        </span>
+                        <span className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">{label.confidence ?? "suggested"}</span>
                       </div>
                       <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{label.description}</p>
+                      <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] uppercase tracking-[0.12em]">
+                        <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-sky-700 dark:text-sky-200">suggested</span>
+                        <span className={`rounded-full border px-2 py-0.5 ${label.accepted ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200" : "border-border bg-muted/20 text-muted-foreground"}`}>
+                          {label.accepted ? "accepted" : "not accepted"}
+                        </span>
+                        <span className={`rounded-full border px-2 py-0.5 ${label.materializedLabelId ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200" : "border-border bg-muted/20 text-muted-foreground"}`}>
+                          {label.materializedLabelId ? "materialized" : "not materialized"}
+                        </span>
+                        <span className={`rounded-full border px-2 py-0.5 ${label.inUseIssueCount > 0 ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200" : "border-border bg-muted/20 text-muted-foreground"}`}>
+                          in use {label.inUseIssueCount}
+                        </span>
+                      </div>
                     </div>
                   );
                 })}
@@ -231,7 +257,7 @@ export function ProjectIntakePanel({
             <div className="mt-4">
               <Button type="button" variant="outline" disabled={!hasWorkspace || suggestedLabels.length === 0 || isApplyingRecommendations} onClick={onApplyRecommendations}>
                 {isApplyingRecommendations ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Tags className="mr-2 h-4 w-4" />}
-                {labelSyncComplete ? "Resync labels and guidance" : "Sync labels and issue guidance"}
+                {labelGovernance.status === "consistent" ? "Resync labels and guidance" : "Sync labels and issue guidance"}
               </Button>
             </div>
           </div>
@@ -282,6 +308,8 @@ export function ProjectIntakePanel({
                 <label className="space-y-1">
                   <span className="text-xs text-muted-foreground">Package manager / runtime</span>
                   <input
+                    id="project-intake-package-manager"
+                    name="packageManager"
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                     value={executionContractDraft.packageManager}
                     onChange={(event) => onExecutionContractDraftChange({ packageManager: event.target.value })}
@@ -291,6 +319,8 @@ export function ProjectIntakePanel({
                 <label className="space-y-1">
                   <span className="text-xs text-muted-foreground">Install command</span>
                   <input
+                    id="project-intake-install-command"
+                    name="installCommand"
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                     value={executionContractDraft.installCommand}
                     onChange={(event) => onExecutionContractDraftChange({ installCommand: event.target.value })}
@@ -300,6 +330,8 @@ export function ProjectIntakePanel({
                 <label className="space-y-1 md:col-span-2">
                   <span className="text-xs text-muted-foreground">Verification commands</span>
                   <textarea
+                    id="project-intake-verification-commands"
+                    name="verificationCommands"
                     className="min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                     value={executionContractDraft.verificationCommands}
                     onChange={(event) => onExecutionContractDraftChange({ verificationCommands: event.target.value })}
@@ -309,6 +341,8 @@ export function ProjectIntakePanel({
                 <label className="space-y-1 md:col-span-2">
                   <span className="text-xs text-muted-foreground">Env / bootstrap handoff</span>
                   <textarea
+                    id="project-intake-env-handoff"
+                    name="envHandoff"
                     className="min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                     value={executionContractDraft.envHandoff}
                     onChange={(event) => onExecutionContractDraftChange({ envHandoff: event.target.value })}
@@ -318,6 +352,8 @@ export function ProjectIntakePanel({
                 <label className="space-y-1 md:col-span-2">
                   <span className="text-xs text-muted-foreground">Design authority rule</span>
                   <textarea
+                    id="project-intake-design-authority"
+                    name="designAuthority"
                     className="min-h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                     value={executionContractDraft.designAuthority}
                     onChange={(event) => onExecutionContractDraftChange({ designAuthority: event.target.value })}

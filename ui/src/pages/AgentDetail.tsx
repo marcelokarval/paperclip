@@ -1723,6 +1723,7 @@ function PromptsTab({
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
   const { isMobile } = useSidebar();
+  const { pushToast } = useToastActions();
   const [selectedFile, setSelectedFile] = useState<string>("AGENTS.md");
   const [showFilePanel, setShowFilePanel] = useState(false);
   const [draft, setDraft] = useState<string | null>(null);
@@ -1771,6 +1772,30 @@ function PromptsTab({
     queryKey: queryKeys.agents.instructionsBundle(agent.id),
     queryFn: () => agentsApi.instructionsBundle(agent.id, companyId),
     enabled: Boolean(companyId && isLocal),
+  });
+
+  const refreshOperatingModels = useMutation({
+    mutationFn: () => agentsApi.refreshOperatingModels(agent.id, companyId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsBundle(agent.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsFile(agent.id, "OPERATING_MODELS.md") });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
+      pushToast({
+        title: "Operating models refreshed",
+        body: "OPERATING_MODELS.md was regenerated from the current adapter model catalog.",
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      const message =
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : "Could not refresh operating models.";
+      pushToast({ title: "Refresh failed", body: message, tone: "error" });
+    },
   });
 
   const persistedMode = bundle?.mode ?? "managed";
@@ -2028,6 +2053,58 @@ function PromptsTab({
 
   return (
     <div className="space-y-6">
+      {bundle?.operatingPack && (
+        <div className={cn(
+          "rounded-lg border p-4",
+          bundle.operatingPack.status === "healthy"
+            ? "border-emerald-500/30 bg-emerald-500/10"
+            : "border-amber-500/30 bg-amber-500/10",
+        )}>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-sm font-medium">Operating pack health</h3>
+                <span className={cn(
+                  "rounded-full px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide",
+                  bundle.operatingPack.status === "healthy"
+                    ? "bg-emerald-500/15 text-emerald-200"
+                    : "bg-amber-500/15 text-amber-200",
+                )}>
+                  {bundle.operatingPack.status.replaceAll("_", " ")}
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {bundle.operatingPack.missingFiles.length > 0
+                  ? `Missing required files: ${bundle.operatingPack.missingFiles.join(", ")}.`
+                  : bundle.operatingPack.stale
+                    ? "OPERATING_MODELS.md is missing or older than 7 days."
+                    : "Required files are present and operating models are fresh."}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Operating models generated:{" "}
+                {bundle.operatingPack.operatingModelsGeneratedAt
+                  ? relativeTime(new Date(bundle.operatingPack.operatingModelsGeneratedAt))
+                  : "never"}
+              </p>
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => refreshOperatingModels.mutate()}
+              disabled={refreshOperatingModels.isPending}
+            >
+              {refreshOperatingModels.isPending ? (
+                <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="mr-2 h-3.5 w-3.5" />
+              )}
+              Refresh operating models
+            </Button>
+          </div>
+        </div>
+      )}
+
       {(bundle?.warnings ?? []).length > 0 && (
         <div className="space-y-2">
           {(bundle?.warnings ?? []).map((warning) => (

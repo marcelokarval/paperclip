@@ -168,6 +168,11 @@ export const agentsApi = {
     api.delete<AgentInstructionsBundle>(
       agentPath(id, companyId, `/instructions-bundle/file?path=${encodeURIComponent(relativePath)}`),
     ),
+  refreshOperatingModels: (id: string, companyId?: string) =>
+    api.post<AgentInstructionsFileDetail>(
+      agentPath(id, companyId, "/instructions-bundle/operating-models/refresh"),
+      {},
+    ),
   pause: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/pause"), {}),
   resume: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/resume"), {}),
   terminate: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/terminate"), {}),

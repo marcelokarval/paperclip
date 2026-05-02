@@ -45,6 +45,9 @@ export function ApprovalCard({
   const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
   const kindLabel = typeLabel[approval.type] ?? approval.type;
   const subject = approvalSubject(payload);
+  const isHitlApproval =
+    approval.type === "request_board_approval" &&
+    (payload?.source === "issue_deferred_hitl" || payload?.source === "issue_hitl_request");
   const showResolutionButtons =
     Boolean(onApprove && onReject) &&
     approval.type !== "budget_override_required" &&
@@ -67,6 +70,14 @@ export function ApprovalCard({
                 >
                   {kindLabel}
                 </Badge>
+                {isHitlApproval && (
+                  <Badge
+                    variant="outline"
+                    className="border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium uppercase tracking-[0.08em] text-amber-700 dark:text-amber-200"
+                  >
+                    HITL
+                  </Badge>
+                )}
                 {requesterAgent && (
                   <div className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
                     <span>Requested by</span>

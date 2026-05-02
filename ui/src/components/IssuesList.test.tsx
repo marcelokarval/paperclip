@@ -593,7 +593,7 @@ describe("IssuesList", () => {
   it("shows a HITL badge for issues with pending approvals", async () => {
     const { root } = renderWithQueryClient(
       <IssuesList
-        issues={[createIssue({ approvalSummary: { pending: 1, total: 1 } })]}
+        issues={[createIssue({ approvalSummary: { pending: 1, pendingHitl: 1, total: 1 } })]}
         agents={[]}
         projects={[]}
         viewStateKey="paperclip:test-issues"

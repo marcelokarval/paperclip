@@ -162,7 +162,7 @@ type IssueActiveRunRow = {
   createdAt: Date;
 };
 type IssueWithLabels = IssueRow & { labels: IssueLabelRow[]; labelIds: string[] };
-type IssueApprovalSummary = { pending: number; total: number };
+type IssueApprovalSummary = { pending: number; pendingHitl?: number; total: number };
 type IssueWithLabelsAndRun = IssueWithLabels & {
   activeRun: IssueActiveRunRow | null;
   approvalSummary?: IssueApprovalSummary;
@@ -640,6 +640,7 @@ async function approvalSummaryMapForIssues(
   const rows = await dbOrTx
     .select({
       issueId: issueApprovals.issueId,
+      payload: approvals.payload,
       status: approvals.status,
     })
     .from(issueApprovals)
@@ -647,10 +648,14 @@ async function approvalSummaryMapForIssues(
     .where(inArray(issueApprovals.issueId, issueIds));
 
   for (const row of rows) {
-    const summary = map.get(row.issueId) ?? { pending: 0, total: 0 };
+    const summary = map.get(row.issueId) ?? { pending: 0, pendingHitl: 0, total: 0 };
     summary.total += 1;
     if (row.status === "pending" || row.status === "revision_requested") {
       summary.pending += 1;
+      const payload = row.payload as Record<string, unknown> | null;
+      if (payload?.source === "issue_deferred_hitl" || payload?.source === "issue_hitl_request") {
+        summary.pendingHitl = (summary.pendingHitl ?? 0) + 1;
+      }
     }
     map.set(row.issueId, summary);
   }

@@ -304,42 +304,49 @@ function ProjectIssueSystemGuidanceEditor({
       <div className="grid gap-3 md:grid-cols-2">
         <GuidanceTextarea
           label="Label usage"
+          name="project-label-usage-guidance"
           value={draft.labelUsageGuidance}
           onChange={(value) => updateDraft("labelUsageGuidance", value)}
           placeholder="Use frontend when..."
         />
         <GuidanceTextarea
           label="Parent/sub-issues"
+          name="project-parent-child-guidance"
           value={draft.parentChildGuidance}
           onChange={(value) => updateDraft("parentChildGuidance", value)}
           placeholder="Use parentId only when..."
         />
         <GuidanceTextarea
           label="Blocking"
+          name="project-blocking-guidance"
           value={draft.blockingGuidance}
           onChange={(value) => updateDraft("blockingGuidance", value)}
           placeholder="Use blockedBy only when..."
         />
         <GuidanceTextarea
           label="Review"
+          name="project-review-guidance"
           value={draft.reviewGuidance}
           onChange={(value) => updateDraft("reviewGuidance", value)}
           placeholder="Request review when..."
         />
         <GuidanceTextarea
           label="Approval"
+          name="project-approval-guidance"
           value={draft.approvalGuidance}
           onChange={(value) => updateDraft("approvalGuidance", value)}
           placeholder="Require approval when..."
         />
         <GuidanceTextarea
           label="Canonical docs"
+          name="project-canonical-docs"
           value={draft.canonicalDocs}
           onChange={(value) => updateDraft("canonicalDocs", value)}
           placeholder="AGENTS.md"
         />
         <GuidanceTextarea
           label="Verification commands"
+          name="project-verification-commands"
           value={draft.suggestedVerificationCommands}
           onChange={(value) => updateDraft("suggestedVerificationCommands", value)}
           placeholder="pnpm -r typecheck"
@@ -352,12 +359,14 @@ function ProjectIssueSystemGuidanceEditor({
 
 function GuidanceTextarea({
   label,
+  name,
   value,
   onChange,
   placeholder,
   className,
 }: {
   label: string;
+  name: string;
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
@@ -367,6 +376,7 @@ function GuidanceTextarea({
     <label className={cn("space-y-1.5", className)}>
       <span className="text-xs text-muted-foreground">{label}</span>
       <textarea
+        name={name}
         className="min-h-24 w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-xs outline-none"
         value={value}
         onChange={(event) => onChange(event.target.value)}
@@ -678,6 +688,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
         <PropertyRow label={<FieldLabel label="Name" state={fieldState("name")} />}>
           {onUpdate || onFieldUpdate ? (
             <DraftInput
+              name="project-name"
               value={project.name}
               onCommit={(name) => commitField("name", { name })}
               immediate
@@ -709,8 +720,11 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="space-y-1">
                       <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                        Baseline suggestion
+                        Baseline description suggestion
                       </div>
+                      <p className="text-[11px] text-muted-foreground">
+                        This only updates the project description. It does not change accepted labels, docs, staffing, or execution policy.
+                      </p>
                       <p className="text-xs text-muted-foreground">{descriptionSuggestion}</p>
                     </div>
                     <div className="flex flex-wrap gap-2">
@@ -1039,9 +1053,23 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                           </div>
                         ) : null}
                         {repositoryBaselineGaps.length > 0 ? (
-                          <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-800 dark:text-amber-200">
-                            {repositoryBaselineGaps[0]}
-                            {repositoryBaselineGaps.length > 1 ? ` +${repositoryBaselineGaps.length - 1} more` : ""}
+                          <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-2 py-1.5">
+                            <div className="text-[11px] uppercase tracking-wide text-amber-800 dark:text-amber-200">
+                              Baseline gaps
+                            </div>
+                            <p className="mt-1 text-[11px] text-amber-900/80 dark:text-amber-100/80">
+                              Scanner/analyzer gaps to validate before relying on this baseline for execution.
+                            </p>
+                            <ul className="mt-1 space-y-1 text-[11px] text-amber-800 dark:text-amber-200">
+                              {repositoryBaselineGaps.slice(0, 5).map((gap, index) => (
+                                <li key={`${gap}-${index}`}>{gap}</li>
+                              ))}
+                            </ul>
+                            {repositoryBaselineGaps.length > 5 ? (
+                              <p className="mt-1 text-[11px] text-amber-800 dark:text-amber-200">
+                                +{repositoryBaselineGaps.length - 5} more in baseline metadata.
+                              </p>
+                            ) : null}
                           </div>
                         ) : null}
                       </div>
@@ -1168,8 +1196,8 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                   <div className="space-y-1.5">
                     <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Canonical docs</div>
                     <div className="space-y-1 text-[11px] text-muted-foreground">
-                      {operatingContextDocs.map((doc) => (
-                        <div key={doc} className="font-mono break-all">{doc}</div>
+                      {operatingContextDocs.map((doc, index) => (
+                        <div key={`${doc}-${index}`} className="font-mono break-all">{doc}</div>
                       ))}
                     </div>
                   </div>
@@ -1179,8 +1207,8 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                   <div className="space-y-1.5">
                     <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Verification commands</div>
                     <div className="space-y-1 text-[11px] text-muted-foreground">
-                      {operatingContextCommands.map((command) => (
-                        <div key={command} className="font-mono break-all">{command}</div>
+                      {operatingContextCommands.map((command, index) => (
+                        <div key={`${command}-${index}`} className="font-mono break-all">{command}</div>
                       ))}
                     </div>
                   </div>
@@ -1190,20 +1218,20 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                   <div className="space-y-1.5">
                     <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Ownership areas</div>
                     <div className="space-y-2">
-                      {operatingContextOwnershipAreas.map((area) => (
-                        <div key={area.name} className="rounded-md border border-border/70 bg-background px-2 py-1.5">
+                      {operatingContextOwnershipAreas.map((area, areaIndex) => (
+                        <div key={`${area.name}-${areaIndex}`} className="rounded-md border border-border/70 bg-background px-2 py-1.5">
                           <div className="text-xs font-medium">{area.name}</div>
                           {area.paths.length > 0 ? (
                             <div className="mt-1 space-y-1 text-[11px] text-muted-foreground">
-                              {area.paths.map((entry) => (
-                                <div key={entry} className="font-mono break-all">{entry}</div>
+                              {area.paths.map((entry, pathIndex) => (
+                                <div key={`${entry}-${pathIndex}`} className="font-mono break-all">{entry}</div>
                               ))}
                             </div>
                           ) : null}
                           {area.recommendedLabels.length > 0 ? (
                             <div className="mt-1 flex flex-wrap gap-1">
-                              {area.recommendedLabels.map((label) => (
-                                <span key={label} className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
+                              {area.recommendedLabels.map((label, labelIndex) => (
+                                <span key={`${label}-${labelIndex}`} className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
                                   {label}
                                 </span>
                               ))}

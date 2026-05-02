@@ -191,6 +191,7 @@ export interface IssueExecutionDecision {
 
 export interface IssueApprovalSummary {
   pending: number;
+  pendingHitl?: number;
   total: number;
 }
 
@@ -261,6 +262,15 @@ export interface IssueComment {
   body: string;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface IssueHitlRequest {
+  title?: string;
+  summary: string;
+  proposedItems?: string[];
+  proposedComment?: string | null;
+  recommendedAction?: string;
+  nextActionOnApproval?: string;
 }
 
 export interface IssueAttachment {

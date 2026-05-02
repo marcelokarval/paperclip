@@ -26,8 +26,11 @@ import {
   Inbox,
   DollarSign,
   History,
+  Network,
+  ShieldCheck,
   SquarePen,
   Plus,
+  Boxes,
 } from "lucide-react";
 import { Identity } from "./Identity";
 import { agentUrl, projectUrl } from "../lib/utils";
@@ -165,6 +168,18 @@ export function CommandPalette() {
           <CommandItem onSelect={() => go("/agents")}>
             <Bot className="mr-2 h-4 w-4" />
             Agents
+          </CommandItem>
+          <CommandItem onSelect={() => go("/approvals")}>
+            <ShieldCheck className="mr-2 h-4 w-4" />
+            Approvals
+          </CommandItem>
+          <CommandItem onSelect={() => go("/org")}>
+            <Network className="mr-2 h-4 w-4" />
+            Org
+          </CommandItem>
+          <CommandItem onSelect={() => go("/skills")}>
+            <Boxes className="mr-2 h-4 w-4" />
+            Skills
           </CommandItem>
           <CommandItem onSelect={() => go("/costs")}>
             <DollarSign className="mr-2 h-4 w-4" />

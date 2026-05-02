@@ -8,6 +8,7 @@ import type {
   IssueAttachment,
   IssueComment,
   IssueDocument,
+  IssueHitlRequest,
   IssueLabel,
   IssueWorkProduct,
   UpsertIssueDocument,
@@ -16,10 +17,15 @@ import { api } from "./client";
 
 export type IssueUpdateResponse = Issue & {
   comment?: IssueComment | null;
+  hitlApproval?: Approval | null;
 };
 
 export type IssueAddCommentResponse =
   | IssueComment
+  | {
+      comment: IssueComment;
+      hitlApproval: Approval;
+    }
   | {
       skipped: "duplicate_baseline_review_request";
     };
@@ -127,15 +133,18 @@ export const issuesApi = {
       allowSharing?: boolean;
     },
   ) => api.post<FeedbackVote>(`/issues/${id}/feedback-votes`, data),
-  addComment: (id: string, body: string, reopen?: boolean, interrupt?: boolean) =>
+  addComment: (id: string, body: string, reopen?: boolean, interrupt?: boolean, hitlRequest?: IssueHitlRequest) =>
     api.post<IssueAddCommentResponse>(
       `/issues/${id}/comments`,
       {
         body,
         ...(reopen === undefined ? {} : { reopen }),
         ...(interrupt === undefined ? {} : { interrupt }),
+        ...(hitlRequest === undefined ? {} : { hitlRequest }),
       },
     ),
+  requestHitlApproval: (id: string, data: IssueHitlRequest) =>
+    api.post<{ comment: IssueComment | null; hitlApproval: Approval }>(`/issues/${id}/hitl-approval`, data),
   cancelComment: (id: string, commentId: string) =>
     api.delete<IssueComment>(`/issues/${id}/comments/${commentId}`),
   listDocuments: (id: string) => api.get<IssueDocument[]>(`/issues/${id}/documents`),

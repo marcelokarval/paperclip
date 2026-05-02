@@ -62,6 +62,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockTrackAgentCreated = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 const mockSyncInstructionsBundleConfigFromFilePath = vi.hoisted(() => vi.fn());
+const mockListAdapterModels = vi.hoisted(() => vi.fn());
 
 const mockAdapter = vi.hoisted(() => ({
   listSkills: vi.fn(),
@@ -97,7 +98,7 @@ vi.mock("../services/index.js", () => ({
 vi.mock("../adapters/index.js", () => ({
   findServerAdapter: vi.fn(() => mockAdapter),
   findActiveServerAdapter: vi.fn(() => mockAdapter),
-  listAdapterModels: vi.fn(),
+  listAdapterModels: mockListAdapterModels,
   detectAdapterModel: vi.fn(),
 }));
 
@@ -131,7 +132,7 @@ function registerModuleMocks() {
   vi.doMock("../adapters/index.js", () => ({
     findServerAdapter: vi.fn(() => mockAdapter),
     findActiveServerAdapter: vi.fn(() => mockAdapter),
-    listAdapterModels: vi.fn(),
+    listAdapterModels: mockListAdapterModels,
     detectAdapterModel: vi.fn(),
   }));
 }
@@ -249,6 +250,10 @@ describe("agent skill routes", () => {
       entries: [],
       warnings: [],
     });
+    mockListAdapterModels.mockResolvedValue([
+      { id: "gpt-5.5", label: "GPT-5.5" },
+      { id: "gpt-5.4", label: "GPT-5.4" },
+    ]);
     mockAgentService.update.mockImplementation(async (id: string, patch: Record<string, unknown>) => ({
       ...((await mockAgentService.getById(id)) ?? makeAgent("claude_local")),
       adapterConfig: patch.adapterConfig ?? {},
@@ -311,7 +316,21 @@ describe("agent skill routes", () => {
       warnings: [],
       legacyPromptTemplateActive: false,
       legacyBootstrapPromptTemplateActive: false,
-      files: [{ path: "AGENTS.md", size: 10, language: "markdown", markdown: true, isEntryFile: true, editable: true, deprecated: false, virtual: false }],
+      files: [
+        { path: "AGENTS.md", size: 10, language: "markdown", markdown: true, isEntryFile: true, editable: true, deprecated: false, virtual: false },
+        { path: "OPERATING_MODELS.md", size: 64, language: "markdown", markdown: true, isEntryFile: false, editable: true, deprecated: false, virtual: false },
+      ],
+    });
+    mockAgentInstructionsService.readFile.mockResolvedValue({
+      path: "OPERATING_MODELS.md",
+      size: 64,
+      language: "markdown",
+      markdown: true,
+      isEntryFile: false,
+      editable: true,
+      deprecated: false,
+      virtual: false,
+      content: "Last generated: 2026-05-02T00:00:00.000Z\n",
     });
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "run-1" });
     mockProjectService.getById.mockResolvedValue(null);
@@ -602,12 +621,77 @@ describe("agent skill routes", () => {
     );
   });
 
+  it("captures model, reasoning, and operating-model freshness in hire approvals", async () => {
+    mockAgentService.update.mockImplementationOnce(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeAgent("codex_local"),
+      role: "cto",
+      name: "CTO",
+      adapterConfig: patch.adapterConfig ?? {},
+      ...patch,
+    }));
+
+    const res = await request(await createApp(createDb(true)))
+      .post("/api/companies/company-1/agent-hires")
+      .send({
+        name: "CTO",
+        role: "cto",
+        adapterType: "codex_local",
+        adapterConfig: {
+          model: "gpt-5.5",
+          modelReasoningEffort: "high",
+        },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockListAdapterModels).toHaveBeenCalledWith("codex_local", { refresh: false });
+    expect(mockApprovalService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          adapterConfig: expect.objectContaining({
+            model: "gpt-5.5",
+            modelReasoningEffort: "high",
+          }),
+          operatingModel: expect.objectContaining({
+            adapterType: "codex_local",
+            selectedModel: "gpt-5.5",
+            reasoningEffort: "high",
+            discoveredModels: ["gpt-5.5", "gpt-5.4"],
+            selectedModelDiscovered: true,
+            operatingModelsGeneratedAt: "2026-05-02T00:00:00.000Z",
+            operatingModelsStale: false,
+          }),
+          requestedConfigurationSnapshot: expect.objectContaining({
+            operatingModel: expect.objectContaining({
+              selectedModel: "gpt-5.5",
+              reasoningEffort: "high",
+            }),
+          }),
+        }),
+      }),
+    );
+  });
+
   it("creates and wakes an operating pack audit issue for an agent", async () => {
     mockAgentService.getById.mockResolvedValue({
       ...makeAgent("claude_local"),
       role: "ceo",
       name: "CEO",
       adapterConfig: {},
+    });
+    mockAgentInstructionsService.getBundle.mockResolvedValueOnce({
+      agentId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      mode: "managed",
+      rootPath: "/tmp/11111111-1111-4111-8111-111111111111/instructions",
+      managedRootPath: "/tmp/11111111-1111-4111-8111-111111111111/instructions",
+      entryFile: "AGENTS.md",
+      resolvedEntryPath: "/tmp/11111111-1111-4111-8111-111111111111/instructions/AGENTS.md",
+      editable: true,
+      warnings: [],
+      legacyPromptTemplateActive: false,
+      legacyBootstrapPromptTemplateActive: false,
+      files: [{ path: "AGENTS.md", size: 10, language: "markdown", markdown: true, isEntryFile: true, editable: true, deprecated: false, virtual: false }],
     });
 
     const res = await request(await createApp())

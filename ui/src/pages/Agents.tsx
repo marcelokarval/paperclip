@@ -18,13 +18,32 @@ import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Bot, Plus, List, GitBranch, SlidersHorizontal } from "lucide-react";
-import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
+import { AGENT_ROLE_LABELS, type Agent, type AgentInstructionsBundle } from "@paperclipai/shared";
 
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 
 const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
 type FilterTab = "all" | "active" | "paused" | "error";
+
+function isLocalInstructionsAgent(agent: Agent): boolean {
+  return (
+    agent.adapterType === "claude_local" ||
+    agent.adapterType === "codex_local" ||
+    agent.adapterType === "opencode_local" ||
+    agent.adapterType === "pi_local" ||
+    agent.adapterType === "hermes_local" ||
+    agent.adapterType === "cursor"
+  );
+}
+
+function operatingPackHealthCopy(pack: AgentInstructionsBundle["operatingPack"] | undefined) {
+  if (!pack) return { label: "Pack unknown", className: "border-border text-muted-foreground" };
+  if (pack.status === "healthy") return { label: "Pack healthy", className: "border-emerald-500/30 text-emerald-700" };
+  if (pack.status === "stale_models") return { label: "Models stale", className: "border-amber-500/40 text-amber-700" };
+  if (pack.status === "missing_required_files") return { label: "Pack incomplete", className: "border-destructive/40 text-destructive" };
+  return { label: "Pack warning", className: "border-amber-500/40 text-amber-700" };
+}
 
 function matchesFilter(status: string, tab: FilterTab, showTerminated: boolean): boolean {
   if (status === "terminated") return showTerminated;
@@ -223,7 +242,7 @@ export function Agents() {
                 key={agent.id}
                 title={agent.name}
                 subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
-                to={agentUrl(agent)}
+                onClick={() => navigate(agentUrl(agent))}
                 className={agent.pausedAt && tab !== "paused" ? "opacity-50" : ""}
                 leading={
                   <span className="relative flex h-2.5 w-2.5">
@@ -256,6 +275,7 @@ export function Agents() {
                       <span className="text-xs text-muted-foreground font-mono w-14 text-right">
                         {getAdapterLabel(agent.adapterType)}
                       </span>
+                      <AgentOperatingPackBadge agent={agent} companyId={selectedCompanyId} />
                       <span className="text-xs text-muted-foreground w-16 text-right">
                         {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "—"}
                       </span>
@@ -315,13 +335,22 @@ function OrgTreeNode({
   tab: FilterTab;
 }) {
   const agent = agentMap.get(node.id);
+  const navigate = useNavigate();
 
   const statusColor = agentStatusDot[node.status] ?? agentStatusDotDefault;
 
   return (
     <div style={{ paddingLeft: depth * 24 }}>
-      <Link
-        to={agent ? agentUrl(agent) : `/agents/${node.id}`}
+      <div
+        role="link"
+        tabIndex={0}
+        onClick={() => navigate(agent ? agentUrl(agent) : `/agents/${node.id}`)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            navigate(agent ? agentUrl(agent) : `/agents/${node.id}`);
+          }
+        }}
         className={cn("flex items-center gap-3 px-3 py-2 hover:bg-accent/30 transition-colors w-full text-left no-underline text-inherit", agent?.pausedAt && tab !== "paused" && "opacity-50")}
       >
         <span className="relative flex h-2.5 w-2.5 shrink-0">
@@ -359,6 +388,7 @@ function OrgTreeNode({
                 <span className="text-xs text-muted-foreground font-mono w-14 text-right">
                   {getAdapterLabel(agent.adapterType)}
                 </span>
+                <AgentOperatingPackBadge agent={agent} companyId={agent.companyId} />
                 <span className="text-xs text-muted-foreground w-16 text-right">
                   {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "—"}
                 </span>
@@ -369,7 +399,7 @@ function OrgTreeNode({
             </span>
           </div>
         </div>
-      </Link>
+      </div>
       {node.reports && node.reports.length > 0 && (
         <div className="border-l border-border/50 ml-4">
           {node.reports.map((child) => (
@@ -378,6 +408,41 @@ function OrgTreeNode({
         </div>
       )}
     </div>
+  );
+}
+
+function AgentOperatingPackBadge({ agent, companyId }: { agent: Agent; companyId: string }) {
+  const enabled = Boolean(companyId && isLocalInstructionsAgent(agent));
+  const { data: bundle, isLoading } = useQuery({
+    queryKey: [...queryKeys.agents.instructionsBundle(agent.id), companyId],
+    queryFn: () => agentsApi.instructionsBundle(agent.id, companyId),
+    enabled,
+    staleTime: 30_000,
+  });
+
+  if (!enabled) return null;
+
+  const copy = operatingPackHealthCopy(bundle?.operatingPack);
+  const missingCount = bundle?.operatingPack?.missingFiles.length ?? 0;
+  const warningCount = bundle?.operatingPack?.warnings.length ?? 0;
+  const title = bundle?.operatingPack
+    ? [
+        `Operating pack: ${bundle.operatingPack.status}`,
+        missingCount > 0 ? `Missing files: ${missingCount}` : null,
+        warningCount > 0 ? `Warnings: ${warningCount}` : null,
+      ].filter(Boolean).join(" | ")
+    : "Operating pack health has not loaded yet.";
+
+  return (
+    <span
+      className={cn(
+        "rounded-full border px-2 py-0.5 text-[11px] leading-4",
+        isLoading ? "border-border text-muted-foreground" : copy.className,
+      )}
+      title={title}
+    >
+      {isLoading ? "Pack..." : copy.label}
+    </span>
   );
 }
 

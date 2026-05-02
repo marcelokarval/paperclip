@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { NavLink, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, Plus } from "lucide-react";
+import { ChevronRight, FolderKanban, Plus } from "lucide-react";
 import {
   DndContext,
   MouseSensor,
@@ -219,6 +219,24 @@ export function SidebarProjects() {
             strategy={verticalListSortingStrategy}
           >
             <div className="flex flex-col gap-0.5 mt-0.5">
+              <NavLink
+                to="/projects"
+                state={SIDEBAR_SCROLL_RESET_STATE}
+                onClick={() => {
+                  if (isMobile) setSidebarOpen(false);
+                }}
+                className={({ isActive }) =>
+                  cn(
+                    "flex items-center gap-2.5 px-3 py-1.5 text-[13px] font-medium transition-colors",
+                    isActive && activeProjectRef == null
+                      ? "bg-accent text-foreground"
+                      : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
+                  )
+                }
+              >
+                <FolderKanban className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <span className="flex-1 truncate">All Projects</span>
+              </NavLink>
               {orderedProjects.map((project: Project) => (
                 <SortableProjectItem
                   key={project.id}

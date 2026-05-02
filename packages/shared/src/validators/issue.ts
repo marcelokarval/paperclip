@@ -162,9 +162,21 @@ export const updateIssueLabelSchema = createIssueLabelSchema.partial();
 
 export type UpdateIssueLabel = z.infer<typeof updateIssueLabelSchema>;
 
+export const issueHitlRequestSchema = z.object({
+  title: z.string().trim().min(1).max(200).optional(),
+  summary: humanTextSchema.pipe(z.string().min(1).max(4000)),
+  proposedItems: z.array(z.string().trim().min(1).max(200)).max(50).optional().default([]),
+  proposedComment: humanTextSchema.pipe(z.string().max(12000)).optional().nullable(),
+  recommendedAction: humanTextSchema.pipe(z.string().min(1).max(2000)).optional(),
+  nextActionOnApproval: humanTextSchema.pipe(z.string().min(1).max(2000)).optional(),
+});
+
+export type IssueHitlRequest = z.infer<typeof issueHitlRequestSchema>;
+
 export const updateIssueSchema = createIssueSchema.partial().extend({
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),
   comment: humanTextSchema.pipe(z.string().min(1)).optional(),
+  hitlRequest: issueHitlRequestSchema.optional(),
   reopen: z.boolean().optional(),
   interrupt: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
@@ -182,6 +194,7 @@ export type CheckoutIssue = z.infer<typeof checkoutIssueSchema>;
 
 export const addIssueCommentSchema = z.object({
   body: humanTextSchema.pipe(z.string().min(1)),
+  hitlRequest: issueHitlRequestSchema.optional(),
   reopen: z.boolean().optional(),
   interrupt: z.boolean().optional(),
 });

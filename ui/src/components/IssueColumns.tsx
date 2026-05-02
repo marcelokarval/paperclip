@@ -184,16 +184,18 @@ export function InboxIssueMetaLeading({
           </span>
         </span>
       )}
-      {(issue.approvalSummary?.pending ?? 0) > 0 && (
+      {(issue.approvalSummary?.pendingHitl ?? 0) > 0 && (
         <span
           className={cn(
             "inline-flex items-center gap-1 rounded-full border border-amber-500/25 bg-amber-500/10 px-1.5 py-0.5 sm:gap-1.5 sm:px-2",
             "text-amber-700 dark:text-amber-300",
           )}
-          title={`${issue.approvalSummary?.pending ?? 0} pending approval${(issue.approvalSummary?.pending ?? 0) === 1 ? "" : "s"}`}
+          title={`${issue.approvalSummary?.pendingHitl ?? 0} pending HITL approval${(issue.approvalSummary?.pendingHitl ?? 0) === 1 ? "" : "s"}`}
         >
           <ShieldCheck className="h-3 w-3" />
-          <span className="hidden text-[11px] font-medium sm:inline">HITL</span>
+          <span className="hidden text-[11px] font-medium sm:inline">
+            HITL{(issue.approvalSummary?.pendingHitl ?? 0) > 1 ? ` ${issue.approvalSummary?.pendingHitl}` : ""}
+          </span>
         </span>
       )}
     </>
