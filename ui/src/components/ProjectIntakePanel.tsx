@@ -255,10 +255,18 @@ export function ProjectIntakePanel({
               <p className="mt-3 text-sm text-muted-foreground">No baseline labels have been generated yet.</p>
             )}
             <div className="mt-4">
-              <Button type="button" variant="outline" disabled={!hasWorkspace || suggestedLabels.length === 0 || isApplyingRecommendations} onClick={onApplyRecommendations}>
-                {isApplyingRecommendations ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Tags className="mr-2 h-4 w-4" />}
-                {labelGovernance.status === "consistent" ? "Resync labels and guidance" : "Sync labels and issue guidance"}
-              </Button>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <Button type="button" variant="outline" disabled={!hasWorkspace || suggestedLabels.length === 0 || isApplyingRecommendations} onClick={onApplyRecommendations}>
+                  {isApplyingRecommendations ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Tags className="mr-2 h-4 w-4" />}
+                  {labelGovernance.status === "consistent" ? "Resync labels and guidance" : "Sync labels and issue guidance"}
+                </Button>
+                <Button asChild type="button" variant="ghost">
+                  <Link to="/company/settings">Manage company labels</Link>
+                </Button>
+              </div>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Label governance is complete only when suggested labels are accepted into project context, materialized as company labels, and available for issue routing.
+              </p>
             </div>
           </div>
 

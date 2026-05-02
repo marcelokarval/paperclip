@@ -40,7 +40,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
-import { getProjectOverviewModel } from "../lib/project-operating-context";
+import { classifyBaselineSignal, getProjectOverviewModel } from "../lib/project-operating-context";
 import { ProjectIntakePanel } from "../components/ProjectIntakePanel";
 import { ProjectStaffingPanel } from "../components/ProjectStaffingPanel";
 
@@ -78,6 +78,7 @@ function OverviewContent({
   companyPrefix?: string;
 }) {
   const overview = getProjectOverviewModel(project);
+  const baselineSignals = overview.topRisks.slice(0, 4).map(classifyBaselineSignal);
   const trackingIssueHref = companyPrefix && overview.baselineTrackingIssueIdentifier
     ? `/${companyPrefix}/issues/${overview.baselineTrackingIssueIdentifier}`
     : null;
@@ -130,9 +131,19 @@ function OverviewContent({
               <p className="mt-1 text-[11px] text-amber-900/80 dark:text-amber-100/80">
                 Analyzer warnings about missing or ambiguous repository context. Use them to guide CEO/CTO validation; they are not execution tasks by themselves.
               </p>
-              <ul className="mt-2 space-y-1 text-xs text-amber-900 dark:text-amber-100">
-                {overview.topRisks.slice(0, 4).map((risk, index) => (
-                  <li key={`${risk}-${index}`}>{risk}</li>
+              <ul className="mt-2 space-y-2 text-xs text-amber-900 dark:text-amber-100">
+                {baselineSignals.map((signal, index) => (
+                  <li key={`${signal.text}-${index}`} className="rounded-md border border-amber-500/20 bg-background/40 px-2 py-1.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span>{signal.text}</span>
+                      <span className="rounded-full border border-amber-500/30 px-2 py-0.5 text-[10px] uppercase tracking-[0.12em]">
+                        {signal.categoryLabel}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-[11px] text-amber-900/80 dark:text-amber-100/80">
+                      Action: {signal.recommendedAction}
+                    </div>
+                  </li>
                 ))}
               </ul>
             </div>

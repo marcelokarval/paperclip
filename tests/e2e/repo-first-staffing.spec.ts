@@ -1,4 +1,4 @@
-import { test, expect, request as pwRequest, type APIRequestContext } from "@playwright/test";
+import { test, expect, request as pwRequest, type APIRequestContext, type Page } from "@playwright/test";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -23,6 +23,28 @@ interface RepoFirstContext {
 interface HiringIssueRef {
   id: string;
   identifier: string;
+}
+
+function attachBrowserProofGuards(page: Page) {
+  const consoleProblems: string[] = [];
+  const failingResponses: string[] = [];
+  page.on("console", (message) => {
+    if (["error", "warning"].includes(message.type())) {
+      consoleProblems.push(`${message.type()}: ${message.text()}`);
+    }
+  });
+  page.on("response", (response) => {
+    const status = response.status();
+    if (status >= 400) {
+      failingResponses.push(`${status} ${response.url()}`);
+    }
+  });
+  return {
+    assertClean() {
+      expect(consoleProblems).toEqual([]);
+      expect(failingResponses).toEqual([]);
+    },
+  };
 }
 
 async function createFixtureRepo(): Promise<string> {
@@ -236,10 +258,31 @@ test.describe("Repo-first staffing workflow", () => {
     ctx = null;
   });
 
+  test("intake and configuration expose label governance and classified baseline signals without browser errors", async ({ page }) => {
+    if (!ctx) throw new Error("repo-first context not initialized");
+    const proof = attachBrowserProofGuards(page);
+
+    await page.goto(`/${ctx.companyPrefix}/projects/${ctx.projectUrlKey}/intake`);
+
+    await expect(page.getByText("Step 1.5 · Label governance")).toBeVisible();
+    await expect(page.getByRole("button", { name: /sync labels and issue guidance/i })).toBeVisible();
+    await expect(page.getByText("suggested").first()).toBeVisible();
+    await expect(page.getByText("accepted").first()).toBeVisible();
+    await expect(page.getByText("materialized").first()).toBeVisible();
+
+    await page.goto(`/${ctx.companyPrefix}/projects/${ctx.projectUrlKey}/configuration`);
+
+    await expect(page.getByText("Baseline gaps")).toBeVisible();
+    await expect(page.getByText(/Scanner limit|Operator action|Repository risk/).first()).toBeVisible();
+    await expect(page.getByText("Action:").first()).toBeVisible();
+
+    proof.assertClean();
+  });
+
   test("accepted repository context unlocks staffing before execution readiness and creates a CTO hiring issue", async ({ page }) => {
     if (!ctx) throw new Error("repo-first context not initialized");
 
-    await page.goto(`/${ctx.companyPrefix}/projects/${ctx.projectUrlKey}/workspaces/${ctx.workspaceId}`);
+    await page.goto(`/${ctx.companyPrefix}/projects/${ctx.projectUrlKey}/intake`);
 
     await expect(page.getByRole("heading", { name: "First technical hire" })).toBeVisible();
     await expect(page.getByText("Execution clarifications: open")).toBeVisible();
@@ -247,20 +290,21 @@ test.describe("Repo-first staffing workflow", () => {
       page.getByText("Open execution ambiguities can travel into the CTO brief instead of blocking the first hire."),
     ).toBeVisible();
 
-    const generateBriefButton = page.getByRole("button", { name: "Generate hiring brief" });
+    const generateBriefButton = page.getByRole("button", { name: "Generate CTO hiring brief" });
     await expect(generateBriefButton).toBeEnabled();
 
-    await page.getByRole("link", { name: `Open ${ctx.baselineIssueIdentifier}` }).click();
+    await page.getByRole("link", { name: "Open baseline issue" }).click();
     await expect(page).toHaveURL(new RegExp(`/${ctx.companyPrefix}/issues/${ctx.baselineIssueIdentifier}$`));
     await expect(
-      page.getByText("Repository context is accepted. The next primary step is staffing, not execution readiness."),
+      page.getByText("Repository context is accepted. The next primary step is staffing in Project Intake."),
     ).toBeVisible();
-    await expect(page.getByRole("link", { name: "Open staffing phase" })).toBeVisible();
 
-    await page.getByRole("link", { name: "Open staffing phase" }).click();
-    await expect(page).toHaveURL(new RegExp(`/${ctx.companyPrefix}/projects/${ctx.projectUrlKey}/workspaces/${ctx.workspaceId}$`));
+    await page.goto(`/${ctx.companyPrefix}/projects/${ctx.projectUrlKey}/intake`);
+    await expect(page).toHaveURL(new RegExp(`/${ctx.companyPrefix}/projects/${ctx.projectUrlKey}/intake$`));
 
-    await generateBriefButton.click();
+    const intakeGenerateBriefButton = page.getByRole("button", { name: "Generate CTO hiring brief" });
+    await expect(intakeGenerateBriefButton).toBeEnabled();
+    await intakeGenerateBriefButton.click();
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
     await expect(dialog.getByText("Open execution clarifications", { exact: true })).toBeVisible();
@@ -268,7 +312,7 @@ test.describe("Repo-first staffing workflow", () => {
       dialog.getByText("Close the open execution clarifications as part of the first technical framing pass."),
     ).toBeVisible();
 
-    const createHiringIssueButton = dialog.getByRole("button", { name: "Create hiring issue" });
+    const createHiringIssueButton = dialog.getByRole("button", { name: "Create CTO hiring issue" });
     await createHiringIssueButton.scrollIntoViewIfNeeded();
     await createHiringIssueButton.evaluate((element: HTMLButtonElement) => element.click());
 
@@ -321,10 +365,9 @@ test.describe("Repo-first staffing workflow", () => {
     const approval = approvals.find((entry: { type: string }) => entry.type === "hire_agent");
     expect(approval?.id).toBeTruthy();
 
-    const approveRes = await page.request.post(`/api/approvals/${String(approval.id)}/approve`, {
-      data: {},
-    });
-    expect(approveRes.ok()).toBe(true);
+    const approveHireButton = page.getByRole("button", { name: "Approve CTO hire and close issue" });
+    await expect(approveHireButton).toBeVisible();
+    await approveHireButton.click();
 
     await expect
       .poll(async () => {
@@ -341,10 +384,13 @@ test.describe("Repo-first staffing workflow", () => {
     const cto = agents.find((agent: { role: string; status: string }) => agent.role === "cto" && agent.status !== "terminated");
     expect(cto).toBeTruthy();
 
-    const issueRes = await page.request.get(`/api/issues/${hiringIssue.id}`);
-    expect(issueRes.ok()).toBe(true);
-    const updatedIssue = await issueRes.json();
-    expect(updatedIssue.assigneeAgentId).toBe(cto.id);
-    expect(updatedIssue.status).toBe("todo");
+    await expect
+      .poll(async () => {
+        const issueRes = await page.request.get(`/api/issues/${hiringIssue.id}`);
+        expect(issueRes.ok()).toBe(true);
+        const updatedIssue = await issueRes.json();
+        return updatedIssue.status;
+      })
+      .toBe("done");
   });
 });

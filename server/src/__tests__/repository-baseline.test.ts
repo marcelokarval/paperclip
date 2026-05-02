@@ -275,6 +275,45 @@ describe("buildRepositoryDocumentationBaseline", () => {
     expect(baseline.recommendations?.issuePolicy.reviewGuidance).toContain("Analyzer guidance: Read AGENTS.md before UI changes.");
   });
 
+  it("deduplicates analyzer ownership areas into existing project defaults", async () => {
+    const repoRoot = await makeTempRepo();
+    const analyzerPath = path.join(repoRoot, "fake-analyzer.sh");
+    await mkdir(path.join(repoRoot, "src", "components"), { recursive: true });
+    await writeFile(path.join(repoRoot, "src", "components", "Button.tsx"), "export const Button = () => null;\n", "utf8");
+    await writeFile(
+      path.join(repoRoot, "package.json"),
+      JSON.stringify({
+        dependencies: { react: "^19.0.0", next: "^15.0.0" },
+      }),
+      "utf8",
+    );
+    await writeFile(
+      analyzerPath,
+      [
+        "#!/bin/sh",
+        "cat >/dev/null",
+        "printf '%s\\n' '{\"architectureSummary\":null,\"stackCorrections\":[],\"suggestedLabels\":[],\"canonicalDocs\":[],\"ownershipAreas\":[{\"name\":\"Frontend\",\"paths\":[\"src/components\",\"src/app\"],\"recommendedLabels\":[\"frontend\",\"design-system\"]}],\"verificationCommands\":[],\"agentGuidance\":[],\"risks\":[]}'",
+      ].join("\n"),
+      "utf8",
+    );
+    await chmod(analyzerPath, 0o755);
+    process.env.PAPERCLIP_REPOSITORY_BASELINE_ANALYZER_COMMAND = analyzerPath;
+    delete process.env.PAPERCLIP_REPOSITORY_BASELINE_ANALYZER_ARGS;
+
+    const baseline = await buildRepositoryDocumentationBaseline({
+      cwd: repoRoot,
+      repoUrl: null,
+      repoRef: null,
+      defaultRef: null,
+    }, { runAnalyzer: true });
+
+    const frontendAreas = baseline.recommendations?.projectDefaults.ownershipAreas
+      .filter((area) => area.name === "Frontend") ?? [];
+    expect(frontendAreas).toHaveLength(1);
+    expect(frontendAreas[0]?.paths).toEqual(expect.arrayContaining(["src/components", "src/app"]));
+    expect(frontendAreas[0]?.recommendedLabels).toEqual(expect.arrayContaining(["frontend", "design-system"]));
+  });
+
   it("records not_configured when analyzer execution is requested but the command is unavailable", async () => {
     const repoRoot = await makeTempRepo();
     await writeFile(path.join(repoRoot, "README.md"), "# Analyzer unavailable\n", "utf8");

@@ -141,6 +141,7 @@ Section header: **Company** (collapsible)
 ```
   Company                  ▼
     Dashboard
+    Approvals
     Org Chart
     Agents
     Costs
@@ -148,12 +149,13 @@ Section header: **Company** (collapsible)
 ```
 
 - **Dashboard** — company health overview: agent statuses, task velocity, cost burn, pending approvals count.
+- **Approvals** — direct governance inbox for approval gates, with badge count for pending decisions.
 - **Org Chart** — interactive tree visualization of the agent reporting hierarchy.
 - **Agents** — flat list of all agents with status, role, last heartbeat, spend.
 - **Costs** — cost dashboard with breakdowns by agent, project, model, time.
 - **Activity** — audit log of all system events.
 
-Note: Approvals do not have a top-level sidebar entry. They are surfaced through the **Inbox** (primary interaction point), **Dashboard** (pending count metric), and **inline on entity pages** (e.g., an agent detail page shows the approval that authorized its hire). The `/approvals` route still exists and is reachable via "See all approvals" links in Inbox and Dashboard, but it is not in the sidebar navigation.
+Note: Approvals now have a top-level sidebar entry because HITL gates must be directly discoverable. They are still also surfaced through the **Inbox** (primary attention point), **Dashboard** (pending count metric), and **inline on entity pages** (e.g., an agent detail page shows the approval that authorized its hire).
 
 ### 3.5 Section Behavior
 
@@ -658,9 +660,9 @@ Clicking a row navigates to agent detail.
 
 ---
 
-## 11. Approvals (Contextual, Not Standalone)
+## 11. Approvals (Directly Discoverable Governance)
 
-Approvals are governance gates — decisions the board must make (hire an agent, approve a CEO strategy). They are NOT work items. Their data model stays separate from issues (different status machine, side-effect triggers, unstructured payload). But they don't need their own top-level nav entry.
+Approvals are governance gates — decisions the board must make (hire an agent, approve a CEO strategy). They are NOT work items. Their data model stays separate from issues (different status machine, side-effect triggers, unstructured payload). They have a top-level nav entry so operators can reach HITL decisions without first discovering them indirectly through Inbox, Dashboard, or entity detail pages.
 
 ### 11.1 Where Approvals Surface
 
@@ -991,7 +993,7 @@ All routes are company-scoped after company selection (company context stored in
 17. Org chart interactive visualization
 18. Cost dashboard
 19. Activity log with filtering
-20. Approvals list page (accessed via Inbox "See all", not sidebar)
+20. Approvals list page (also reachable from the sidebar)
 
 ### Phase 5: Polish
 21. Keyboard shortcuts

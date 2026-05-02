@@ -23,6 +23,7 @@ import { InlineEditor } from "./InlineEditor";
 import { EnvVarEditor } from "./EnvVarEditor";
 import { readRepositoryDocumentationBaseline } from "../lib/repository-documentation-baseline";
 import {
+  classifyBaselineSignal,
   buildKeepManualDescriptionPatch,
   buildProjectDescriptionPatch,
   buildUseBaselineDescriptionSuggestionPatch,
@@ -1061,9 +1062,22 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                               Scanner/analyzer gaps to validate before relying on this baseline for execution.
                             </p>
                             <ul className="mt-1 space-y-1 text-[11px] text-amber-800 dark:text-amber-200">
-                              {repositoryBaselineGaps.slice(0, 5).map((gap, index) => (
-                                <li key={`${gap}-${index}`}>{gap}</li>
-                              ))}
+                              {repositoryBaselineGaps.slice(0, 5).map((gap, index) => {
+                                const signal = classifyBaselineSignal(gap.replace(/^Analyzer risk:\s*/i, ""));
+                                return (
+                                  <li key={`${gap}-${index}`} className="rounded-md border border-amber-500/20 bg-background/40 px-2 py-1.5">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span>{gap}</span>
+                                      <span className="rounded-full border border-amber-500/30 px-2 py-0.5 text-[10px] uppercase tracking-[0.12em]">
+                                        {signal.categoryLabel}
+                                      </span>
+                                    </div>
+                                    <div className="mt-1 text-[11px] text-amber-900/80 dark:text-amber-100/80">
+                                      Action: {signal.recommendedAction}
+                                    </div>
+                                  </li>
+                                );
+                              })}
                             </ul>
                             {repositoryBaselineGaps.length > 5 ? (
                               <p className="mt-1 text-[11px] text-amber-800 dark:text-amber-200">

@@ -75,6 +75,37 @@ function unique(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
+function normalizeOwnershipAreaKey(name: string) {
+  return name.trim().toLowerCase();
+}
+
+function mergeOwnershipAreas(
+  areas: RepositoryBaselineProjectDefaultsRecommendation["ownershipAreas"],
+): RepositoryBaselineProjectDefaultsRecommendation["ownershipAreas"] {
+  const byName = new Map<string, RepositoryBaselineProjectDefaultsRecommendation["ownershipAreas"][number]>();
+
+  for (const area of areas) {
+    const key = normalizeOwnershipAreaKey(area.name);
+    if (!key) continue;
+    const existing = byName.get(key);
+    if (!existing) {
+      byName.set(key, {
+        name: area.name.trim(),
+        paths: unique(area.paths),
+        recommendedLabels: unique(area.recommendedLabels),
+      });
+      continue;
+    }
+    byName.set(key, {
+      ...existing,
+      paths: unique([...existing.paths, ...area.paths]),
+      recommendedLabels: unique([...existing.recommendedLabels, ...area.recommendedLabels]),
+    });
+  }
+
+  return [...byName.values()];
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -795,10 +826,10 @@ function mergeAnalyzerOutput(
     ...recommendations.projectDefaults.suggestedVerificationCommands,
     ...output.verificationCommands,
   ]);
-  const ownershipAreas = [
+  const ownershipAreas = mergeOwnershipAreas([
     ...recommendations.projectDefaults.ownershipAreas,
     ...output.ownershipAreas,
-  ];
+  ]);
   const agentGuidance = output.agentGuidance.map((entry) => `Analyzer guidance: ${entry}`);
   const risks = output.risks.map((entry) => `Analyzer risk: ${entry}`);
 

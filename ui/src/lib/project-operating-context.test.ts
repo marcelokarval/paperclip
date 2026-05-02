@@ -5,6 +5,7 @@ import {
   buildKeepManualDescriptionPatch,
   buildProjectDescriptionPatch,
   buildUseBaselineDescriptionSuggestionPatch,
+  classifyBaselineSignal,
   getProjectIntakeModel,
   getProjectLabelGovernanceStatus,
   getProjectParticipantSuggestions,
@@ -979,6 +980,29 @@ describe("getProjectLabelGovernanceStatus", () => {
     })).toMatchObject({
       status: "needs_materialization",
       materializedCount: 0,
+    });
+  });
+});
+
+describe("classifyBaselineSignal", () => {
+  it("classifies missing agent instructions as an operator action", () => {
+    expect(classifyBaselineSignal("No repository agent instruction file was detected.")).toMatchObject({
+      category: "operator_action",
+      categoryLabel: "Operator action",
+    });
+  });
+
+  it("classifies missing repo refs as a scanner limit", () => {
+    expect(classifyBaselineSignal("Repository URL and refs are unavailable.")).toMatchObject({
+      category: "scanner_limit",
+      categoryLabel: "Scanner limit",
+    });
+  });
+
+  it("classifies unidentified database implementation as a repository risk", () => {
+    expect(classifyBaselineSignal("Database/ORM implementation is not identified despite db:* scripts.")).toMatchObject({
+      category: "repository_risk",
+      categoryLabel: "Repository risk",
     });
   });
 });

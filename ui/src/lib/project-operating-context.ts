@@ -101,6 +101,15 @@ export interface ProjectLabelGovernanceStatus {
   inUseCount: number;
 }
 
+export type BaselineSignalCategory = "scanner_limit" | "repository_risk" | "operator_action";
+
+export interface BaselineSignalModel {
+  text: string;
+  category: BaselineSignalCategory;
+  categoryLabel: string;
+  recommendedAction: string;
+}
+
 export type ProjectIssueContextInsertKind = "docs" | "verification";
 
 export interface ProjectParticipantSuggestions {
@@ -127,6 +136,41 @@ const STAFFING_STATUS_LABELS: Record<NonNullable<Project["staffingState"]>["stat
 
 function normalizeLabelName(name: string) {
   return name.trim().toLowerCase();
+}
+
+export function classifyBaselineSignal(text: string): BaselineSignalModel {
+  const normalized = text.trim();
+  const lower = normalized.toLowerCase();
+  if (lower.includes("repository url") || lower.includes("refs are unavailable") || lower.includes("canonical docs were empty")) {
+    return {
+      text: normalized,
+      category: "scanner_limit",
+      categoryLabel: "Scanner limit",
+      recommendedAction: "Add repo URL/ref or canonical docs if remote confidence matters.",
+    };
+  }
+  if (lower.includes("agent instruction")) {
+    return {
+      text: normalized,
+      category: "operator_action",
+      categoryLabel: "Operator action",
+      recommendedAction: "Confirm whether AGENTS.md, CLAUDE.md, or Copilot instructions should be allowlisted.",
+    };
+  }
+  if (lower.includes("database") || lower.includes("orm") || lower.includes("implementation is not identified")) {
+    return {
+      text: normalized,
+      category: "repository_risk",
+      categoryLabel: "Repository risk",
+      recommendedAction: "Ask CEO/CTO to validate the persistence layer before execution issues.",
+    };
+  }
+  return {
+    text: normalized,
+    category: "repository_risk",
+    categoryLabel: "Repository risk",
+    recommendedAction: "Validate this finding before relying on the baseline for execution.",
+  };
 }
 
 function isBaselineMaterializedLabel(label: IssueLabel, projectId: string | null) {

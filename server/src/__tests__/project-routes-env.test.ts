@@ -1107,10 +1107,11 @@ describe("project env routes", () => {
           approvalGuidance: ["Use approval for operator decisions."],
         },
         projectDefaults: {
-          canonicalDocs: ["AGENTS.md"],
-          suggestedVerificationCommands: ["pnpm -r typecheck"],
+          canonicalDocs: ["AGENTS.md", "AGENTS.md"],
+          suggestedVerificationCommands: ["pnpm -r typecheck", "pnpm -r typecheck"],
           ownershipAreas: [
             { name: "Frontend", paths: ["ui/"], recommendedLabels: ["frontend"] },
+            { name: "Frontend", paths: ["src/components"], recommendedLabels: ["frontend", "design-system"] },
           ],
         },
       },
@@ -1193,6 +1194,17 @@ describe("project env routes", () => {
       labels: expect.arrayContaining([expect.objectContaining({ name: "frontend" })]),
       issuePolicy: expect.objectContaining({
         parentChildGuidance: ["Use parentId only for explicit decomposition."],
+      }),
+      projectDefaults: expect.objectContaining({
+        canonicalDocs: ["AGENTS.md"],
+        suggestedVerificationCommands: ["pnpm -r typecheck"],
+        ownershipAreas: [
+          {
+            name: "Frontend",
+            paths: ["ui/", "src/components"],
+            recommendedLabels: ["frontend", "design-system"],
+          },
+        ],
       }),
     });
     expect(res.body.baseline.recommendationDecisions).toHaveLength(4);

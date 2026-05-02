@@ -161,6 +161,39 @@ export function projectRoutes(db: Db) {
     };
   }
 
+  function uniqueStrings(values: string[]) {
+    return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+  }
+
+  function dedupeProjectDefaults(
+    projectDefaults: RepositoryBaselineAcceptedGuidance["projectDefaults"],
+  ): RepositoryBaselineAcceptedGuidance["projectDefaults"] {
+    const ownershipAreasByName = new Map<string, RepositoryBaselineAcceptedGuidance["projectDefaults"]["ownershipAreas"][number]>();
+    for (const area of projectDefaults.ownershipAreas) {
+      const key = area.name.trim().toLowerCase();
+      if (!key) continue;
+      const existing = ownershipAreasByName.get(key);
+      if (!existing) {
+        ownershipAreasByName.set(key, {
+          name: area.name.trim(),
+          paths: uniqueStrings(area.paths),
+          recommendedLabels: uniqueStrings(area.recommendedLabels),
+        });
+        continue;
+      }
+      ownershipAreasByName.set(key, {
+        ...existing,
+        paths: uniqueStrings([...existing.paths, ...area.paths]),
+        recommendedLabels: uniqueStrings([...existing.recommendedLabels, ...area.recommendedLabels]),
+      });
+    }
+    return {
+      canonicalDocs: uniqueStrings(projectDefaults.canonicalDocs),
+      suggestedVerificationCommands: uniqueStrings(projectDefaults.suggestedVerificationCommands),
+      ownershipAreas: [...ownershipAreasByName.values()],
+    };
+  }
+
   async function applySuggestedRepositoryLabels(input: {
     companyId: string;
     projectId: string;
@@ -239,7 +272,7 @@ export function projectRoutes(db: Db) {
       acceptedByUserId: input.acceptedByUserId,
       labels: recommendations.labels,
       issuePolicy: recommendations.issuePolicy,
-      projectDefaults: recommendations.projectDefaults,
+      projectDefaults: dedupeProjectDefaults(recommendations.projectDefaults),
     };
   }
 
