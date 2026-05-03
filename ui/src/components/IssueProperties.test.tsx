@@ -5,7 +5,7 @@ import type { ComponentProps, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue, Project } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueProperties } from "./IssueProperties";
 
@@ -169,12 +169,24 @@ function createExecutionState(overrides: Partial<IssueExecutionState> = {}): Iss
   };
 }
 
-function createProjectWithParticipantSuggestions() {
+function createProjectWithParticipantSuggestions(): Project {
   return {
     id: "project-1",
     companyId: "company-1",
+    goalId: null,
+    goalIds: [],
+    goals: [],
     name: "Launch Fullstack",
+    description: null,
     urlKey: "launch-fullstack",
+    status: "planned",
+    leadAgentId: null,
+    targetDate: null,
+    color: null,
+    env: null,
+    pauseReason: null,
+    pausedAt: null,
+    executionWorkspacePolicy: null,
     archivedAt: null,
     issueSystemGuidance: {
       labelUsageGuidance: [],
@@ -203,6 +215,22 @@ function createProjectWithParticipantSuggestions() {
       executiveProjectPacket: null,
       technicalProjectPacket: null,
     },
+    staffingState: null,
+    codebase: {
+      workspaceId: null,
+      repoUrl: null,
+      repoRef: null,
+      defaultRef: null,
+      repoName: null,
+      localFolder: null,
+      managedFolder: "",
+      effectiveLocalFolder: "",
+      origin: "local_folder",
+    },
+    workspaces: [],
+    primaryWorkspace: null,
+    createdAt: new Date("2026-05-02T00:00:00.000Z"),
+    updatedAt: new Date("2026-05-02T00:00:00.000Z"),
   };
 }
 
