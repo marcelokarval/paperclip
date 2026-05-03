@@ -33,8 +33,8 @@ import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
-import { getServerAdapter, runningProcesses } from "../adapters/index.js";
-import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec, UsageSummary } from "../adapters/index.js";
+import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
+import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterModelProfileDefinition, AdapterSessionCodec, UsageSummary } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
@@ -98,6 +98,8 @@ const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+const TRANSIENT_UPSTREAM_RETRY_REASON = "transient_failure";
+const MAX_TRANSIENT_UPSTREAM_RETRY_ATTEMPTS = 1;
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -416,6 +418,8 @@ const heartbeatRunIssueSummaryColumns = {
   createdAt: heartbeatRuns.createdAt,
   agentId: heartbeatRuns.agentId,
   issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
+  contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`.as("contextCommentId"),
+  contextWakeCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`.as("contextWakeCommentId"),
 } as const;
 
 function appendExcerpt(prev: string, chunk: string) {
@@ -489,6 +493,16 @@ type SessionCompactionDecision = {
 interface ParsedIssueAssigneeAdapterOverrides {
   adapterConfig: Record<string, unknown> | null;
   useProjectWorkspace: boolean | null;
+  modelProfile: "cheap" | null;
+}
+
+export interface ModelProfileApplication {
+  requested: "cheap" | null;
+  requestedBy: "issue" | "wake" | null;
+  applied: "cheap" | "primary" | null;
+  configSource: "agent_runtime" | "adapter_default" | null;
+  adapterConfig: Record<string, unknown> | null;
+  fallbackReason: string | null;
 }
 
 export type ResolvedWorkspaceForRun = {
@@ -523,6 +537,16 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function hasProductiveContinuationEvidence(run: typeof heartbeatRuns.$inferSelect | null) {
+  if (!run || run.status !== "succeeded") return false;
+  const result = parseObject(run.resultJson);
+  const context = parseObject(run.contextSnapshot);
+  const livenessState = readNonEmptyString(result.livenessState) ?? readNonEmptyString(context.livenessState);
+  if (livenessState === "advanced" || livenessState === "needs_followup") return true;
+  const progressState = readNonEmptyString(result.progressState) ?? readNonEmptyString(context.progressState);
+  return progressState === "advanced" || progressState === "needs_followup";
 }
 
 function normalizeLedgerBillingType(value: unknown): BillingType {
@@ -831,11 +855,136 @@ function parseIssueAssigneeAdapterOverrides(
     typeof parsed.useProjectWorkspace === "boolean"
       ? parsed.useProjectWorkspace
       : null;
-  if (!adapterConfig && useProjectWorkspace === null) return null;
+  const modelProfile = parsed.modelProfile === "cheap" ? "cheap" : null;
+  if (!adapterConfig && useProjectWorkspace === null && !modelProfile) return null;
   return {
     adapterConfig,
     useProjectWorkspace,
+    modelProfile,
   };
+}
+
+function readModelProfileKey(value: unknown): "cheap" | null {
+  return value === "cheap" ? "cheap" : null;
+}
+
+function readAgentRuntimeModelProfile(
+  runtimeConfig: unknown,
+  key: "cheap",
+): { enabled: boolean; adapterConfig: Record<string, unknown> } | null {
+  const modelProfiles = parseObject(parseObject(runtimeConfig).modelProfiles);
+  const profile = parseObject(modelProfiles[key]);
+  if (Object.keys(profile).length === 0) return null;
+  return {
+    enabled: profile.enabled !== false,
+    adapterConfig: parseObject(profile.adapterConfig),
+  };
+}
+
+export function resolveModelProfileApplication(input: {
+  adapterModelProfiles: AdapterModelProfileDefinition[];
+  agentRuntimeConfig: unknown;
+  issueModelProfile?: unknown;
+  contextSnapshot?: Record<string, unknown> | null;
+  profileResolutionFallbackReason?: string | null;
+}): ModelProfileApplication {
+  const issueRequested = readModelProfileKey(input.issueModelProfile);
+  const wakeRequested = readModelProfileKey(input.contextSnapshot?.modelProfile);
+  const requested = issueRequested ?? wakeRequested;
+  const requestedBy = issueRequested ? "issue" : wakeRequested ? "wake" : null;
+  if (!requested) {
+    return {
+      requested: null,
+      requestedBy: null,
+      applied: null,
+      configSource: null,
+      adapterConfig: null,
+      fallbackReason: null,
+    };
+  }
+
+  const adapterProfile = input.adapterModelProfiles.find((profile) => profile.key === requested) ?? null;
+  if (!adapterProfile) {
+    return {
+      requested,
+      requestedBy,
+      applied: "primary",
+      configSource: null,
+      adapterConfig: null,
+      fallbackReason: input.profileResolutionFallbackReason ?? "adapter_profile_not_supported",
+    };
+  }
+
+  const runtimeProfile = readAgentRuntimeModelProfile(input.agentRuntimeConfig, requested);
+  if (runtimeProfile && !runtimeProfile.enabled) {
+    return {
+      requested,
+      requestedBy,
+      applied: "primary",
+      configSource: "agent_runtime",
+      adapterConfig: null,
+      fallbackReason: "agent_runtime_profile_disabled",
+    };
+  }
+
+  const adapterConfig = runtimeProfile?.adapterConfig && Object.keys(runtimeProfile.adapterConfig).length > 0
+    ? runtimeProfile.adapterConfig
+    : adapterProfile.adapterConfig;
+  return {
+    requested,
+    requestedBy,
+    applied: requested,
+    configSource: runtimeProfile ? "agent_runtime" : "adapter_default",
+    adapterConfig,
+    fallbackReason: null,
+  };
+}
+
+function modelProfileRunMetadata(modelProfile: ModelProfileApplication) {
+  if (!modelProfile.requested) return null;
+  return {
+    requested: modelProfile.requested,
+    requestedBy: modelProfile.requestedBy,
+    applied: modelProfile.applied,
+    configSource: modelProfile.configSource,
+    fallbackReason: modelProfile.fallbackReason,
+  };
+}
+
+function readTransientRetryNotBeforeFromResult(adapterResult: AdapterExecutionResult): Date | null {
+  const raw = readNonEmptyString(adapterResult.retryNotBefore)
+    ?? readNonEmptyString(adapterResult.resultJson?.retryNotBefore)
+    ?? readNonEmptyString(adapterResult.resultJson?.transientRetryNotBefore);
+  if (!raw) return null;
+  const parsed = new Date(raw);
+  return Number.isFinite(parsed.getTime()) ? parsed : null;
+}
+
+function isTransientUpstreamAdapterResult(adapterResult: AdapterExecutionResult): boolean {
+  return adapterResult.errorFamily === "transient_upstream"
+    || adapterResult.errorCode === "codex_transient_upstream"
+    || adapterResult.errorCode === "claude_transient_upstream"
+    || adapterResult.resultJson?.errorFamily === "transient_upstream";
+}
+
+export function resolveTransientUpstreamRetry(input: {
+  adapterResult: AdapterExecutionResult;
+  contextSnapshot: Record<string, unknown> | null | undefined;
+  now?: Date;
+}): { shouldRetry: boolean; retryNotBefore: Date | null; skipReason: string | null } {
+  if (!isTransientUpstreamAdapterResult(input.adapterResult)) {
+    return { shouldRetry: false, retryNotBefore: null, skipReason: "not_transient_upstream" };
+  }
+  const attempt = Number(input.contextSnapshot?.transientRetryAttempt ?? 0);
+  if (attempt >= MAX_TRANSIENT_UPSTREAM_RETRY_ATTEMPTS) {
+    return { shouldRetry: false, retryNotBefore: null, skipReason: "retry_exhausted" };
+  }
+  const now = input.now ?? new Date();
+  const retryNotBefore = readTransientRetryNotBeforeFromResult(input.adapterResult);
+  if (retryNotBefore && retryNotBefore.getTime() > now.getTime()) {
+    return { shouldRetry: false, retryNotBefore, skipReason: "retry_not_before_future" };
+  }
+  return { shouldRetry: true, retryNotBefore, skipReason: null };
 }
 
 /**
@@ -1065,6 +1214,10 @@ function enrichWakeContextSnapshot(input: {
   }
   if (!readNonEmptyString(contextSnapshot["wakeTriggerDetail"]) && triggerDetail) {
     contextSnapshot.wakeTriggerDetail = triggerDetail;
+  }
+  const modelProfileFromPayload = readModelProfileKey(payload?.["modelProfile"]);
+  if (!readModelProfileKey(contextSnapshot["modelProfile"]) && modelProfileFromPayload) {
+    contextSnapshot.modelProfile = modelProfileFromPayload;
   }
 
   return {
@@ -2140,7 +2293,7 @@ export function heartbeatService(db: Db) {
     if (existing) return existing;
 
     try {
-      return await db
+      const inserted = await db
         .insert(agentRuntimeState)
         .values({
           agentId: agent.id,
@@ -2148,8 +2301,17 @@ export function heartbeatService(db: Db) {
           adapterType: agent.adapterType,
           stateJson: {},
         })
+        .onConflictDoNothing({
+          target: agentRuntimeState.agentId,
+        })
         .returning()
         .then((rows) => rows[0] ?? null);
+      if (inserted) return inserted;
+      const ensured = await getRuntimeState(agent.id);
+      if (!ensured) {
+        throw new Error(`Failed to ensure runtime state for agent ${agent.id}`);
+      }
+      return ensured;
     } catch (error) {
       const maybePostgresError = error as { code?: string; constraint_name?: string };
       if (
@@ -2636,6 +2798,112 @@ export function heartbeatService(db: Db) {
     return queued;
   }
 
+  async function enqueueTransientUpstreamRetry(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    agent: typeof agents.$inferSelect;
+    retryNotBefore: Date | null;
+  }) {
+    const contextSnapshot = parseObject(input.run.contextSnapshot);
+    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
+    const sessionBefore = await resolveSessionBeforeForWakeup(input.agent, taskKey);
+    const retryContextSnapshot = {
+      ...contextSnapshot,
+      retryOfRunId: input.run.id,
+      wakeReason: "transient_upstream_retry",
+      retryReason: TRANSIENT_UPSTREAM_RETRY_REASON,
+      transientRetryAttempt: Number(contextSnapshot.transientRetryAttempt ?? 0) + 1,
+      ...(input.retryNotBefore ? { transientRetryNotBefore: input.retryNotBefore.toISOString() } : {}),
+    };
+    const now = new Date();
+
+    const queued = await db.transaction(async (tx) => {
+      const wakeupRequest = await tx
+        .insert(agentWakeupRequests)
+        .values({
+          companyId: input.run.companyId,
+          agentId: input.run.agentId,
+          source: "automation",
+          triggerDetail: "system",
+          reason: "transient_upstream_retry",
+          payload: {
+            ...(issueId ? { issueId } : {}),
+            retryOfRunId: input.run.id,
+            retryReason: TRANSIENT_UPSTREAM_RETRY_REASON,
+            ...(input.retryNotBefore ? { transientRetryNotBefore: input.retryNotBefore.toISOString() } : {}),
+          },
+          status: "queued",
+          requestedByActorType: "system",
+          requestedByActorId: null,
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      const retryRun = await tx
+        .insert(heartbeatRuns)
+        .values({
+          companyId: input.run.companyId,
+          agentId: input.run.agentId,
+          invocationSource: "automation",
+          triggerDetail: "system",
+          status: "queued",
+          wakeupRequestId: wakeupRequest.id,
+          contextSnapshot: retryContextSnapshot,
+          sessionIdBefore: sessionBefore,
+          retryOfRunId: input.run.id,
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      await tx
+        .update(agentWakeupRequests)
+        .set({ runId: retryRun.id, updatedAt: now })
+        .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+      if (issueId) {
+        await tx
+          .update(issues)
+          .set({
+            executionRunId: retryRun.id,
+            executionAgentNameKey: normalizeAgentNameKey(input.agent.name),
+            executionLockedAt: now,
+            updatedAt: now,
+          })
+          .where(and(eq(issues.companyId, input.run.companyId), eq(issues.id, issueId)));
+      }
+
+      return retryRun;
+    });
+
+    publishLiveEvent({
+      companyId: queued.companyId,
+      type: "heartbeat.run.queued",
+      payload: {
+        runId: queued.id,
+        agentId: queued.agentId,
+        invocationSource: queued.invocationSource,
+        triggerDetail: queued.triggerDetail,
+        wakeupRequestId: queued.wakeupRequestId,
+      },
+    });
+
+    await appendRunEvent(queued, 1, {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "info",
+      message: "queued transient upstream retry",
+      payload: {
+        retryOfRunId: input.run.id,
+        retryReason: TRANSIENT_UPSTREAM_RETRY_REASON,
+        ...(input.retryNotBefore ? { transientRetryNotBefore: input.retryNotBefore.toISOString() } : {}),
+      },
+    });
+
+    return queued;
+  }
+
   function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
@@ -2927,7 +3195,22 @@ export function heartbeatService(db: Db) {
         });
       }
 
-      const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
+      const runContext = parseObject(run.contextSnapshot);
+      const runIssueId = readNonEmptyString(runContext.issueId);
+      const runIssueStatus = runIssueId
+        ? await db
+          .select({ status: issues.status })
+          .from(issues)
+          .where(and(eq(issues.companyId, run.companyId), eq(issues.id, runIssueId)))
+          .limit(1)
+          .then((rows) => rows[0]?.status ?? null)
+        : null;
+      const shouldRetry =
+        tracksLocalChild &&
+        (!!run.processPid || !!run.processGroupId) &&
+        (run.processLossRetryCount ?? 0) < 1 &&
+        runIssueStatus !== "cancelled" &&
+        runIssueStatus !== "done";
       const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
@@ -2941,6 +3224,9 @@ export function heartbeatService(db: Db) {
       });
       if (!finalizedRun) finalizedRun = await getRun(run.id);
       if (!finalizedRun) continue;
+      await releaseRuntimeServicesForRun(finalizedRun.id).catch((err) => {
+        logger.warn({ err, runId: finalizedRun.id }, "failed to release runtime service leases for orphaned heartbeat run");
+      });
 
       let retriedRun: typeof heartbeatRuns.$inferSelect | null = null;
       if (shouldRetry) {
@@ -3437,20 +3723,46 @@ export function heartbeatService(db: Db) {
         continue;
       }
 
-      if (latestRun?.status === "succeeded") {
-        result.skipped += 1;
-        continue;
-      }
-
       if (latestRetryReason === "issue_continuation_needed") {
+        const latestSource = readNonEmptyString(latestContext.source);
+        const hasProductiveEvidence = hasProductiveContinuationEvidence(latestRun);
+        if (latestRun?.status === "succeeded" && !hasProductiveEvidence) {
+          result.skipped += 1;
+          continue;
+        }
+        if (hasProductiveEvidence && latestSource !== "issue.productive_terminal_continuation_recovery") {
+          if (await isInvocationBudgetBlocked(currentIssue, agentId)) {
+            result.skipped += 1;
+            continue;
+          }
+          const queued = await enqueueStrandedIssueRecovery({
+            issueId: currentIssue.id,
+            agentId,
+            reason: "issue_continuation_needed",
+            retryReason: "issue_continuation_needed",
+            source: "issue.productive_terminal_continuation_recovery",
+            retryOfRunId: latestRun.id,
+          });
+          if (queued) {
+            result.continuationRequeued += 1;
+            result.issueIds.push(currentIssue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
         const updated = await escalateStrandedAssignedIssue({
           issue: currentIssue,
           previousStatus: "in_progress",
           latestRun,
           comment:
-            "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
-            "execution disappeared, but it still has no live execution path. Moving it to `blocked` so it is " +
-            "visible for intervention.",
+            latestRun?.status === "succeeded"
+              ? "Paperclip automatically retried continuation for this assigned `in_progress` issue and the retry " +
+                "made progress, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention."
+              : "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
+                "execution disappeared, but it still has no live execution path. Moving it to `blocked` so it is " +
+                "visible for intervention.",
         });
         if (updated) {
           result.escalated += 1;
@@ -3458,6 +3770,11 @@ export function heartbeatService(db: Db) {
         } else {
           result.skipped += 1;
         }
+        continue;
+      }
+
+      if (latestRun?.status === "succeeded") {
+        result.skipped += 1;
         continue;
       }
 
@@ -3770,9 +4087,40 @@ export function heartbeatService(db: Db) {
       workspaceConfig: existingExecutionWorkspace?.config ?? null,
       mode: effectiveExecutionWorkspaceMode,
     });
-    const mergedConfig = issueAssigneeOverrides?.adapterConfig
-      ? { ...persistedWorkspaceManagedConfig, ...issueAssigneeOverrides.adapterConfig }
+    let adapterModelProfiles: AdapterModelProfileDefinition[] = [];
+    let profileResolutionFallbackReason: string | null = null;
+    const requestedModelProfile = issueAssigneeOverrides?.modelProfile ?? readModelProfileKey(context.modelProfile);
+    if (requestedModelProfile) {
+      try {
+        adapterModelProfiles = await listAdapterModelProfiles(agent.adapterType);
+      } catch (err) {
+        profileResolutionFallbackReason = "adapter_profile_resolution_failed";
+        logger.warn(
+          { err, agentId: agent.id, adapterType: agent.adapterType, runId: run.id },
+          "failed to resolve adapter model profiles; falling back to primary adapter config",
+        );
+      }
+    }
+    const modelProfileApplication = resolveModelProfileApplication({
+      adapterModelProfiles,
+      agentRuntimeConfig: agent.runtimeConfig,
+      issueModelProfile: issueAssigneeOverrides?.modelProfile ?? null,
+      contextSnapshot: context,
+      profileResolutionFallbackReason,
+    });
+    const modelProfileMetadata = modelProfileRunMetadata(modelProfileApplication);
+    if (modelProfileMetadata) {
+      context.paperclipModelProfile = modelProfileMetadata;
+      if (modelProfileApplication.requested) context.modelProfile = modelProfileApplication.requested;
+    } else {
+      delete context.paperclipModelProfile;
+    }
+    const profileManagedConfig = modelProfileApplication.adapterConfig
+      ? { ...persistedWorkspaceManagedConfig, ...modelProfileApplication.adapterConfig }
       : persistedWorkspaceManagedConfig;
+    const mergedConfig = issueAssigneeOverrides?.adapterConfig
+      ? { ...profileManagedConfig, ...issueAssigneeOverrides.adapterConfig }
+      : profileManagedConfig;
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig);
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
     const { resolvedConfig, secretKeys } = await resolveExecutionRunAdapterConfig({
@@ -4403,8 +4751,17 @@ export function heartbeatService(db: Db) {
             } as Record<string, unknown>)
           : null;
 
+      const adapterResultJsonWithRuntimeMetadata = {
+        ...(adapterResult.resultJson ?? {}),
+        ...(adapterResult.errorFamily ? { errorFamily: adapterResult.errorFamily } : {}),
+        ...(adapterResult.retryNotBefore ? {
+          retryNotBefore: adapterResult.retryNotBefore,
+          transientRetryNotBefore: adapterResult.retryNotBefore,
+        } : {}),
+        ...(modelProfileMetadata ? { modelProfile: modelProfileMetadata } : {}),
+      };
       const persistedResultJson = mergeHeartbeatRunResultJson(
-        adapterResult.resultJson ?? null,
+        Object.keys(adapterResultJsonWithRuntimeMetadata).length > 0 ? adapterResultJsonWithRuntimeMetadata : null,
         adapterResult.summary ?? null,
       );
 
@@ -4498,7 +4855,47 @@ export function heartbeatService(db: Db) {
           });
         }
         await finalizeIssueCommentPolicy(finalizedRun, agent);
+        const transientRetry = outcome === "failed"
+          ? resolveTransientUpstreamRetry({
+            adapterResult,
+            contextSnapshot: finalizedRun.contextSnapshot,
+          })
+          : { shouldRetry: false, retryNotBefore: null, skipReason: "not_failed" };
         await releaseIssueExecutionAndPromote(finalizedRun);
+        if (outcome === "failed" && transientRetry.shouldRetry) {
+          const retryRun = await enqueueTransientUpstreamRetry({
+            run: finalizedRun,
+            agent,
+            retryNotBefore: transientRetry.retryNotBefore,
+          });
+          await appendRunEvent(finalizedRun, seq++, {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "info",
+            message: "queued transient upstream retry",
+            payload: {
+              retryRunId: retryRun.id,
+              retryReason: TRANSIENT_UPSTREAM_RETRY_REASON,
+              ...(transientRetry.retryNotBefore
+                ? { transientRetryNotBefore: transientRetry.retryNotBefore.toISOString() }
+                : {}),
+            },
+          });
+        } else if (outcome === "failed" && transientRetry.skipReason === "retry_not_before_future") {
+          await appendRunEvent(finalizedRun, seq++, {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "warn",
+            message: "transient upstream retry deferred by provider retry window but this schema has no scheduled run field",
+            payload: {
+              retryReason: TRANSIENT_UPSTREAM_RETRY_REASON,
+              skipReason: transientRetry.skipReason,
+              ...(transientRetry.retryNotBefore
+                ? { transientRetryNotBefore: transientRetry.retryNotBefore.toISOString() }
+                : {}),
+            },
+          });
+        }
       }
 
       if (finalizedRun) {

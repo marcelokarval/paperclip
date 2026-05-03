@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shouldSilenceHttpSuccessLog } from "../middleware/http-log-policy.js";
+import { sanitizeHttpLogUrl, shouldSilenceHttpSuccessLog } from "../middleware/http-log-policy.js";
 
 describe("shouldSilenceHttpSuccessLog", () => {
   it("silences cached 304 responses", () => {
@@ -66,5 +66,16 @@ describe("shouldSilenceHttpSuccessLog", () => {
   it("keeps failing requests visible", () => {
     expect(shouldSilenceHttpSuccessLog("GET", "/api/health", 500)).toBe(false);
     expect(shouldSilenceHttpSuccessLog("GET", "/@fs/Users/dotta/paperclip/ui/src/main.tsx", 404)).toBe(false);
+  });
+
+  it("redacts sensitive URL query params before HTTP logger messages use req.url", () => {
+    const url = "/api/auth/callback?token=abc123&password=hunter2&apiKey=sk-secret&safe=visible";
+
+    const sanitized = sanitizeHttpLogUrl(url);
+
+    expect(sanitized).toBe("/api/auth/callback?token=%5BREDACTED%5D&password=%5BREDACTED%5D&apiKey=%5BREDACTED%5D&safe=visible");
+    expect(sanitized).not.toContain("abc123");
+    expect(sanitized).not.toContain("hunter2");
+    expect(sanitized).not.toContain("sk-secret");
   });
 });

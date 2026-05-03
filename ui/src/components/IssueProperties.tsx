@@ -267,6 +267,12 @@ export function IssueProperties({
       && currentProject?.operatingContext?.baselineTrackingIssueIdentifier === issue.identifier
     ),
   );
+  const canShowParticipantSuggestions = Boolean(
+    issue.status !== "done"
+    && issue.status !== "cancelled"
+    && issue.originKind !== "staffing_hiring"
+    && !isRepositoryBaselineTrackingIssue,
+  );
   const currentProjectIssueContext = getProjectIssueContextModel(currentProject);
   const participantSuggestions = getProjectParticipantSuggestions(currentProject, agents ?? []);
   const recommendedProjectLabels = useMemo(() => {
@@ -991,7 +997,7 @@ export function IssueProperties({
               project={currentProject}
               title="Project context"
             />
-            {participantSuggestions && !isRepositoryBaselineTrackingIssue ? (
+            {participantSuggestions && canShowParticipantSuggestions ? (
               <div className="mt-2 flex flex-wrap gap-2">
                 {participantSuggestions.assigneeAgentId && issue.assigneeAgentId !== participantSuggestions.assigneeAgentId ? (
                   <button
@@ -1015,7 +1021,7 @@ export function IssueProperties({
                     Suggest reviewer
                   </button>
                 ) : null}
-                {!isRepositoryBaselineTrackingIssue && participantSuggestions.approverValue && !approverValues.includes(participantSuggestions.approverValue) ? (
+                {participantSuggestions.approverValue && !approverValues.includes(participantSuggestions.approverValue) ? (
                   <button
                     type="button"
                     className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"

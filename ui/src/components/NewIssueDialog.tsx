@@ -1847,6 +1847,8 @@ export function NewIssueDialog() {
           <input
             ref={stageFileInputRef}
             type="file"
+            name="new-issue-file-upload"
+            aria-label="Attach files to new issue"
             accept={STAGED_FILE_ACCEPT}
             className="hidden"
             onChange={handleStageFilesPicked}

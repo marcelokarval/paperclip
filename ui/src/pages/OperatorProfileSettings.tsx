@@ -229,6 +229,8 @@ export function OperatorProfileSettings() {
               <input
                 ref={fileInputRef}
                 type="file"
+                name="operator-avatar-upload"
+                aria-label="Upload operator avatar"
                 accept={OPERATOR_AVATAR_ACCEPT}
                 className="hidden"
                 onChange={onAvatarFileChange}

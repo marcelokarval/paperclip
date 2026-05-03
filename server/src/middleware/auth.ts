@@ -8,6 +8,7 @@ import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
+import { sanitizeHttpLogUrl } from "./http-log-policy.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -36,7 +37,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           session = await opts.resolveSession(req);
         } catch (err) {
           logger.warn(
-            { err, method: req.method, url: req.originalUrl },
+            { err, method: req.method, url: sanitizeHttpLogUrl(req.originalUrl) },
             "Failed to resolve auth session from request headers",
           );
         }

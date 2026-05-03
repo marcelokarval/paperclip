@@ -1134,6 +1134,8 @@ export function CompanyImport() {
             <input
               ref={packageInputRef}
               type="file"
+              name="company-import-package-upload"
+              aria-label="Upload company import package"
               accept=".zip,application/zip"
               className="hidden"
               onChange={handleChooseLocalPackage}

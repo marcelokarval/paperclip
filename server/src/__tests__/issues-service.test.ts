@@ -6,6 +6,7 @@ import {
   activityLog,
   agents,
   companies,
+  costEvents,
   createDb,
   executionWorkspaces,
   heartbeatRuns,
@@ -66,6 +67,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
+    await db.delete(costEvents);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(executionWorkspaces);
@@ -196,6 +198,48 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       activityIssueId,
     ]));
     expect(resultIds.has(excludedIssueId)).toBe(false);
+  });
+
+  it("nulls issue cost-event references before removing an issue", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const costEventId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Costed issue",
+      status: "todo",
+      priority: "medium",
+    });
+    await db.insert(costEvents).values({
+      id: costEventId,
+      companyId,
+      issueId,
+      provider: "openai",
+      biller: "openai",
+      billingType: "tokens",
+      model: "gpt-test",
+      inputTokens: 10,
+      outputTokens: 2,
+      costCents: 1,
+      occurredAt: new Date("2026-05-03T12:00:00.000Z"),
+    });
+
+    const removed = await svc.remove(issueId);
+
+    expect(removed?.id).toBe(issueId);
+    const [costEvent] = await db
+      .select({ issueId: costEvents.issueId })
+      .from(costEvents)
+      .where(eq(costEvents.id, costEventId));
+    expect(costEvent?.issueId).toBeNull();
   });
 
   it("paginates earlier comments in descending order from an anchor comment", async () => {

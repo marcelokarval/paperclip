@@ -11,6 +11,11 @@ export const approvalsApi = {
   get: (id: string) => api.get<Approval>(`/approvals/${id}`),
   approve: (id: string, decisionNote?: string) =>
     api.post<Approval>(`/approvals/${id}/approve`, { decisionNote }),
+  approveAndCloseIssue: (id: string, issueId: string, decisionNote?: string) =>
+    api.post<{ approval: Approval; issue: Issue }>(`/approvals/${id}/approve-and-close-issue`, {
+      issueId,
+      decisionNote,
+    }),
   reject: (id: string, decisionNote?: string) =>
     api.post<Approval>(`/approvals/${id}/reject`, { decisionNote }),
   requestRevision: (id: string, decisionNote?: string) =>

@@ -54,7 +54,8 @@
   "pnpm": {
     "patchedDependencies": {
       "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch",
-      "hermes-paperclip-adapter@0.2.0": "patches/hermes-paperclip-adapter@0.2.0.patch"
+      "hermes-paperclip-adapter@0.2.0": "patches/hermes-paperclip-adapter@0.2.0.patch",
+      "@mdxeditor/editor@3.52.4": "patches/@mdxeditor__editor@3.52.4.patch"
     },
     "overrides": {
       "lodash-es": "4.18.1",

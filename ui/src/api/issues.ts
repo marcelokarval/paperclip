@@ -8,6 +8,7 @@ import type {
   IssueAttachment,
   IssueComment,
   IssueDocument,
+  IssueCostSummary,
   IssueHitlRequest,
   IssueLabel,
   IssueWorkProduct,
@@ -79,6 +80,7 @@ export const issuesApi = {
     api.patch<IssueLabel>(`/labels/${id}`, data),
   deleteLabel: (id: string) => api.delete<IssueLabel>(`/labels/${id}`),
   get: (id: string) => api.get<Issue>(`/issues/${id}`),
+  costSummary: (id: string) => api.get<IssueCostSummary>(`/issues/${id}/cost-summary`),
   markRead: (id: string) => api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, {}),
   markUnread: (id: string) => api.delete<{ id: string; removed: boolean }>(`/issues/${id}/read`),
   archiveFromInbox: (id: string) =>

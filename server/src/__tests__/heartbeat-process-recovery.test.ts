@@ -26,6 +26,7 @@ import {
 import { runningProcesses } from "../adapters/index.ts";
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackAgentFirstHeartbeat = vi.hoisted(() => vi.fn());
+const mockReleaseRuntimeServicesForRun = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock("../telemetry.ts", () => ({
   getTelemetryClient: () => mockTelemetryClient,
@@ -56,6 +57,16 @@ vi.mock("../adapters/index.ts", async () => {
         model: "test-model",
       })),
     })),
+  };
+});
+
+vi.mock("../services/workspace-runtime.ts", async () => {
+  const actual = await vi.importActual<typeof import("../services/workspace-runtime.ts")>(
+    "../services/workspace-runtime.ts",
+  );
+  return {
+    ...actual,
+    releaseRuntimeServicesForRun: mockReleaseRuntimeServicesForRun,
   };
 });
 
@@ -165,6 +176,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   afterEach(async () => {
     vi.clearAllMocks();
+    mockReleaseRuntimeServicesForRun.mockClear();
     runningProcesses.clear();
     for (const child of childProcesses) {
       child.kill("SIGKILL");
@@ -247,6 +259,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     processGroupId?: number | null;
     processLossRetryCount?: number;
     includeIssue?: boolean;
+    issueStatus?: "in_progress" | "done" | "cancelled";
     runErrorCode?: string | null;
     runError?: string | null;
   }) {
@@ -313,7 +326,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         id: issueId,
         companyId,
         title: "Recover local adapter after lost process",
-        status: "in_progress",
+        status: input?.issueStatus ?? "in_progress",
         priority: "medium",
         assigneeAgentId: agentId,
         checkoutRunId: runId,
@@ -330,6 +343,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     status: "todo" | "in_progress";
     runStatus: "failed" | "timed_out" | "cancelled" | "succeeded";
     retryReason?: "assignment_recovery" | "issue_continuation_needed" | null;
+    source?: string | null;
+    livenessState?: "advanced" | "needs_followup" | null;
     assignToUser?: boolean;
   }) {
     const companyId = randomUUID();
@@ -389,7 +404,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           ? "issue_assignment_recovery"
           : input.retryReason ?? "issue_assigned",
         ...(input.retryReason ? { retryReason: input.retryReason } : {}),
+        ...(input.source ? { source: input.source } : {}),
       },
+      resultJson: input.livenessState ? { livenessState: input.livenessState } : null,
       startedAt: now,
       finishedAt: new Date("2026-03-19T00:05:00.000Z"),
       updatedAt: new Date("2026-03-19T00:05:00.000Z"),
@@ -442,6 +459,19 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeup?.status).toBe("claimed");
   });
 
+  it("coalesces concurrent runtime state creation for one agent", async () => {
+    const { agentId } = await seedRunFixture({ includeIssue: false });
+    const heartbeat = heartbeatService(db);
+
+    const states = await Promise.all(
+      Array.from({ length: 8 }, () => heartbeat.getRuntimeState(agentId)),
+    );
+
+    expect(states.every((state) => state?.agentId === agentId)).toBe(true);
+    const rows = await db.select().from(agentRuntimeState).where(eq(agentRuntimeState.agentId, agentId));
+    expect(rows).toHaveLength(1);
+  });
+
   it("queues exactly one retry when the recorded local pid is dead", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       processPid: 999_999_999,
@@ -451,6 +481,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const result = await heartbeat.reapOrphanedRuns();
     expect(result.reaped).toBe(1);
     expect(result.runIds).toEqual([runId]);
+    expect(mockReleaseRuntimeServicesForRun).toHaveBeenCalledWith(runId);
 
     const runs = await db
       .select()
@@ -473,6 +504,27 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
     expect(issue?.checkoutRunId).toBe(runId);
+  });
+
+  it("does not queue process-loss retry for a cancelled issue", async () => {
+    const { agentId, runId, issueId } = await seedRunFixture({
+      processPid: 999_999_999,
+      issueStatus: "cancelled",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(runId);
+    expect(runs[0]?.status).toBe("failed");
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("cancelled");
+    expect(issue?.executionRunId).toBeNull();
   });
 
   it("treats hermes_local as a sessioned local adapter for process-loss retry", async () => {
@@ -1020,8 +1072,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.status).toBe("in_progress");
   });
 
-  it("does not escalate an in-progress issue after a succeeded continuation retry", async () => {
-    const { issueId } = await seedStrandedIssueFixture({
+  it("does not re-enqueue productive terminal continuation without productive evidence", async () => {
+    const { agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "succeeded",
       retryReason: "issue_continuation_needed",
@@ -1034,11 +1086,59 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(result.skipped).toBe(1);
     expect(result.issueIds).toEqual([]);
 
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+  });
+
+  it("re-enqueues productive terminal continuation once after a productive succeeded continuation retry", async () => {
+    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+      livenessState: "needs_followup",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
     expect(issue?.status).toBe("in_progress");
 
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+    const retryRun = runs.find((row) => row.id !== runId);
+    expect((retryRun?.contextSnapshot as Record<string, unknown>)?.source)
+      .toBe("issue.productive_terminal_continuation_recovery");
+
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(0);
+  });
+
+  it("blocks stranded in-progress work after productive terminal continuation recovery was already used", async () => {
+    const { issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+      source: "issue.productive_terminal_continuation_recovery",
+      livenessState: "needs_followup",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("made progress");
   });
 
   it("blocks stranded in-progress work after the continuation retry was already used", async () => {

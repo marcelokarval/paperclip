@@ -36,6 +36,10 @@ const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
   update: vi.fn(),
 }));
+const mockIssueService = vi.hoisted(() => ({
+  getById: vi.fn(),
+  getByIdentifier: vi.fn(),
+}));
 const mockHeartbeatService = vi.hoisted(() => ({
   cancelBudgetScopeWork: vi.fn().mockResolvedValue(undefined),
 }));
@@ -48,6 +52,15 @@ const mockCostService = vi.hoisted(() => ({
   byAgentModel: vi.fn().mockResolvedValue([]),
   byProvider: vi.fn().mockResolvedValue([]),
   byBiller: vi.fn().mockResolvedValue([]),
+  issueTreeSummary: vi.fn().mockResolvedValue({
+    issueId: "issue-1",
+    issueCount: 1,
+    includeDescendants: true,
+    costCents: 0,
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+  }),
   windowSpend: vi.fn().mockResolvedValue([]),
   byProject: vi.fn().mockResolvedValue([]),
 }));
@@ -78,6 +91,7 @@ function registerModuleMocks() {
     financeService: () => mockFinanceService,
     companyService: () => mockCompanyService,
     agentService: () => mockAgentService,
+    issueService: () => mockIssueService,
     heartbeatService: () => mockHeartbeatService,
     logActivity: mockLogActivity,
   }));
@@ -145,6 +159,16 @@ beforeEach(() => {
     budgetMonthlyCents: 100,
     spentMonthlyCents: 0,
   });
+  mockIssueService.getById.mockResolvedValue({
+    id: "issue-1",
+    companyId: "company-1",
+    identifier: "PAP-1",
+  });
+  mockIssueService.getByIdentifier.mockResolvedValue({
+    id: "issue-1",
+    companyId: "company-1",
+    identifier: "PAP-1",
+  });
   mockBudgetService.upsertPolicy.mockResolvedValue(undefined);
 });
 
@@ -177,6 +201,24 @@ describe("cost routes", () => {
       .query({ from: "2026-02-01T00:00:00.000Z", to: "2026-02-28T23:59:59.999Z" });
     expect(res.status).toBe(200);
     expect(mockFinanceService.summary).toHaveBeenCalled();
+  });
+
+  it("returns issue subtree cost summaries for issue refs", async () => {
+    const app = await createApp();
+    const res = await request(app).get("/api/issues/PAP-1/cost-summary");
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PAP-1");
+    expect(mockCostService.issueTreeSummary).toHaveBeenCalledWith("company-1", "issue-1");
+    expect(res.body).toEqual({
+      issueId: "issue-1",
+      issueCount: 1,
+      includeDescendants: true,
+      costCents: 0,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+    });
   });
 
   it("returns 400 for invalid finance event list limits", async () => {

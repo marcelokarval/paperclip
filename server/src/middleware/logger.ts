@@ -5,7 +5,7 @@ import { pinoHttp } from "pino-http";
 import { readConfigFile } from "../config-file.js";
 import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
 import { redactLogValue } from "../log-redaction.js";
-import { shouldSilenceHttpSuccessLog } from "./http-log-policy.js";
+import { sanitizeHttpLogUrl, shouldSilenceHttpSuccessLog } from "./http-log-policy.js";
 
 function resolveServerLogDir(): string {
   const envOverride = process.env.PAPERCLIP_LOG_DIR?.trim();
@@ -63,12 +63,12 @@ export const httpLogger = pinoHttp({
     return "info";
   },
   customSuccessMessage(req, res) {
-    return `${req.method} ${req.url} ${res.statusCode}`;
+    return `${req.method} ${sanitizeHttpLogUrl(req.url)} ${res.statusCode}`;
   },
   customErrorMessage(req, res, err) {
     const ctx = (res as any).__errorContext;
     const errMsg = ctx?.error?.message || err?.message || (res as any).err?.message || "unknown error";
-    return `${req.method} ${req.url} ${res.statusCode} — ${errMsg}`;
+    return `${req.method} ${sanitizeHttpLogUrl(req.url)} ${res.statusCode} — ${errMsg}`;
   },
   customProps(req, res) {
     if (res.statusCode >= 400) {
@@ -77,7 +77,7 @@ export const httpLogger = pinoHttp({
         return {
           errorContext: redactLogValue(ctx.error),
           method: ctx.method,
-          url: ctx.url,
+          url: sanitizeHttpLogUrl(ctx.url),
         };
       }
       const props: Record<string, unknown> = {};

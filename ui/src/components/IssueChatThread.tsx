@@ -2078,6 +2078,8 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
             <input
               ref={attachInputRef}
               type="file"
+              name="issue-comment-image-upload"
+              aria-label="Attach image to issue comment"
               accept="image/png,image/jpeg,image/webp,image/gif"
               className="hidden"
               onChange={handleAttachFile}

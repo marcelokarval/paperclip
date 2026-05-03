@@ -9,7 +9,11 @@ import {
   sessionCodec as claudeSessionCodec,
   getQuotaWindows as claudeGetQuotaWindows,
 } from "@paperclipai/adapter-claude-local/server";
-import { agentConfigurationDoc as claudeAgentConfigurationDoc, models as claudeModels } from "@paperclipai/adapter-claude-local";
+import {
+  agentConfigurationDoc as claudeAgentConfigurationDoc,
+  modelProfiles as claudeModelProfiles,
+  models as claudeModels,
+} from "@paperclipai/adapter-claude-local";
 import {
   execute as codexExecute,
   listCodexSkills,
@@ -18,7 +22,11 @@ import {
   sessionCodec as codexSessionCodec,
   getQuotaWindows as codexGetQuotaWindows,
 } from "@paperclipai/adapter-codex-local/server";
-import { agentConfigurationDoc as codexAgentConfigurationDoc, models as codexModels } from "@paperclipai/adapter-codex-local";
+import {
+  agentConfigurationDoc as codexAgentConfigurationDoc,
+  modelProfiles as codexModelProfiles,
+  models as codexModels,
+} from "@paperclipai/adapter-codex-local";
 import {
   execute as cursorExecute,
   listCursorSkills,
@@ -96,6 +104,7 @@ const claudeLocalAdapter: ServerAdapterModule = {
   sessionManagement: getAdapterSessionManagement("claude_local") ?? undefined,
   models: claudeModels,
   listModels: listClaudeModels,
+  modelProfiles: claudeModelProfiles,
   supportsLocalAgentJwt: true,
   agentConfigurationDoc: claudeAgentConfigurationDoc,
   getQuotaWindows: claudeGetQuotaWindows,
@@ -111,6 +120,7 @@ const codexLocalAdapter: ServerAdapterModule = {
   sessionManagement: getAdapterSessionManagement("codex_local") ?? undefined,
   models: codexModels,
   listModels: listCodexModels,
+  modelProfiles: codexModelProfiles,
   supportsLocalAgentJwt: true,
   agentConfigurationDoc: codexAgentConfigurationDoc,
   getQuotaWindows: codexGetQuotaWindows,
@@ -331,6 +341,16 @@ export async function listAdapterModels(
     if (discovered.length > 0) return discovered;
   }
   return adapter.models ?? [];
+}
+
+export async function listAdapterModelProfiles(type: string) {
+  const adapter = findActiveServerAdapter(type);
+  if (!adapter) return [];
+  if (adapter.listModelProfiles) {
+    const discovered = await adapter.listModelProfiles();
+    if (discovered.length > 0) return discovered;
+  }
+  return adapter.modelProfiles ?? [];
 }
 
 export function listServerAdapters(): ServerAdapterModule[] {

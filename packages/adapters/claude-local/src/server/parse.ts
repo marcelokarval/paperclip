@@ -2,6 +2,10 @@ import type { UsageSummary } from "@paperclipai/adapter-utils";
 import { asString, asNumber, parseObject, parseJson } from "@paperclipai/adapter-utils/server-utils";
 
 const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+`?claude\s+login`?|login\s+required|requires\s+login|unauthorized|authentication\s+required)/i;
+const CLAUDE_TRANSIENT_UPSTREAM_RE =
+  /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached)/i;
+const CLAUDE_USAGE_RESET_RE =
+  /(?:out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,80}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
 const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 
 export function parseClaudeStreamJson(stdout: string) {
@@ -105,6 +109,71 @@ function extractClaudeErrorMessages(parsed: Record<string, unknown>): string[] {
   }
 
   return messages;
+}
+
+function buildClaudeErrorHaystack(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): string {
+  const parsed = input.parsed ?? {};
+  return [
+    input.errorMessage ?? "",
+    asString(parsed.result, ""),
+    ...extractClaudeErrorMessages(parsed),
+    input.stdout ?? "",
+    input.stderr ?? "",
+  ]
+    .join("\n")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+function parseLocalClockTime(clockText: string, now: Date): Date | null {
+  const match = clockText.trim().match(/^(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s*m\.?/i);
+  if (!match) return null;
+  const hour12 = Number.parseInt(match[1] ?? "", 10);
+  const minute = Number.parseInt(match[2] ?? "0", 10);
+  if (!Number.isInteger(hour12) || hour12 < 1 || hour12 > 12) return null;
+  if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
+  let hour24 = hour12 % 12;
+  if ((match[3] ?? "").toLowerCase() === "p") hour24 += 12;
+  const retryAt = new Date(now);
+  retryAt.setHours(hour24, minute, 0, 0);
+  if (retryAt.getTime() <= now.getTime()) retryAt.setDate(retryAt.getDate() + 1);
+  return retryAt;
+}
+
+export function extractClaudeRetryNotBefore(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}, now = new Date()): Date | null {
+  const haystack = buildClaudeErrorHaystack(input);
+  const resetMatch = haystack.match(CLAUDE_USAGE_RESET_RE);
+  if (!resetMatch) return null;
+  return parseLocalClockTime(resetMatch[1] ?? "", now);
+}
+
+export function isClaudeTransientUpstreamError(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  const haystack = buildClaudeErrorHaystack(input);
+  if (detectClaudeLoginRequired({
+    parsed: input.parsed ?? null,
+    stdout: input.stdout ?? "",
+    stderr: input.stderr ?? "",
+  }).requiresLogin) return false;
+  if (isClaudeMaxTurnsResult(input.parsed ?? null)) return false;
+  if (isClaudeUnknownSessionError(input.parsed ?? null, input.stdout ?? "", input.stderr ?? "")) return false;
+  return CLAUDE_TRANSIENT_UPSTREAM_RE.test(haystack);
 }
 
 export function extractClaudeLoginUrl(text: string): string | null {

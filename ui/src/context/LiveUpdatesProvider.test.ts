@@ -567,6 +567,20 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
       tone: "error",
     });
   });
+
+  it("suppresses stale queued wake cancellation toasts", () => {
+    expect(
+      __liveUpdatesTestUtils.buildRunStatusToast(
+        {
+          runId: "run-1",
+          agentId: "agent-1",
+          status: "cancelled",
+          error: "Cancelled stale queued issue wake: issue is done",
+        },
+        () => "CTO",
+      ),
+    ).toBeNull();
+  });
 });
 
 describe("LiveUpdatesProvider socket helpers", () => {

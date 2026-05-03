@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { companies, createDb, projects, projectWorkspaces } from "@paperclipai/db";
+import { companies, costEvents, createDb, projects, projectWorkspaces } from "@paperclipai/db";
 import { projectOperatingContextSchema, projectStaffingStateSchema } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
@@ -453,6 +454,7 @@ describeEmbeddedPostgres("projectService operatingContext", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(costEvents);
     await db.delete(projects);
     await db.delete(companies);
   });
@@ -609,5 +611,46 @@ describeEmbeddedPostgres("projectService operatingContext", () => {
       baselineTrackingIssueIdentifier: "P4Y-1",
     });
     expect(fetched?.staffingState?.baselineIssueIdentifier).toBe("P4Y-1");
+  });
+
+  it("nulls project cost-event references before removing a project", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const costEventId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Prop4You",
+      issuePrefix: "P4Y",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Costed Project",
+      status: "backlog",
+    });
+    await db.insert(costEvents).values({
+      id: costEventId,
+      companyId,
+      projectId,
+      provider: "openai",
+      biller: "openai",
+      billingType: "tokens",
+      model: "gpt-test",
+      inputTokens: 10,
+      outputTokens: 2,
+      costCents: 1,
+      occurredAt: new Date("2026-05-03T12:00:00.000Z"),
+    });
+
+    const removed = await svc.remove(projectId);
+
+    expect(removed?.id).toBe(projectId);
+    const [costEvent] = await db
+      .select({ projectId: costEvents.projectId })
+      .from(costEvents)
+      .where(eq(costEvents.id, costEventId));
+    expect(costEvent?.projectId).toBeNull();
   });
 });

@@ -36,6 +36,7 @@ function registerModuleMocks() {
 
   vi.doMock("../adapters/index.js", () => ({
     findServerAdapter: vi.fn(),
+    listAdapterModelProfiles: vi.fn(async () => []),
     listAdapterModels: vi.fn(),
     detectAdapterModel: vi.fn(),
     findActiveServerAdapter: vi.fn(),
@@ -67,7 +68,7 @@ async function loadAppModules() {
   return await appModulesPromise;
 }
 
-async function createApp() {
+async function createApp(db: any = {}) {
   const { agentRoutes, errorHandler } = await loadAppModules();
   const app = express();
   app.use(express.json());
@@ -81,7 +82,7 @@ async function createApp() {
     };
     next();
   });
-  app.use("/api", agentRoutes({} as any));
+  app.use("/api", agentRoutes(db));
   app.use(errorHandler);
   return app;
 }
@@ -113,6 +114,8 @@ describe("agent live run routes", () => {
       createdAt: new Date("2026-04-10T09:29:59.000Z"),
       agentId: "agent-1",
       issueId: "issue-1",
+      contextCommentId: "comment-1",
+      contextWakeCommentId: "comment-1",
     });
     mockHeartbeatService.getActiveRunIssueSummaryForAgent.mockResolvedValue(null);
   });
@@ -133,6 +136,8 @@ describe("agent live run routes", () => {
       createdAt: "2026-04-10T09:29:59.000Z",
       agentId: "agent-1",
       issueId: "issue-1",
+      contextCommentId: "comment-1",
+      contextWakeCommentId: "comment-1",
       agentName: "Builder",
       adapterType: "codex_local",
     });
@@ -177,5 +182,71 @@ describe("agent live run routes", () => {
       agentName: "Builder",
       adapterType: "codex_local",
     });
+  });
+});
+
+function createLiveRunRow(id: string, status = "running") {
+  return {
+    id,
+    status,
+    invocationSource: "on_demand",
+    triggerDetail: "manual",
+    contextCommentId: null,
+    contextWakeCommentId: null,
+    startedAt: new Date("2026-04-10T09:30:00.000Z"),
+    finishedAt: status === "running" ? null : new Date("2026-04-10T09:35:00.000Z"),
+    createdAt: new Date("2026-04-10T09:29:59.000Z"),
+    agentId: "agent-1",
+    agentName: "Builder",
+    adapterType: "codex_local",
+    issueId: "issue-1",
+  };
+}
+
+function createLiveRunsDb(resultSets: Array<Array<ReturnType<typeof createLiveRunRow>>>) {
+  let selectCount = 0;
+  return {
+    select: vi.fn().mockImplementation(() => {
+      const rows = resultSets[selectCount] ?? [];
+      selectCount += 1;
+      return {
+        from: vi.fn().mockReturnThis(),
+        innerJoin: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnThis(),
+        orderBy: vi.fn().mockReturnThis(),
+        limit: vi.fn(async (value: number) => rows.slice(0, value)),
+      };
+    }),
+  };
+}
+
+describe("company live run padding", () => {
+  it("does not pad with recent runs when minCount is omitted", async () => {
+    const liveRows = Array.from({ length: 8 }, (_entry, index) => createLiveRunRow(`run-live-${index}`));
+    const db = createLiveRunsDb([liveRows]);
+
+    const res = await request(await createApp(db)).get("/api/companies/company-1/live-runs");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toHaveLength(8);
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it("pads with recent runs when minCount is explicitly requested", async () => {
+    const liveRows = Array.from({ length: 2 }, (_entry, index) => createLiveRunRow(`run-live-${index}`));
+    const recentRows = Array.from({ length: 4 }, (_entry, index) => createLiveRunRow(`run-recent-${index}`, "succeeded"));
+    const db = createLiveRunsDb([liveRows, recentRows]);
+
+    const res = await request(await createApp(db)).get("/api/companies/company-1/live-runs?minCount=4");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toHaveLength(4);
+    expect(res.body.map((run: { id: string }) => run.id)).toEqual([
+      "run-live-0",
+      "run-live-1",
+      "run-recent-0",
+      "run-recent-1",
+    ]);
+    expect(db.select).toHaveBeenCalledTimes(2);
   });
 });

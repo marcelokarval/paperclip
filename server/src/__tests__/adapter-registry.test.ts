@@ -5,6 +5,7 @@ import {
   detectAdapterModel,
   findActiveServerAdapter,
   findServerAdapter,
+  listAdapterModelProfiles,
   listAdapterModels,
   registerServerAdapter,
   requireServerAdapter,
@@ -61,6 +62,29 @@ describe("server adapter registry", () => {
     expect(requireServerAdapter("external_test")).toBe(externalAdapter);
     expect(await listAdapterModels("external_test")).toEqual([
       { id: "external-model", label: "External Model" },
+    ]);
+  });
+
+  it("exposes adapter model profiles declared by active adapters", async () => {
+    registerServerAdapter({
+      ...externalAdapter,
+      modelProfiles: [
+        {
+          key: "cheap",
+          label: "Cheap",
+          adapterConfig: { model: "external-cheap" },
+          source: "adapter_default",
+        },
+      ],
+    });
+
+    await expect(listAdapterModelProfiles("external_test")).resolves.toEqual([
+      {
+        key: "cheap",
+        label: "Cheap",
+        adapterConfig: { model: "external-cheap" },
+        source: "adapter_default",
+      },
     ]);
   });
 

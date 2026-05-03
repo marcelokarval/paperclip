@@ -176,6 +176,8 @@ export function NewAgent() {
       runtimeConfig: buildNewAgentRuntimeConfig({
         heartbeatEnabled: configValues.heartbeatEnabled,
         intervalSec: configValues.intervalSec,
+        cheapModel: configValues.cheapModel,
+        cheapModelEnabled: configValues.cheapModelEnabled,
       }),
       budgetMonthlyCents: 0,
     });

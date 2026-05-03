@@ -262,7 +262,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   // ---- Resolve values ----
   const config = !isCreate ? ((props.agent.adapterConfig ?? {}) as Record<string, unknown>) : {};
-  const runtimeConfig = !isCreate ? ((props.agent.runtimeConfig ?? {}) as Record<string, unknown>) : {};
+  const baseRuntimeConfig = !isCreate ? ((props.agent.runtimeConfig ?? {}) as Record<string, unknown>) : {};
+  const runtimeConfig = !isCreate && overlay.runtime.runtimeConfig && typeof overlay.runtime.runtimeConfig === "object"
+    ? overlay.runtime.runtimeConfig as Record<string, unknown>
+    : baseRuntimeConfig;
   const heartbeat = !isCreate ? ((runtimeConfig.heartbeat ?? {}) as Record<string, unknown>) : {};
 
   const adapterType = isCreate
@@ -286,6 +289,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryFn: () => agentsApi.adapterModels(selectedCompanyId!, adapterType),
     enabled: Boolean(selectedCompanyId),
   });
+  const { data: adapterModelProfiles = [] } = useQuery({
+    queryKey: selectedCompanyId
+      ? ["agents", selectedCompanyId, "adapter-model-profiles", adapterType]
+      : ["agents", "none", "adapter-model-profiles", adapterType],
+    queryFn: () => agentsApi.adapterModelProfiles(selectedCompanyId!, adapterType),
+    enabled: Boolean(selectedCompanyId),
+  });
+  const cheapModelProfile = adapterModelProfiles.find((profile) => profile.key === "cheap") ?? null;
   async function refreshAdapterModels() {
     if (!selectedCompanyId) return;
     const nextModels = await agentsApi.adapterModels(selectedCompanyId, adapterType, { refresh: true });
@@ -334,6 +345,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const [runPolicyAdvancedOpen, setRunPolicyAdvancedOpen] = useState(false);
   // Popover states
   const [modelOpen, setModelOpen] = useState(false);
+  const [cheapModelOpen, setCheapModelOpen] = useState(false);
   const [thinkingEffortOpen, setThinkingEffortOpen] = useState(false);
 
   // Create mode helpers
@@ -366,6 +378,43 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const currentModelId = isCreate
     ? val!.model
     : eff("adapterConfig", "model", String(config.model ?? ""));
+  const runtimeModelProfiles = (runtimeConfig.modelProfiles && typeof runtimeConfig.modelProfiles === "object"
+    ? runtimeConfig.modelProfiles as Record<string, unknown>
+    : {});
+  const cheapRuntimeProfile = (runtimeModelProfiles.cheap && typeof runtimeModelProfiles.cheap === "object"
+    ? runtimeModelProfiles.cheap as Record<string, unknown>
+    : {});
+  const cheapRuntimeAdapterConfig = (cheapRuntimeProfile.adapterConfig && typeof cheapRuntimeProfile.adapterConfig === "object"
+    ? cheapRuntimeProfile.adapterConfig as Record<string, unknown>
+    : {});
+  const currentCheapModelEnabled = isCreate
+    ? Boolean(val!.cheapModelEnabled)
+    : cheapRuntimeProfile.enabled !== false && typeof cheapRuntimeAdapterConfig.model === "string";
+  const currentCheapModelId = isCreate
+    ? String(val!.cheapModel ?? "")
+    : String(cheapRuntimeAdapterConfig.model ?? "");
+  function updateCheapModelProfile(model: string, enabled = currentCheapModelEnabled) {
+    if (isCreate) {
+      set!({ cheapModel: model, cheapModelEnabled: enabled });
+      return;
+    }
+    const nextModelProfiles = { ...runtimeModelProfiles };
+    if (!enabled || !model.trim()) {
+      delete nextModelProfiles.cheap;
+    } else {
+      nextModelProfiles.cheap = {
+        enabled: true,
+        adapterConfig: { ...cheapRuntimeAdapterConfig, model },
+      };
+    }
+    const nextRuntimeConfig = { ...runtimeConfig };
+    if (Object.keys(nextModelProfiles).length > 0) {
+      nextRuntimeConfig.modelProfiles = nextModelProfiles;
+    } else {
+      delete nextRuntimeConfig.modelProfiles;
+    }
+    mark("runtime", "runtimeConfig", nextRuntimeConfig);
+  }
 
   const thinkingEffortKey =
     adapterType === "codex_local"
@@ -718,6 +767,31 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     ? fetchedModelsError.message
                     : "Failed to load adapter models."}
                 </p>
+              )}
+
+              {cheapModelProfile && (
+                <div className="rounded-md border border-border/70 p-3 space-y-2">
+                  <ToggleField
+                    label="Cheap model profile"
+                    hint={cheapModelProfile.description ?? "Optional lower-cost lane. The primary model stays unchanged."}
+                    checked={currentCheapModelEnabled}
+                    onChange={(checked) => updateCheapModelProfile(currentCheapModelId || String(cheapModelProfile.adapterConfig.model ?? ""), checked)}
+                  />
+                  {currentCheapModelEnabled && (
+                    <ModelDropdown
+                      models={models}
+                      value={currentCheapModelId || String(cheapModelProfile.adapterConfig.model ?? "")}
+                      onChange={(v) => updateCheapModelProfile(v, true)}
+                      open={cheapModelOpen}
+                      onOpenChange={setCheapModelOpen}
+                      allowDefault={false}
+                      required={false}
+                      groupByProvider={adapterType === "opencode_local"}
+                      creatable
+                      emptyDetectHint="No cheap model selected."
+                    />
+                  )}
+                </div>
               )}
 
               {showThinkingEffort && (

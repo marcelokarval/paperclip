@@ -354,7 +354,7 @@ export function CompanySettings() {
       </div>
 
       {/* General */}
-      <div className="space-y-4">
+      <div id="general" className="scroll-mt-20 space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           General
         </div>
@@ -416,6 +416,8 @@ export function CompanySettings() {
                 <div className="space-y-2">
                   <input
                     type="file"
+                    name="company-logo-upload"
+                    aria-label="Upload company logo"
                     accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml"
                     onChange={handleLogoFileChange}
                     className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none file:mr-4 file:rounded-md file:border-0 file:bg-muted file:px-2.5 file:py-1 file:text-xs"
@@ -514,7 +516,7 @@ export function CompanySettings() {
       )}
 
       {/* Hiring */}
-      <div className="space-y-4" data-testid="company-settings-team-section">
+      <div id="hiring" className="scroll-mt-20 space-y-4" data-testid="company-settings-team-section">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           Hiring
         </div>
@@ -548,7 +550,7 @@ export function CompanySettings() {
         }}
       />
 
-      <div className="space-y-4">
+      <div id="feedback-sharing" className="scroll-mt-20 space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           Feedback Sharing
         </div>
@@ -591,7 +593,7 @@ export function CompanySettings() {
       </div>
 
       {/* Invites */}
-      <div className="space-y-4" data-testid="company-settings-invites-section">
+      <div id="invites" className="scroll-mt-20 space-y-4" data-testid="company-settings-invites-section">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           Invites
         </div>
@@ -791,7 +793,7 @@ function CompanyLabelsSettings({
   };
 
   return (
-    <div className="space-y-4" data-testid="company-settings-labels-section">
+    <div id="labels" className="scroll-mt-20 space-y-4" data-testid="company-settings-labels-section">
       <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
         Issue Labels
       </div>

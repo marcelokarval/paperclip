@@ -65,6 +65,7 @@ export interface IssueLabelMetadata {
 }
 
 export interface IssueAssigneeAdapterOverrides {
+  modelProfile?: "cheap";
   adapterConfig?: {
     model?: string;
     modelReasoningEffort?: string;

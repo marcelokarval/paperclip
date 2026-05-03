@@ -3,6 +3,7 @@ import type {
   PauseReason,
   AgentRole,
   AgentStatus,
+  ModelProfileKey,
 } from "../constants.js";
 import type {
   CompanyMembership,
@@ -11,6 +12,16 @@ import type {
 
 export interface AgentPermissions {
   canCreateAgents: boolean;
+}
+
+export interface AgentModelProfileConfig {
+  enabled?: boolean;
+  adapterConfig?: Record<string, unknown>;
+}
+
+export interface AgentRuntimeConfig {
+  modelProfiles?: Partial<Record<ModelProfileKey, AgentModelProfileConfig>>;
+  [key: string]: unknown;
 }
 
 export type AgentInstructionsBundleMode = "managed" | "external";
@@ -83,7 +94,7 @@ export interface Agent {
   capabilities: string | null;
   adapterType: AgentAdapterType;
   adapterConfig: Record<string, unknown>;
-  runtimeConfig: Record<string, unknown>;
+  runtimeConfig: AgentRuntimeConfig;
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
   pauseReason: PauseReason | null;

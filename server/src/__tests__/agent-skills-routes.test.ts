@@ -98,6 +98,7 @@ vi.mock("../services/index.js", () => ({
 vi.mock("../adapters/index.js", () => ({
   findServerAdapter: vi.fn(() => mockAdapter),
   findActiveServerAdapter: vi.fn(() => mockAdapter),
+  listAdapterModelProfiles: vi.fn(async () => []),
   listAdapterModels: mockListAdapterModels,
   detectAdapterModel: vi.fn(),
 }));
@@ -132,6 +133,7 @@ function registerModuleMocks() {
   vi.doMock("../adapters/index.js", () => ({
     findServerAdapter: vi.fn(() => mockAdapter),
     findActiveServerAdapter: vi.fn(() => mockAdapter),
+    listAdapterModelProfiles: vi.fn(async () => []),
     listAdapterModels: mockListAdapterModels,
     detectAdapterModel: vi.fn(),
   }));

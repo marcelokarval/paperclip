@@ -13,6 +13,8 @@ import {
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   resolveRuntimeSessionParamsForWorkspace,
+  resolveModelProfileApplication,
+  resolveTransientUpstreamRetry,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
@@ -123,6 +125,109 @@ describe("resolveRuntimeSessionParamsForWorkspace", () => {
       workspaceId: "workspace-1",
     });
     expect(result.warning).toBeNull();
+  });
+});
+
+describe("resolveModelProfileApplication", () => {
+  const cheapProfile = {
+    key: "cheap" as const,
+    label: "Cheap",
+    adapterConfig: { model: "adapter-cheap", modelReasoningEffort: "low" },
+    source: "adapter_default" as const,
+  };
+
+  it("applies an adapter cheap profile when a wake requests it", () => {
+    const result = resolveModelProfileApplication({
+      adapterModelProfiles: [cheapProfile],
+      agentRuntimeConfig: {},
+      contextSnapshot: { modelProfile: "cheap" },
+    });
+
+    expect(result).toMatchObject({
+      requested: "cheap",
+      requestedBy: "wake",
+      applied: "cheap",
+      configSource: "adapter_default",
+      adapterConfig: { model: "adapter-cheap" },
+    });
+  });
+
+  it("lets agent runtime cheap profile config override the adapter default", () => {
+    const result = resolveModelProfileApplication({
+      adapterModelProfiles: [cheapProfile],
+      agentRuntimeConfig: {
+        modelProfiles: {
+          cheap: {
+            adapterConfig: { model: "agent-cheap" },
+          },
+        },
+      },
+      issueModelProfile: "cheap",
+      contextSnapshot: { modelProfile: "cheap" },
+    });
+
+    expect(result).toMatchObject({
+      requested: "cheap",
+      requestedBy: "issue",
+      applied: "cheap",
+      configSource: "agent_runtime",
+      adapterConfig: { model: "agent-cheap" },
+    });
+  });
+
+  it("falls back to primary when the adapter does not support the requested profile", () => {
+    const result = resolveModelProfileApplication({
+      adapterModelProfiles: [],
+      agentRuntimeConfig: {
+        modelProfiles: {
+          cheap: { adapterConfig: { model: "agent-cheap" } },
+        },
+      },
+      issueModelProfile: "cheap",
+    });
+
+    expect(result).toMatchObject({
+      requested: "cheap",
+      applied: "primary",
+      fallbackReason: "adapter_profile_not_supported",
+    });
+  });
+});
+
+describe("resolveTransientUpstreamRetry", () => {
+  it("allows one bounded transient upstream retry without a future retry window", () => {
+    expect(
+      resolveTransientUpstreamRetry({
+        adapterResult: {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorFamily: "transient_upstream",
+        },
+        contextSnapshot: {},
+      }),
+    ).toMatchObject({ shouldRetry: true, retryNotBefore: null, skipReason: null });
+  });
+
+  it("does not retry before a provider retry-not-before window without scheduler support", () => {
+    const retryNotBefore = "2026-05-03T20:00:00.000Z";
+    expect(
+      resolveTransientUpstreamRetry({
+        adapterResult: {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorFamily: "transient_upstream",
+          retryNotBefore,
+        },
+        contextSnapshot: {},
+        now: new Date("2026-05-03T19:00:00.000Z"),
+      }),
+    ).toMatchObject({
+      shouldRetry: false,
+      retryNotBefore: new Date(retryNotBefore),
+      skipReason: "retry_not_before_future",
+    });
   });
 });
 

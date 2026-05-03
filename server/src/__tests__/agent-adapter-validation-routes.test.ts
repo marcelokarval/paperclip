@@ -208,6 +208,35 @@ describe("agent routes adapter validation", () => {
     expect(res.body.adapterType).toBe("external_test");
   });
 
+  it("serves model profile definitions for registered adapters", async () => {
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter({
+      ...externalAdapter,
+      modelProfiles: [
+        {
+          key: "cheap",
+          label: "Cheap",
+          adapterConfig: { model: "external-cheap" },
+          source: "adapter_default",
+        },
+      ],
+    });
+
+    const app = await createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/adapters/external_test/model-profiles");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual([
+      {
+        key: "cheap",
+        label: "Cheap",
+        adapterConfig: { model: "external-cheap" },
+        source: "adapter_default",
+      },
+    ]);
+  });
+
   it("rejects unknown adapter types even when schema accepts arbitrary strings", async () => {
     const app = await createApp();
     const res = await request(app)

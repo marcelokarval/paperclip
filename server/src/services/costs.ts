@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, isNotNull, lt, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, lt, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
@@ -130,6 +130,46 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         spendCents,
         budgetCents: company.budgetMonthlyCents,
         utilizationPercent: Number(utilization.toFixed(2)),
+      };
+    },
+
+    issueTreeSummary: async (companyId: string, issueId: string) => {
+      const issueIds = new Set<string>([issueId]);
+      let frontier = [issueId];
+
+      while (frontier.length > 0) {
+        const children = await db
+          .select({ id: issues.id })
+          .from(issues)
+          .where(and(eq(issues.companyId, companyId), inArray(issues.parentId, frontier)));
+
+        frontier = [];
+        for (const child of children) {
+          if (issueIds.has(child.id)) continue;
+          issueIds.add(child.id);
+          frontier.push(child.id);
+        }
+      }
+
+      const scopedIssueIds = [...issueIds];
+      const [row] = await db
+        .select({
+          costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+          inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
+          cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::int`,
+          outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
+        })
+        .from(costEvents)
+        .where(and(eq(costEvents.companyId, companyId), inArray(costEvents.issueId, scopedIssueIds)));
+
+      return {
+        issueId,
+        issueCount: scopedIssueIds.length,
+        includeDescendants: true,
+        costCents: Number(row?.costCents ?? 0),
+        inputTokens: Number(row?.inputTokens ?? 0),
+        cachedInputTokens: Number(row?.cachedInputTokens ?? 0),
+        outputTokens: Number(row?.outputTokens ?? 0),
       };
     },
 

@@ -27,11 +27,38 @@ const SILENCED_SUCCESS_STATIC_PATHS = new Set([
   "/site.webmanifest",
 ]);
 
+const SENSITIVE_QUERY_PARAM_RE = /(?:^|[-_])(api[-_]?key|authorization|auth|bearer|cookie|credential|current[-_]?password|new[-_]?password|password|private[-_]?key|refresh[-_]?token|secret|token)(?:$|[-_])/i;
+
 function normalizePath(url: string): string {
   const trimmed = url.trim();
   if (trimmed.length === 0) return "/";
   const pathname = trimmed.split("?")[0]?.trim() ?? "/";
   return pathname.length > 0 ? pathname : "/";
+}
+
+export function sanitizeHttpLogUrl(url: string | undefined): string {
+  if (!url) return "";
+  const trimmed = url.trim();
+  if (trimmed.length === 0) return "/";
+
+  const hashIndex = trimmed.indexOf("#");
+  const withoutHash = hashIndex >= 0 ? trimmed.slice(0, hashIndex) : trimmed;
+  const queryIndex = withoutHash.indexOf("?");
+  if (queryIndex < 0) return withoutHash || "/";
+
+  const pathname = withoutHash.slice(0, queryIndex) || "/";
+  const rawQuery = withoutHash.slice(queryIndex + 1);
+  if (!rawQuery) return pathname;
+
+  const params = new URLSearchParams(rawQuery);
+  for (const key of Array.from(params.keys())) {
+    if (SENSITIVE_QUERY_PARAM_RE.test(key)) {
+      params.set(key, "[REDACTED]");
+    }
+  }
+
+  const nextQuery = params.toString();
+  return nextQuery ? `${pathname}?${nextQuery}` : pathname;
 }
 
 export function shouldSilenceHttpSuccessLog(method: string | undefined, url: string | undefined, statusCode: number): boolean {

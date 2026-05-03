@@ -567,7 +567,7 @@ The dashboard is the company health overview. Shown when clicking "Dashboard" in
 1. **Agents** — total, active, running, paused, error counts. Each with colored dots.
 2. **Tasks** — open, in progress, blocked, done counts.
 3. **Costs** — month-to-date spend in dollars, budget utilization percentage with a mini progress bar.
-4. **Approvals** — pending count (clickable to navigate to Inbox, which is the primary approval interaction point).
+4. **Approvals** — pending count (clickable to navigate to the Approvals list; Inbox also surfaces the same pending decisions as an attention feed).
 
 **Bottom row: Detail panels** (2 across)
 5. **Recent Activity** — last ~10 activity log entries, compact timeline format.

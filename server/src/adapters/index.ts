@@ -1,6 +1,7 @@
 export {
   getServerAdapter,
   listAdapterModels,
+  listAdapterModelProfiles,
   listServerAdapters,
   findServerAdapter,
   findActiveServerAdapter,
@@ -23,5 +24,6 @@ export type {
   UsageSummary,
   AdapterAgent,
   AdapterRuntime,
+  AdapterModelProfileDefinition,
 } from "@paperclipai/adapter-utils";
 export { runningProcesses } from "./utils.js";

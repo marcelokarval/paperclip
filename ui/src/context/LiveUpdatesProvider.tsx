@@ -523,6 +523,9 @@ function buildRunStatusToast(
   if (!runId || !agentId || !status || !RUN_TOAST_STATUSES.has(status)) return null;
 
   const error = readString(payload.error);
+  if (status === "cancelled" && error?.startsWith("Cancelled stale queued issue wake:")) {
+    return null;
+  }
   const triggerDetail = readString(payload.triggerDetail);
   const name = nameOf(agentId) ?? `Agent ${shortId(agentId)}`;
   const tone = status === "succeeded" ? "success" : status === "cancelled" ? "warn" : "error";

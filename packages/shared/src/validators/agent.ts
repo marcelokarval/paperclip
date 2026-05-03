@@ -4,6 +4,7 @@ import {
   AGENT_ROLES,
   AGENT_STATUSES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
+  MODEL_PROFILE_KEYS,
 } from "../constants.js";
 import { agentAdapterTypeSchema } from "../adapter-type.js";
 import { envConfigSchema } from "./secret.js";
@@ -44,6 +45,44 @@ const adapterConfigSchema = z.record(z.unknown()).superRefine((value, ctx) => {
   }
 });
 
+const agentModelProfileConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  adapterConfig: adapterConfigSchema.optional(),
+}).strict();
+
+const agentRuntimeConfigSchema = z.record(z.unknown()).superRefine((value, ctx) => {
+  const rawModelProfiles = value.modelProfiles;
+  if (rawModelProfiles === undefined) return;
+  if (typeof rawModelProfiles !== "object" || rawModelProfiles === null || Array.isArray(rawModelProfiles)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "runtimeConfig.modelProfiles must be an object",
+      path: ["modelProfiles"],
+    });
+    return;
+  }
+
+  const modelProfiles = rawModelProfiles as Record<string, unknown>;
+  for (const key of Object.keys(modelProfiles)) {
+    if (!MODEL_PROFILE_KEYS.includes(key as (typeof MODEL_PROFILE_KEYS)[number])) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Unknown model profile '${key}'`,
+        path: ["modelProfiles", key],
+      });
+      continue;
+    }
+    const parsed = agentModelProfileConfigSchema.safeParse(modelProfiles[key]);
+    if (!parsed.success) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Invalid model profile '${key}'`,
+        path: ["modelProfiles", key],
+      });
+    }
+  }
+});
+
 export const createAgentSchema = z.object({
   name: z.string().min(1),
   role: z.enum(AGENT_ROLES).optional().default("general"),
@@ -54,7 +93,7 @@ export const createAgentSchema = z.object({
   desiredSkills: z.array(z.string().min(1)).optional(),
   adapterType: agentAdapterTypeSchema,
   adapterConfig: adapterConfigSchema.optional().default({}),
-  runtimeConfig: z.record(z.unknown()).optional().default({}),
+  runtimeConfig: agentRuntimeConfigSchema.optional().default({}),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   permissions: agentPermissionsSchema.optional(),
   metadata: z.record(z.unknown()).optional().nullable(),

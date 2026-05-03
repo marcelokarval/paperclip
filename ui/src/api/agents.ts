@@ -30,6 +30,14 @@ export interface AdapterModel {
   label: string;
 }
 
+export interface AdapterModelProfile {
+  key: "cheap";
+  label: string;
+  description?: string;
+  adapterConfig: Record<string, unknown>;
+  source?: "adapter_default" | "discovered";
+}
+
 export interface DetectedAdapterModel {
   model: string;
   provider: string;
@@ -208,6 +216,10 @@ export const agentsApi = {
   detectModel: (companyId: string, type: string) =>
     api.get<DetectedAdapterModel | null>(
       `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/detect-model`,
+    ),
+  adapterModelProfiles: (companyId: string, type: string) =>
+    api.get<AdapterModelProfile[]>(
+      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/model-profiles`,
     ),
   testEnvironment: (
     companyId: string,

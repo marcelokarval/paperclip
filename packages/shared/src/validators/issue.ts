@@ -6,6 +6,7 @@ import {
   ISSUE_EXECUTION_STATE_STATUSES,
   ISSUE_PRIORITIES,
   ISSUE_STATUSES,
+  MODEL_PROFILE_KEYS,
 } from "../constants.js";
 import { normalizeHumanTextInput } from "../text-normalization.js";
 
@@ -39,6 +40,7 @@ export const issueExecutionWorkspaceSettingsSchema = z
 
 export const issueAssigneeAdapterOverridesSchema = z
   .object({
+    modelProfile: z.enum(MODEL_PROFILE_KEYS).optional(),
     adapterConfig: z
       .object({
         model: z.string().min(1).optional(),

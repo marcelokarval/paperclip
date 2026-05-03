@@ -160,7 +160,7 @@ describe("useLiveRunTranscripts", () => {
     function Harness() {
       const { isInitialHydrating } = useLiveRunTranscripts({
         companyId: "company-1",
-        runs: [{ id: "run-1", status: "succeeded", adapterType: "codex_local" }],
+        runs: [{ id: "run-1", status: "succeeded", adapterType: "codex_local", hasStoredOutput: true }],
       });
       latestIsInitialHydrating = isInitialHydrating;
       return null;
@@ -190,14 +190,40 @@ describe("useLiveRunTranscripts", () => {
     container.remove();
   });
 
-  it("stops retrying terminal runs whose persisted log never existed", async () => {
+  it("skips persisted-log reads for terminal runs without stored output", async () => {
+    function Harness() {
+      useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-without-output", status: "cancelled", adapterType: "codex_local" }],
+      });
+      return null;
+    }
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+
+    expect(logMock).not.toHaveBeenCalled();
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("stops retrying terminal runs whose expected persisted log never existed", async () => {
     logMock.mockReset();
     logMock.mockRejectedValue(new ApiError("Run log not found", 404, { error: "Run log not found" }));
 
     function Harness() {
       useLiveRunTranscripts({
         companyId: "company-1",
-        runs: [{ id: "run-404", status: "failed", adapterType: "codex_local" }],
+        runs: [{ id: "run-404", status: "failed", adapterType: "codex_local", hasStoredOutput: true }],
       });
       return null;
     }

@@ -169,6 +169,43 @@ function createExecutionState(overrides: Partial<IssueExecutionState> = {}): Iss
   };
 }
 
+function createProjectWithParticipantSuggestions() {
+  return {
+    id: "project-1",
+    companyId: "company-1",
+    name: "Launch Fullstack",
+    urlKey: "launch-fullstack",
+    archivedAt: null,
+    issueSystemGuidance: {
+      labelUsageGuidance: [],
+      parentChildGuidance: [],
+      blockingGuidance: [],
+      reviewGuidance: ["Use review stages for technical correctness."],
+      approvalGuidance: ["Use approval stages for operator decisions."],
+      canonicalDocs: [],
+      suggestedVerificationCommands: ["pnpm test:run"],
+    },
+    operatingContext: {
+      baselineStatus: "accepted",
+      baselineAcceptedAt: "2026-05-02T00:00:00.000Z",
+      baselineTrackingIssueId: "baseline-1",
+      baselineTrackingIssueIdentifier: "PAP-1",
+      baselineFingerprint: null,
+      overviewSummary: null,
+      configurationDescriptionSuggestion: null,
+      descriptionSource: "baseline",
+      labelCatalog: [],
+      canonicalDocs: [],
+      verificationCommands: ["pnpm test:run"],
+      ownershipAreas: [],
+      operatingGuidance: [],
+      suggestedGoals: [],
+      executiveProjectPacket: null,
+      technicalProjectPacket: null,
+    },
+  };
+}
+
 function renderProperties(container: HTMLDivElement, props: ComponentProps<typeof IssueProperties>) {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -455,5 +492,61 @@ describe("IssueProperties", () => {
     expect(container.textContent).not.toContain("Run approval now");
 
     act(() => root.unmount());
+  });
+
+  it("hides project participant suggestions on staffing and finalized issues", async () => {
+    const project = createProjectWithParticipantSuggestions();
+    mockAgentsApi.list.mockResolvedValue([
+      { id: "agent-ceo", name: "CEO", role: "ceo", status: "active" },
+      { id: "agent-cto", name: "CTO", role: "cto", status: "active" },
+      { id: "agent-qa", name: "QA", role: "qa", status: "active" },
+    ]);
+    mockProjectsApi.list.mockResolvedValue([project]);
+
+    const staffingRoot = renderProperties(container, {
+      issue: createIssue({
+        id: "staffing-1",
+        projectId: "project-1",
+        project,
+        identifier: "PAP-2",
+        originKind: "staffing_hiring",
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("Project context");
+    });
+    expect(container.textContent).toContain("Project context");
+    expect(container.textContent).not.toContain("Suggest assignee");
+    expect(container.textContent).not.toContain("Suggest reviewer");
+    expect(container.textContent).not.toContain("Suggest approver");
+
+    act(() => staffingRoot.unmount());
+
+    const doneRoot = renderProperties(container, {
+      issue: createIssue({
+        id: "done-1",
+        projectId: "project-1",
+        project,
+        identifier: "PAP-3",
+        status: "done",
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("Project context");
+    });
+    expect(container.textContent).toContain("Project context");
+    expect(container.textContent).not.toContain("Suggest assignee");
+    expect(container.textContent).not.toContain("Suggest reviewer");
+    expect(container.textContent).not.toContain("Suggest approver");
+
+    act(() => doneRoot.unmount());
   });
 });

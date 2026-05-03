@@ -119,6 +119,7 @@ import {
   type FeedbackVote,
   type Issue,
   type IssueAttachment,
+  type IssueCostSummary,
   type IssueComment,
 } from "@paperclipai/shared";
 
@@ -181,6 +182,83 @@ function usageNumber(usage: Record<string, unknown> | null, ...keys: string[]) {
     if (typeof value === "number" && Number.isFinite(value)) return value;
   }
   return 0;
+}
+
+type VisibleIssueCostSummary = {
+  input: number;
+  output: number;
+  cached: number;
+  cost: number;
+  totalTokens: number;
+  issueCount: number | null;
+  hasCost: boolean;
+  hasTokens: boolean;
+};
+
+export function buildLocalIssueCostSummaryFromRuns(
+  linkedRuns: readonly RunForIssue[] | undefined,
+): VisibleIssueCostSummary {
+  let input = 0;
+  let output = 0;
+  let cached = 0;
+  let cost = 0;
+  let hasCost = false;
+  let hasTokens = false;
+
+  for (const run of linkedRuns ?? []) {
+    const usage = asRecord(run.usageJson);
+    const result = asRecord(run.resultJson);
+    const runInput = usageNumber(usage, "inputTokens", "input_tokens");
+    const runOutput = usageNumber(usage, "outputTokens", "output_tokens");
+    const runCached = usageNumber(
+      usage,
+      "cachedInputTokens",
+      "cached_input_tokens",
+      "cache_read_input_tokens",
+    );
+    const runCost = visibleRunCostUsd(usage, result);
+    if (runCost > 0) hasCost = true;
+    if (runInput + runOutput + runCached > 0) hasTokens = true;
+    input += runInput;
+    output += runOutput;
+    cached += runCached;
+    cost += runCost;
+  }
+
+  return {
+    input,
+    output,
+    cached,
+    cost,
+    totalTokens: input + output,
+    issueCount: null,
+    hasCost,
+    hasTokens,
+  };
+}
+
+export function buildIssueCostSummaryForDisplay(
+  costSummary: IssueCostSummary | undefined,
+  linkedRuns: readonly RunForIssue[] | undefined,
+): VisibleIssueCostSummary {
+  if (costSummary) {
+    const input = costSummary.inputTokens;
+    const output = costSummary.outputTokens;
+    const cached = costSummary.cachedInputTokens;
+    const cost = costSummary.costCents / 100;
+    return {
+      input,
+      output,
+      cached,
+      cost,
+      totalTokens: input + output,
+      issueCount: costSummary.includeDescendants ? costSummary.issueCount : null,
+      hasCost: costSummary.costCents > 0,
+      hasTokens: input + output + cached > 0,
+    };
+  }
+
+  return buildLocalIssueCostSummaryFromRuns(linkedRuns);
 }
 
 function truncate(text: string, max: number): string {
@@ -690,6 +768,8 @@ function IssueDetailChatTab({
           comment: nextComment,
           activeRunStartedAt,
           activeRunAgentId: runningIssueRun?.agentId ?? null,
+          activeRunCommentId: runningIssueRun?.contextCommentId ?? null,
+          activeRunWakeCommentId: runningIssueRun?.contextWakeCommentId ?? null,
           runId: meta?.runId ?? nextComment.runId ?? null,
           interruptedRunId: meta?.interruptedRunId ?? nextComment.interruptedRunId ?? null,
         })
@@ -806,6 +886,11 @@ function IssueDetailActivityTab({
     queryFn: () => activityApi.runsForIssue(issueId),
     placeholderData: keepPreviousDataForSameQueryTail<RunForIssue[]>(issueId),
   });
+  const { data: costSummary, isLoading: costSummaryLoading } = useQuery({
+    queryKey: queryKeys.issues.costSummary(issueId),
+    queryFn: () => issuesApi.costSummary(issueId),
+    placeholderData: keepPreviousDataForSameQueryTail<IssueCostSummary>(issueId),
+  });
   const { data: linkedApprovals } = useQuery({
     queryKey: queryKeys.issues.approvals(issueId),
     queryFn: () => issuesApi.listApprovals(issueId),
@@ -817,45 +902,14 @@ function IssueDetailActivityTab({
   );
   const initialLoading =
     (activityLoading && activity === undefined)
-    || (linkedRunsLoading && linkedRuns === undefined);
-  const issueCostSummary = useMemo(() => {
-    let input = 0;
-    let output = 0;
-    let cached = 0;
-    let cost = 0;
-    let hasCost = false;
-    let hasTokens = false;
-
-    for (const run of linkedRuns ?? []) {
-      const usage = asRecord(run.usageJson);
-      const result = asRecord(run.resultJson);
-      const runInput = usageNumber(usage, "inputTokens", "input_tokens");
-      const runOutput = usageNumber(usage, "outputTokens", "output_tokens");
-      const runCached = usageNumber(
-        usage,
-        "cachedInputTokens",
-        "cached_input_tokens",
-        "cache_read_input_tokens",
-      );
-      const runCost = visibleRunCostUsd(usage, result);
-      if (runCost > 0) hasCost = true;
-      if (runInput + runOutput + runCached > 0) hasTokens = true;
-      input += runInput;
-      output += runOutput;
-      cached += runCached;
-      cost += runCost;
-    }
-
-    return {
-      input,
-      output,
-      cached,
-      cost,
-      totalTokens: input + output,
-      hasCost,
-      hasTokens,
-    };
-  }, [linkedRuns]);
+    || (linkedRunsLoading && linkedRuns === undefined)
+    || (costSummaryLoading && costSummary === undefined && linkedRuns === undefined);
+  const issueCostSummary = useMemo(
+    () => buildIssueCostSummaryForDisplay(costSummary, linkedRuns),
+    [costSummary, linkedRuns],
+  );
+  const shouldShowCostSummary =
+    costSummary !== undefined || (linkedRuns !== undefined && linkedRuns.length > 0);
 
   if (initialLoading) {
     return <IssueSectionSkeleton titleWidth="w-20" rows={4} />;
@@ -903,9 +957,14 @@ function IssueDetailActivityTab({
           ))}
         </div>
       )}
-      {linkedRuns && linkedRuns.length > 0 && (
+      {shouldShowCostSummary && (
         <div className="mb-3 px-3 py-2 rounded-lg border border-border">
-          <div className="text-sm font-medium text-muted-foreground mb-1">Cost Summary</div>
+          <div className="text-sm font-medium text-muted-foreground mb-1">
+            Cost Summary
+            {issueCostSummary.issueCount && issueCostSummary.issueCount > 1
+              ? ` (${issueCostSummary.issueCount} issues)`
+              : null}
+          </div>
           {!issueCostSummary.hasCost && !issueCostSummary.hasTokens ? (
             <div className="text-xs text-muted-foreground">No cost data yet.</div>
           ) : (
@@ -1576,11 +1635,11 @@ export function IssueDetail() {
         && typeof pendingStaffingHireApproval.payload.role === "string"
           ? pendingStaffingHireApproval.payload.role.toUpperCase()
           : "staffing";
-      await approvalsApi.approve(
+      return approvalsApi.approveAndCloseIssue(
         pendingStaffingHireApproval.id,
+        issue.id,
         `Approved ${role} hire from staffing issue ${issue.identifier ?? issue.id}.`,
       );
-      return issuesApi.update(issue.id, { status: "done" });
     },
     onSuccess: () => {
       invalidateIssueDetail();
@@ -2404,6 +2463,8 @@ export function IssueDetail() {
       <input
         ref={fileInputRef}
         type="file"
+        name="issue-attachment-upload"
+        aria-label="Upload issue attachment"
         className="hidden"
         onChange={handleFilePicked}
         multiple

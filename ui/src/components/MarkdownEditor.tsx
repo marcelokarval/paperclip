@@ -2,8 +2,10 @@ import {
   type ClipboardEvent,
   forwardRef,
   useCallback,
-  useEffect,
   useImperativeHandle,
+  useId,
+  useLayoutEffect,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -499,6 +501,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   const editorValue = useMemo(() => prepareMarkdownForEditor(value), [value]);
   const { slashCommands } = useEditorAutocomplete();
   const containerRef = useRef<HTMLDivElement>(null);
+  const editorFieldId = useId();
   const ref = useRef<MDXEditorMethods>(null);
   const fallbackTextareaRef = useRef<HTMLTextAreaElement>(null);
   const valueRef = useRef(editorValue);
@@ -588,7 +591,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     element.style.height = `${element.scrollHeight}px`;
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!richEditorError) return;
     autoSizeFallbackTextarea(fallbackTextareaRef.current);
   }, [autoSizeFallbackTextarea, richEditorError, value]);
@@ -1069,6 +1072,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         ref={setEditorRef}
         markdown={editorValue}
         placeholder={placeholder}
+        contentEditableProps={{
+          id: `${editorFieldId}-editable`,
+          name: `${editorFieldId}-editable`,
+        }}
         onChange={(next) => {
           const echo = echoIgnoreMarkdownRef.current;
           if (echo !== null && next === echo) {

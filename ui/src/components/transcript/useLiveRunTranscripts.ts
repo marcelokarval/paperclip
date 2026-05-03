@@ -175,6 +175,15 @@ export function useLiveRunTranscripts({
     let cancelled = false;
 
     const readRunLog = async (run: RunTranscriptSource) => {
+      if (isTerminalStatus(run.status) && run.hasStoredOutput !== true) {
+        setHydratedRunIds((prev) => {
+          if (prev.has(run.id)) return prev;
+          const next = new Set(prev);
+          next.add(run.id);
+          return next;
+        });
+        return;
+      }
       if (missingTerminalLogRunIdsRef.current.has(run.id)) {
         return;
       }

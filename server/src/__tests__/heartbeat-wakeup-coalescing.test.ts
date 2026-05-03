@@ -38,7 +38,7 @@ describeEmbeddedPostgres("heartbeat wakeup coalescing", () => {
     db = createDb(tempDb.connectionString);
     paperclipHome = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-heartbeat-wakeup-home-"));
     process.env.PAPERCLIP_HOME = paperclipHome;
-  }, 20_000);
+  }, 45_000);
 
   afterEach(async () => {
     await db.delete(heartbeatRuns);

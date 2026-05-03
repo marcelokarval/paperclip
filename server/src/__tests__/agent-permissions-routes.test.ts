@@ -79,6 +79,8 @@ const mockSecretService = vi.hoisted(() => ({
 
 const mockAgentInstructionsService = vi.hoisted(() => ({
   materializeManagedBundle: vi.fn(),
+  getBundle: vi.fn(),
+  readFile: vi.fn(),
 }));
 const mockCompanySkillService = vi.hoisted(() => ({
   listRuntimeSkillEntries: vi.fn(),
@@ -211,6 +213,12 @@ describe("agent permission routes", () => {
         },
       }),
     );
+    mockAgentInstructionsService.getBundle.mockResolvedValue({
+      files: [{ path: "OPERATING_MODELS.md" }],
+    });
+    mockAgentInstructionsService.readFile.mockResolvedValue({
+      content: "Last generated: 2026-03-19T00:00:00.000Z\n",
+    });
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockImplementation(
       async (_companyId: string, requested: string[]) => requested,
