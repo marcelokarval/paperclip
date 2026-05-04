@@ -208,7 +208,7 @@ Status: completed
 
 ## Final Proof Plan
 
-Status: completed except commit/push
+Status: completed
 
 - [x] P1. Focused backend/shared interaction lifecycle tests.
 - [x] P2. Focused UI interaction card/ledger tests.
@@ -219,7 +219,7 @@ Status: completed except commit/push
 - [x] P7. `pnpm test:run`
 - [x] P8. `pnpm build`
 - [x] P9. `git diff --check`
-- [ ] P10. Commit and push.
+- [x] P10. Commit and push.
 
 Proof artifacts:
 
@@ -230,3 +230,4 @@ Proof artifacts:
 - Browser-proof: `.tmp/browser-proof/residuals-2026-05-04/issue-interactions-browser-proof.md`.
 - Browser-proof issue kept for inspection: `http://127.0.0.1:3101/ROF/issues/ROF-21`.
 - Independent final review: GO, no findings.
+- Commit: `6b277cc8` pushed to `local-pr-d-data-integrity-cascades`.
