@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   companySkills,
@@ -58,6 +59,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await db.delete(heartbeatRunEvents);
     await db.delete(companySkills);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.update(issues).set({ parentId: null });
     await db.delete(issues);
     await db.delete(agents);
@@ -376,5 +378,29 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await expect(db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.companyId, companyId))).resolves.toHaveLength(0);
     await expect(db.select().from(feedbackVotes).where(eq(feedbackVotes.companyId, companyId))).resolves.toHaveLength(0);
     await expect(db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).resolves.toHaveLength(0);
+  });
+
+  it("removes wakeup requests after runs that reference them", async () => {
+    const { agentId, companyId, runId } = await seedFixture();
+    const wakeupRequestId = randomUUID();
+
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId,
+      source: "test",
+      status: "claimed",
+      payload: {},
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({ wakeupRequestId })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const removed = await companyService(db).remove(companyId);
+
+    expect(removed?.id).toBe(companyId);
+    await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).resolves.toHaveLength(0);
+    await expect(db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId))).resolves.toHaveLength(0);
   });
 });
