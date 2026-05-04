@@ -441,6 +441,14 @@ sequences, table data, and sequence values. PostgreSQL objects outside that set,
 such as views, functions, triggers, row-level-security policies, grants, and
 arbitrary extension state, may require separate backup handling.
 
+The JavaScript backup implementation reads table data with bounded cursor
+batches and writes buffered SQL to disk. It no longer intentionally loads an
+entire table result set into memory before writing row inserts, but it remains a
+Paperclip logical backup implementation rather than a complete `pg_dump`
+replacement. For very large instances or databases that rely on PostgreSQL
+objects outside the supported set, run restore drills and keep a
+PostgreSQL-native backup process alongside Paperclip backups.
+
 ## Secrets in Dev
 
 Agent env vars now support secret references. By default, secret values are stored with local encryption and only secret refs are persisted in agent config.

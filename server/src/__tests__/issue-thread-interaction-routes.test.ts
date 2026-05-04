@@ -14,6 +14,7 @@ const mockAccessService = vi.hoisted(() => ({
 const mockCancelQuestions = vi.hoisted(() => vi.fn());
 const mockListForIssue = vi.hoisted(() => vi.fn());
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockHeartbeatWakeup = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock("@paperclipai/shared/telemetry", () => ({
   trackAgentTaskCompleted: vi.fn(),
@@ -44,6 +45,7 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => ({
     getRun: vi.fn(async () => null),
     getActiveRunForAgent: vi.fn(async () => null),
+    wakeup: mockHeartbeatWakeup,
   }),
   instanceSettingsService: () => ({
     get: vi.fn(async () => ({
@@ -102,15 +104,16 @@ function agentActor() {
   };
 }
 
-function makeIssue() {
+function makeIssue(overrides: Record<string, unknown> = {}) {
   return {
     id: "11111111-1111-4111-8111-111111111111",
     companyId: "company-1",
     status: "in_review",
-    assigneeAgentId: null,
-    assigneeUserId: "local-board",
+    assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+    assigneeUserId: null,
     identifier: "PAP-4862",
     title: "Cancel question",
+    ...overrides,
   };
 }
 
@@ -133,6 +136,8 @@ function makeCancelledInteraction() {
       cancellationReason: "Not needed anymore",
       summaryMarkdown: null,
     },
+    sourceCommentId: "55555555-5555-4555-8555-555555555555",
+    sourceRunId: "66666666-6666-4666-8666-666666666666",
     createdAt: new Date("2026-05-04T12:00:00.000Z"),
     updatedAt: new Date("2026-05-04T12:01:00.000Z"),
   };
@@ -195,6 +200,58 @@ describe("issue thread interaction cancel route", () => {
         cancellationReason: "Not needed anymore",
       }),
     }));
+    expect(mockHeartbeatWakeup).toHaveBeenCalledWith(
+      "44444444-4444-4444-8444-444444444444",
+      expect.objectContaining({
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: expect.objectContaining({
+          issueId: "11111111-1111-4111-8111-111111111111",
+          interactionId: "33333333-3333-4333-8333-333333333333",
+          interactionKind: "ask_user_questions",
+          interactionStatus: "cancelled",
+          sourceCommentId: "55555555-5555-4555-8555-555555555555",
+          sourceRunId: "66666666-6666-4666-8666-666666666666",
+          mutation: "interaction",
+        }),
+        contextSnapshot: expect.objectContaining({
+          issueId: "11111111-1111-4111-8111-111111111111",
+          taskId: "11111111-1111-4111-8111-111111111111",
+          interactionId: "33333333-3333-4333-8333-333333333333",
+          interactionStatus: "cancelled",
+          source: "issue.interaction.cancel",
+        }),
+      }),
+    );
+  });
+
+  it("does not wake continuation when cancelled interaction uses accept-only continuation", async () => {
+    mockCancelQuestions.mockResolvedValue({
+      ...makeCancelledInteraction(),
+      continuationPolicy: "wake_assignee_on_accept",
+    });
+    const app = await installIssueRoutes(createApp(boardActor()));
+    const res = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/interactions/33333333-3333-4333-8333-333333333333/cancel")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatWakeup).not.toHaveBeenCalled();
+  });
+
+  it("does not wake continuation when cancellation has no agent assignee", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+    }));
+    const app = await installIssueRoutes(createApp(boardActor()));
+    const res = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/interactions/33333333-3333-4333-8333-333333333333/cancel")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatWakeup).not.toHaveBeenCalled();
   });
 
   it("rejects agent callers so interaction cancellation stays distinct from queued-comment cancellation", async () => {

@@ -111,7 +111,7 @@ Status: completed
 
 - [x] Confirm worktree state before final commit.
 - [x] Run focused tests from Slices B and C:
-  `pnpm exec vitest run server/src/__tests__/issue-thread-interactions-service.test.ts server/src/__tests__/issue-thread-interaction-routes.test.ts ui/src/components/IssueThreadInteractionsPanel.test.tsx`
+  `pnpm exec vitest run server/src/__tests__/issue-thread-interactions-service.test.ts server/src/__tests__/issue-thread-interaction-routes.test.ts ui/src/components/IssueThreadInteractionCard.test.tsx ui/src/components/IssueRunLedger.test.tsx`
   and `pnpm exec vitest run packages/db/src/backup-lib.test.ts`.
 - [x] Run typechecks for affected packages:
   `pnpm --filter @paperclipai/server typecheck` and

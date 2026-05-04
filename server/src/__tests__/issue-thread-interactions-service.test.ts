@@ -154,6 +154,7 @@ describeEmbeddedPostgres("issueThreadInteractionService cancellation", () => {
     expect(cancelled).toMatchObject({
       id: interaction.id,
       status: "cancelled",
+      continuationPolicy: "wake_assignee",
       result: {
         version: 1,
         answers: [],

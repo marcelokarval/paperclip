@@ -147,6 +147,14 @@ state may require separate handling. See `doc/DEVELOPING.md` for the current
 `paperclipai db:backup` / `pnpm db:backup` commands and backup retention
 configuration.
 
+The JavaScript backup path writes data in bounded cursor batches instead of
+materializing an entire table result set before emitting SQL. This reduces
+large-table memory risk, but it is still a plain logical SQL backup path rather
+than full `pg_dump` parity. Very large or object-heavy PostgreSQL deployments
+should still validate restore behavior with their actual data shape and keep an
+external PostgreSQL-native backup strategy when they need complete database
+fidelity.
+
 Database backups do not include non-database instance files such as local-disk
 uploads, workspace files, or the local encrypted secrets master key. Back those
 paths up separately when you need full instance disaster recovery.

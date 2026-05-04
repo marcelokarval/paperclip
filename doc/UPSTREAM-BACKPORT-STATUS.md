@@ -1,6 +1,6 @@
 # Upstream Backport Status
 
-Last updated: 2026-05-03
+Last updated: 2026-05-04
 
 This fork uses selective upstream backports. Do not infer that upstream
 `master` was merged wholesale.
@@ -23,9 +23,11 @@ This fork uses selective upstream backports. Do not infer that upstream
   support in heartbeat runtime.
 - `#4861`: issue thread / markdown / optimistic comment hardening where
   compatible with local UI.
-- `#4862`: issue subtree cost summaries plus a minimum local
-  `ask_user_questions` issue-thread interaction foundation with list/cancel
-  API, board-only cancellation, issue detail rendering, and cancellation tests.
+- `#4862`: issue subtree cost summaries are implemented. A minimum local
+  `ask_user_questions` issue-thread interaction cancellation foundation is
+  also implemented with list/cancel API, board-only cancellation, issue detail
+  rendering, and cancellation tests. UI/ledger parity and interaction lifecycle
+  breadth remain pending review items, not claimed full upstream parity.
 - `#4957`: live-run comment context.
 - `#4963`: live-run no-padding default and explicit padding tests.
 - `#4863`: compatible board/settings/skills workflow polish.
@@ -39,12 +41,14 @@ This fork uses selective upstream backports. Do not infer that upstream
 
 ## Explicit Follow-Ups
 
-- Full upstream `#4862` interaction breadth remains broader than this fork's
-  current local implementation. The local backport covers cancellable
-  `ask_user_questions` interactions, but does not add every upstream
-  create/respond/suggest/confirmation interaction flow.
-- `#4960` / `#4859` backup schema and restore hardening remain separate follow-up
-  work because the upstream diff is broader than this selective backport slice.
+- Full upstream `#4862` parity is not claimed. Local status is split as:
+  implemented issue subtree cost summaries, implemented minimum cancellable
+  `ask_user_questions` foundation, pending UI/ledger parity, and pending
+  lifecycle breadth source-of-truth audit for create/respond/suggest/
+  confirmation behavior.
+- Backup work tied to `#4960` / `#4859` is closed for this fork's local
+  JavaScript backup path only. This does not claim full `pg_dump` parity or
+  streaming safety for very large tables.
 
 ## Closed Local Residuals
 

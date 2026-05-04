@@ -63,6 +63,7 @@ type ExtensionDefinition = {
 };
 
 const DEFAULT_BACKUP_WRITE_BUFFER_BYTES = 1024 * 1024;
+const BACKUP_DATA_CURSOR_ROWS = 100;
 
 const STATEMENT_BREAKPOINT = "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900";
 
@@ -237,6 +238,16 @@ function nonSystemSchemaPredicate(identifier: string): string {
     AND ${identifier} NOT LIKE 'pg\\_%' ESCAPE '\\'`;
 }
 
+function formatSqlValue(rawValue: unknown, columnName: string | undefined, nullifiedColumns: Set<string>): string {
+  const val = columnName && nullifiedColumns.has(columnName) ? null : rawValue;
+  if (val === null || val === undefined) return "NULL";
+  if (typeof val === "boolean") return val ? "true" : "false";
+  if (typeof val === "number") return String(val);
+  if (val instanceof Date) return formatSqlLiteral(val.toISOString());
+  if (typeof val === "object") return formatSqlLiteral(JSON.stringify(val));
+  return formatSqlLiteral(String(val));
+}
+
 async function* readRestoreStatements(backupFile: string): AsyncGenerator<string> {
   const raw = createReadStream(backupFile);
   const stream = backupFile.endsWith(".gz") ? raw.pipe(createGunzip()) : raw;
@@ -352,6 +363,11 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
           else resolve();
         });
       });
+      if (streamError) throw streamError;
+    },
+    async drain() {
+      flushBufferedLines();
+      await pendingWrite;
       if (streamError) throw streamError;
     },
     async abort() {
@@ -712,20 +728,19 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
       emit(`-- Data for: ${schema_name}.${tablename} (${count[0]!.n} rows)`);
 
-      const rows = await sql.unsafe(`SELECT * FROM ${qualifiedTableName}`).values();
       const nullifiedColumns = nullifiedColumnsByTable.get(currentTableKey) ?? new Set<string>();
-      for (const row of rows) {
-        const values = row.map((rawValue: unknown, index) => {
-          const columnName = cols[index]?.column_name;
-          const val = columnName && nullifiedColumns.has(columnName) ? null : rawValue;
-          if (val === null || val === undefined) return "NULL";
-          if (typeof val === "boolean") return val ? "true" : "false";
-          if (typeof val === "number") return String(val);
-          if (val instanceof Date) return formatSqlLiteral(val.toISOString());
-          if (typeof val === "object") return formatSqlLiteral(JSON.stringify(val));
-          return formatSqlLiteral(String(val));
-        });
-        emitStatement(`INSERT INTO ${qualifiedTableName} (${colNames}) VALUES (${values.join(", ")});`);
+      const rowCursor = sql
+        .unsafe(`SELECT * FROM ${qualifiedTableName}`)
+        .values()
+        .cursor(BACKUP_DATA_CURSOR_ROWS) as AsyncIterable<unknown[][]>;
+      for await (const rows of rowCursor) {
+        for (const row of rows) {
+          const values = row.map((rawValue, index) =>
+            formatSqlValue(rawValue, cols[index]?.column_name, nullifiedColumns),
+          );
+          emitStatement(`INSERT INTO ${qualifiedTableName} (${colNames}) VALUES (${values.join(", ")});`);
+        }
+        await writer.drain();
       }
       emit("");
     }

@@ -75,7 +75,7 @@ describe("createBufferedTextFileWriter", () => {
 
 describeEmbeddedPostgres("runDatabaseBackup", () => {
   it(
-    "backs up and restores multi-row table payloads",
+    "backs up and restores cursor-batched table payloads",
     async () => {
       const sourceConnectionString = await createTempDatabase();
       const restoreConnectionString = await createSiblingDatabase(
@@ -102,7 +102,8 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         `);
 
         const payload = "x".repeat(8192);
-        for (let index = 0; index < 160; index += 1) {
+        const rowCount = 160;
+        for (let index = 0; index < rowCount; index += 1) {
           const createdAt = new Date(Date.UTC(2026, 0, 1, 0, 0, index));
           await sourceSql`
             INSERT INTO "public"."backup_test_records" (
@@ -142,7 +143,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
           SELECT count(*)::int AS count
           FROM "public"."backup_test_records"
         `);
-        expect(counts[0]?.count).toBe(160);
+        expect(counts[0]?.count).toBe(rowCount);
 
         const sampleRows = await restoreSql.unsafe<{
           title: string;

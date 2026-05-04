@@ -60,7 +60,7 @@ import { projectWorkspaceUrl } from "../lib/utils";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { InlineEditor } from "../components/InlineEditor";
 import { IssueChatThread, type IssueChatComposerHandle } from "../components/IssueChatThread";
-import { IssueThreadInteractionsPanel } from "../components/IssueThreadInteractionsPanel";
+import { IssueRunLedgerContent } from "../components/IssueRunLedger";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssuesList } from "../components/IssuesList";
 import { IssueProperties } from "../components/IssueProperties";
@@ -941,13 +941,22 @@ function IssueDetailActivityTab({
     return <IssueSectionSkeleton titleWidth="w-20" rows={4} />;
   }
 
+  const renderActivityEvent = (evt: ActivityEvent) => (
+    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+      <ActorIdentity
+        evt={evt}
+        agentMap={agentMap}
+        currentUserId={currentUserId}
+        currentUserName={currentUserName}
+        currentUserImage={currentUserImage}
+      />
+      <span>{formatIssueActivityAction(evt.action, evt.details, { agentMap, currentUserId, currentUserName })}</span>
+      <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
+    </div>
+  );
+
   return (
     <>
-      <IssueThreadInteractionsPanel
-        interactions={interactions ?? []}
-        cancellingInteractionId={cancelInteraction.variables?.interactionId ?? null}
-        onCancel={(interactionId) => cancelInteraction.mutate({ interactionId })}
-      />
       {pendingHitlApprovals.length > 0 && (
         <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2">
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1017,25 +1026,16 @@ function IssueDetailActivityTab({
           )}
         </div>
       )}
-      {!activity || activity.length === 0 ? (
-        <p className="text-xs text-muted-foreground">No activity yet.</p>
-      ) : (
-        <div className="space-y-1.5">
-          {activity.slice(0, 20).map((evt) => (
-            <div key={evt.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <ActorIdentity
-                evt={evt}
-                agentMap={agentMap}
-                currentUserId={currentUserId}
-                currentUserName={currentUserName}
-                currentUserImage={currentUserImage}
-              />
-              <span>{formatIssueActivityAction(evt.action, evt.details, { agentMap, currentUserId, currentUserName })}</span>
-              <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
-            </div>
-          ))}
-        </div>
-      )}
+      <IssueRunLedgerContent
+        runs={linkedRuns ?? []}
+        interactions={interactions ?? []}
+        activityEvents={activity ?? []}
+        agentMap={agentMap}
+        renderActivityEvent={renderActivityEvent}
+        cancellingInteractionId={cancelInteraction.variables?.interactionId ?? null}
+        onCancelInteraction={(interaction) =>
+          cancelInteraction.mutate({ interactionId: interaction.id })}
+      />
     </>
   );
 }
