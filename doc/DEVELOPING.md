@@ -443,10 +443,13 @@ arbitrary extension state, may require separate backup handling.
 
 The JavaScript backup implementation reads table data with bounded cursor
 batches and writes buffered SQL to disk. It no longer intentionally loads an
-entire table result set into memory before writing row inserts, but it remains a
-Paperclip logical backup implementation rather than a complete `pg_dump`
-replacement. For very large instances or databases that rely on PostgreSQL
-objects outside the supported set, run restore drills and keep a
+entire table result set into memory before writing row inserts. Library callers
+can also set per-table `maxRowsPerTable` and `maxBytesPerTable` guardrails to
+abort oversized JavaScript-path backups and remove partial files.
+
+These limits are guardrails for Paperclip's logical SQL writer, not a complete
+`pg_dump` replacement. For very large instances or databases that rely on
+PostgreSQL objects outside the supported set, run restore drills and keep a
 PostgreSQL-native backup process alongside Paperclip backups.
 
 ## Secrets in Dev

@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     projects: [
       "packages/adapter-utils",
+      "packages/shared",
       "packages/db",
       "packages/adapters/codex-local",
       "packages/adapters/opencode-local",

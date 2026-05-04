@@ -82,6 +82,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatIssueActivityAction } from "@/lib/activity-format";
 import { buildIssuePropertiesPanelKey } from "../lib/issue-properties-panel-key";
 import { shouldRenderRichSubIssuesSection } from "../lib/issue-detail-subissues";
+import type {
+  AskUserQuestionsAnswer,
+  AskUserQuestionsInteraction,
+  IssueThreadInteraction,
+  RequestConfirmationInteraction,
+  SuggestTasksInteraction,
+} from "../lib/issue-thread-interactions";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
 import { readRepositoryDocumentationBaseline } from "../lib/repository-documentation-baseline";
 import {
@@ -122,7 +129,6 @@ import {
   type IssueAttachment,
   type IssueCostSummary,
   type IssueComment,
-  type IssueThreadInteraction,
 } from "@paperclipai/shared";
 
 type CommentReassignment = IssueCommentReassignment;
@@ -921,6 +927,68 @@ function IssueDetailActivityTab({
       });
     },
   });
+  const submitInteractionAnswers = useMutation({
+    mutationFn: ({
+      interaction,
+      answers,
+    }: {
+      interaction: AskUserQuestionsInteraction;
+      answers: AskUserQuestionsAnswer[];
+    }) => issuesApi.respondToInteraction(issueId, interaction.id, { answers }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(issueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId) });
+      pushToast({ title: "Answers submitted", tone: "success" });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Unable to submit answers",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+  const acceptInteraction = useMutation({
+    mutationFn: ({
+      interaction,
+    }: {
+      interaction: RequestConfirmationInteraction;
+    }) => issuesApi.acceptInteraction(issueId, interaction.id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(issueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId) });
+      pushToast({ title: "Interaction accepted", tone: "success" });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Unable to accept interaction",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+  const rejectInteraction = useMutation({
+    mutationFn: ({
+      interaction,
+      reason,
+    }: {
+      interaction: SuggestTasksInteraction | RequestConfirmationInteraction;
+      reason?: string;
+    }) => issuesApi.rejectInteraction(issueId, interaction.id, reason),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(issueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId) });
+      pushToast({ title: "Interaction rejected", tone: "success" });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Unable to reject interaction",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
   const pendingHitlApprovals = useMemo(
     () => (linkedApprovals ?? []).filter((approval) => isIssueHitlApproval(approval) && (approval.status === "pending" || approval.status === "revision_requested")),
     [linkedApprovals],
@@ -1032,9 +1100,19 @@ function IssueDetailActivityTab({
         activityEvents={activity ?? []}
         agentMap={agentMap}
         renderActivityEvent={renderActivityEvent}
-        cancellingInteractionId={cancelInteraction.variables?.interactionId ?? null}
-        onCancelInteraction={(interaction) =>
-          cancelInteraction.mutate({ interactionId: interaction.id })}
+        cancellingInteractionId={cancelInteraction.isPending ? cancelInteraction.variables?.interactionId ?? null : null}
+        onCancelInteraction={(interaction) => {
+          cancelInteraction.mutate({ interactionId: interaction.id });
+        }}
+        onSubmitInteractionAnswers={async (interaction, answers) => {
+          await submitInteractionAnswers.mutateAsync({ interaction, answers });
+        }}
+        onAcceptInteraction={async (interaction) => {
+          await acceptInteraction.mutateAsync({ interaction });
+        }}
+        onRejectInteraction={async (interaction, reason) => {
+          await rejectInteraction.mutateAsync({ interaction, reason });
+        }}
       />
     </>
   );

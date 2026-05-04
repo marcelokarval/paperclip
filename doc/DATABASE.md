@@ -148,12 +148,16 @@ state may require separate handling. See `doc/DEVELOPING.md` for the current
 configuration.
 
 The JavaScript backup path writes data in bounded cursor batches instead of
-materializing an entire table result set before emitting SQL. This reduces
-large-table memory risk, but it is still a plain logical SQL backup path rather
-than full `pg_dump` parity. Very large or object-heavy PostgreSQL deployments
-should still validate restore behavior with their actual data shape and keep an
-external PostgreSQL-native backup strategy when they need complete database
-fidelity.
+materializing an entire table result set before emitting SQL. The library also
+supports opt-in per-table guardrails (`maxRowsPerTable` and
+`maxBytesPerTable`) for callers that need backups to fail fast before producing
+oversized logical SQL output. These guardrails are not exposed as a primary CLI
+contract today and do not make this path equivalent to `pg_dump`.
+
+This remains a plain logical SQL backup path rather than full `pg_dump` parity.
+Very large or object-heavy PostgreSQL deployments should still validate restore
+behavior with their actual data shape and keep an external PostgreSQL-native
+backup strategy when they need complete database fidelity.
 
 Database backups do not include non-database instance files such as local-disk
 uploads, workspace files, or the local encrypted secrets master key. Back those

@@ -1,4 +1,5 @@
 import type {
+  AskUserQuestionsAnswer,
   Approval,
   DocumentRevision,
   FeedbackTargetType,
@@ -117,6 +118,16 @@ export const issuesApi = {
   getComment: (id: string, commentId: string) =>
     api.get<IssueComment>(`/issues/${id}/comments/${commentId}`),
   listInteractions: (id: string) => api.get<IssueThreadInteraction[]>(`/issues/${id}/interactions`),
+  acceptInteraction: (id: string, interactionId: string) =>
+    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/accept`, {}),
+  rejectInteraction: (id: string, interactionId: string, reason?: string) =>
+    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/reject`, reason ? { reason } : {}),
+  respondToInteraction: (
+    id: string,
+    interactionId: string,
+    data: { answers: AskUserQuestionsAnswer[]; summaryMarkdown?: string | null },
+  ) =>
+    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/respond`, data),
   listFeedbackVotes: (id: string) => api.get<FeedbackVote[]>(`/issues/${id}/feedback-votes`),
   listFeedbackTraces: (id: string, filters?: Record<string, string | boolean | undefined>) => {
     const params = new URLSearchParams();

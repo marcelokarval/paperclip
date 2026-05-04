@@ -361,4 +361,78 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
     },
     20_000,
   );
+
+  it(
+    "aborts and removes partial files when maxRowsPerTable is exceeded",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-row-guard-");
+      const sourceSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+
+      try {
+        await sourceSql.unsafe(`
+          CREATE TABLE "public"."backup_guard_rows" (
+            "id" serial PRIMARY KEY,
+            "payload" text NOT NULL
+          );
+          INSERT INTO "public"."backup_guard_rows" ("payload")
+          VALUES ('one'), ('two'), ('three');
+        `);
+
+        await expect(
+          runDatabaseBackup({
+            connectionString: sourceConnectionString,
+            backupDir,
+            retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+            filenamePrefix: "paperclip-row-guard-test",
+            excludeTables: ["drizzle.__drizzle_migrations"],
+            maxRowsPerTable: 2,
+          }),
+        ).rejects.toThrow(/backup_guard_rows.*maxRowsPerTable 2/);
+
+        expect(fs.readdirSync(backupDir)).toEqual([]);
+      } finally {
+        await sourceSql.end();
+      }
+    },
+    30_000,
+  );
+
+  it(
+    "aborts and removes partial files when maxBytesPerTable is exceeded",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-byte-guard-");
+      const sourceSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+
+      try {
+        await sourceSql.unsafe(`
+          CREATE TABLE "public"."backup_guard_bytes" (
+            "id" serial PRIMARY KEY,
+            "payload" text NOT NULL
+          );
+        `);
+        await sourceSql`
+          INSERT INTO "public"."backup_guard_bytes" ("payload")
+          VALUES (${"x".repeat(256)})
+        `;
+
+        await expect(
+          runDatabaseBackup({
+            connectionString: sourceConnectionString,
+            backupDir,
+            retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+            filenamePrefix: "paperclip-byte-guard-test",
+            excludeTables: ["drizzle.__drizzle_migrations"],
+            maxBytesPerTable: 128,
+          }),
+        ).rejects.toThrow(/backup_guard_bytes.*maxBytesPerTable 128/);
+
+        expect(fs.readdirSync(backupDir)).toEqual([]);
+      } finally {
+        await sourceSql.end();
+      }
+    },
+    30_000,
+  );
 });

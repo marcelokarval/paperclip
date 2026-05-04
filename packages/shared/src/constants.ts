@@ -153,11 +153,17 @@ export type IssueExecutionStateStatus = (typeof ISSUE_EXECUTION_STATE_STATUSES)[
 export const ISSUE_EXECUTION_DECISION_OUTCOMES = ["approved", "changes_requested"] as const;
 export type IssueExecutionDecisionOutcome = (typeof ISSUE_EXECUTION_DECISION_OUTCOMES)[number];
 
-export const ISSUE_THREAD_INTERACTION_KINDS = ["ask_user_questions"] as const;
+export const ISSUE_THREAD_INTERACTION_KINDS = [
+  "suggest_tasks",
+  "ask_user_questions",
+  "request_confirmation",
+] as const;
 export type IssueThreadInteractionKind = (typeof ISSUE_THREAD_INTERACTION_KINDS)[number];
 
 export const ISSUE_THREAD_INTERACTION_STATUSES = [
   "pending",
+  "accepted",
+  "rejected",
   "answered",
   "cancelled",
   "expired",
@@ -165,7 +171,11 @@ export const ISSUE_THREAD_INTERACTION_STATUSES = [
 ] as const;
 export type IssueThreadInteractionStatus = (typeof ISSUE_THREAD_INTERACTION_STATUSES)[number];
 
-export const ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES = ["none", "wake_assignee"] as const;
+export const ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES = [
+  "none",
+  "wake_assignee",
+  "wake_assignee_on_accept",
+] as const;
 export type IssueThreadInteractionContinuationPolicy =
   (typeof ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES)[number];
 

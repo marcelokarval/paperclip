@@ -3,8 +3,8 @@
 import { act } from "react";
 import type { ComponentProps, ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { IssueThreadInteraction } from "@paperclipai/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AskUserQuestionsInteraction, IssueThreadInteraction } from "../lib/issue-thread-interactions";
 import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
 
 vi.mock("@/components/ui/button", () => ({
@@ -30,8 +30,8 @@ afterEach(() => {
 });
 
 function interaction(
-  overrides: Partial<IssueThreadInteraction> = {},
-): IssueThreadInteraction {
+  overrides: Partial<AskUserQuestionsInteraction> = {},
+): AskUserQuestionsInteraction {
   return {
     id: "interaction-1",
     companyId: "company-1",
@@ -88,32 +88,105 @@ function renderCard(props: Partial<ComponentProps<typeof IssueThreadInteractionC
 }
 
 describe("IssueThreadInteractionCard", () => {
-  it("renders pending questions read-only with only cancellation affordance", () => {
+  it("submits pending question answers and keeps cancellation as fallback", async () => {
     const onCancelInteraction = vi.fn();
-    const host = renderCard({ onCancelInteraction });
+    const onSubmitInteractionAnswers = vi.fn().mockResolvedValue(undefined);
+    const host = renderCard({ onCancelInteraction, onSubmitInteractionAnswers });
 
     expect(host.textContent).toContain("Agent questions / Pending");
     expect(host.textContent).toContain("Clarify launch scope");
     expect(host.textContent).toContain("Wakes assignee");
-    expect(host.textContent).toContain("Answer submission is not available in this UI yet");
-    expect(host.textContent).toContain("The supported action is to cancel this pending question");
     expect(host.textContent).toContain("Phase 1");
     expect(host.textContent).toContain("Full launch");
-    expect(host.querySelectorAll('[role="radio"]')).toHaveLength(0);
-    expect(host.querySelectorAll('[role="checkbox"]')).toHaveLength(0);
-    expect(host.querySelectorAll("button")).toHaveLength(1);
+    expect(host.querySelectorAll('[role="radio"]')).toHaveLength(2);
+    expect(host.querySelectorAll('[role="checkbox"]')).toHaveLength(2);
     expect(host.textContent).toContain("Cancel question");
+
+    const submitButton = Array.from(host.querySelectorAll("button")).find((node) =>
+      node.textContent?.includes("Submit answers"),
+    );
+    expect((submitButton as HTMLButtonElement | undefined)?.disabled).toBe(true);
+
+    await act(async () => {
+      host.querySelector('[role="radio"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      host.querySelector('[role="checkbox"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect((submitButton as HTMLButtonElement | undefined)?.disabled).toBe(false);
+
+    await act(async () => {
+      submitButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onSubmitInteractionAnswers).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "interaction-1" }),
+      [
+        { questionId: "scope", optionIds: ["phase-1"] },
+        { questionId: "channels", optionIds: ["email"] },
+      ],
+    );
 
     const button = Array.from(host.querySelectorAll("button")).find((node) =>
       node.textContent?.includes("Cancel question"),
     );
-    act(() => {
+    await act(async () => {
       button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
     expect(onCancelInteraction).toHaveBeenCalledWith(
       expect.objectContaining({ id: "interaction-1" }),
     );
+  });
+
+  it("does not duplicate answer submission while a request is pending", async () => {
+    let resolveSubmit: (() => void) | null = null;
+    const onSubmitInteractionAnswers = vi.fn(() =>
+      new Promise<void>((resolve) => {
+        resolveSubmit = resolve;
+      }),
+    );
+    const host = renderCard({ onSubmitInteractionAnswers });
+
+    await act(async () => {
+      host.querySelector('[role="radio"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const submitButton = Array.from(host.querySelectorAll("button")).find((node) =>
+      node.textContent?.includes("Submit answers"),
+    );
+
+    await act(async () => {
+      submitButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onSubmitInteractionAnswers).toHaveBeenCalledTimes(1);
+    expect(host.textContent).toContain("Submitting...");
+
+    await act(async () => {
+      submitButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onSubmitInteractionAnswers).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveSubmit?.();
+    });
+  });
+
+  it("surfaces answer submission failures inline", async () => {
+    const onSubmitInteractionAnswers = vi.fn().mockRejectedValue(new Error("Backend route missing"));
+    const host = renderCard({ onSubmitInteractionAnswers });
+
+    await act(async () => {
+      host.querySelector('[role="radio"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const submitButton = Array.from(host.querySelectorAll("button")).find((node) =>
+      node.textContent?.includes("Submit answers"),
+    );
+    await act(async () => {
+      submitButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(host.textContent).toContain("Backend route missing");
   });
 
   it("renders terminal statuses explicitly", () => {
@@ -157,13 +230,129 @@ describe("IssueThreadInteractionCard", () => {
 
     const expired = renderCard({ interaction: interaction({ status: "expired" }) });
     expect(expired.textContent).toContain("Agent questions / Expired");
-    expect(expired.textContent).toContain("expired before it was answered");
+    expect(expired.textContent).toContain("expired before it was resolved");
 
     act(() => root.unmount());
     expired.remove();
 
     const failed = renderCard({ interaction: interaction({ status: "failed" }) });
     expect(failed.textContent).toContain("Agent questions / Failed");
-    expect(failed.textContent).toContain("could not be resolved");
+    expect(failed.textContent).toContain("workflow interaction could not be resolved");
+  });
+
+  it("renders suggested task cards without unsupported accept controls", async () => {
+    const onAcceptInteraction = vi.fn().mockResolvedValue(undefined);
+    const onRejectInteraction = vi.fn().mockResolvedValue(undefined);
+    const suggest = renderCard({
+      interaction: {
+        id: "suggest-1",
+        companyId: "company-1",
+        issueId: "issue-1",
+        kind: "suggest_tasks",
+        status: "pending",
+        continuationPolicy: "wake_assignee_on_accept",
+        title: "Review generated tasks",
+        payload: {
+          version: 1,
+          tasks: [
+            { clientKey: "root", title: "Build flow" },
+            { clientKey: "child", parentClientKey: "root", title: "Add tests" },
+          ],
+        },
+        result: null,
+        createdAt: "2026-05-04T12:00:00.000Z",
+        updatedAt: "2026-05-04T12:00:00.000Z",
+      },
+      onAcceptInteraction,
+      onRejectInteraction,
+    });
+
+    expect(suggest.textContent).toContain("Suggested tasks / Pending");
+    expect(suggest.textContent).toContain("Wakes on accept");
+    expect(suggest.textContent).toContain("Build flow");
+    expect(suggest.textContent).not.toContain("Accept selected tasks");
+    expect(suggest.querySelectorAll('input[type="checkbox"]')).toHaveLength(0);
+    await act(async () => {
+      Array.from(suggest.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("Reject"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {
+      Array.from(suggest.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("Save rejection"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onAcceptInteraction).not.toHaveBeenCalled();
+    expect(onRejectInteraction).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "suggest-1" }),
+      undefined,
+    );
+
+    act(() => root.unmount());
+    suggest.remove();
+  });
+
+  it("renders confirmation review cards with supported accept", async () => {
+    const onAcceptInteraction = vi.fn().mockResolvedValue(undefined);
+    const onRejectInteraction = vi.fn().mockResolvedValue(undefined);
+
+    const confirmation = renderCard({
+      interaction: {
+        id: "confirm-1",
+        companyId: "company-1",
+        issueId: "issue-1",
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee_on_accept",
+        title: "Approve plan",
+        payload: {
+          version: 1,
+          prompt: "Approve the proposed plan?",
+          acceptLabel: "Approve plan",
+          rejectLabel: "Request changes",
+          rejectRequiresReason: true,
+        },
+        result: null,
+        createdAt: "2026-05-04T12:00:00.000Z",
+        updatedAt: "2026-05-04T12:00:00.000Z",
+      },
+      onAcceptInteraction,
+      onRejectInteraction,
+    });
+
+    expect(confirmation.textContent).toContain("Confirmation / Pending");
+    expect(confirmation.textContent).toContain("Approve the proposed plan?");
+    await act(async () => {
+      Array.from(confirmation.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("Approve plan"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onAcceptInteraction).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "confirm-1" }),
+    );
+  });
+
+  it("re-enables cancellation after the parent pending state clears", () => {
+    const onCancelInteraction = vi.fn();
+    const host = renderCard({ onCancelInteraction, cancelling: true });
+    const cancellingButton = Array.from(host.querySelectorAll("button")).find((node) =>
+      node.textContent?.includes("Cancelling..."),
+    ) as HTMLButtonElement | undefined;
+    expect(cancellingButton?.disabled).toBe(true);
+
+    act(() => {
+      root.render(
+        <IssueThreadInteractionCard
+          interaction={interaction()}
+          onCancelInteraction={onCancelInteraction}
+          cancelling={false}
+        />,
+      );
+    });
+
+    const cancelButton = Array.from(host.querySelectorAll("button")).find((node) =>
+      node.textContent?.includes("Cancel question"),
+    ) as HTMLButtonElement | undefined;
+    expect(cancelButton?.disabled).toBe(false);
   });
 });

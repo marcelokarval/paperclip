@@ -3,9 +3,10 @@
 import { act } from "react";
 import type { ComponentProps, ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { ActivityEvent, IssueThreadInteraction } from "@paperclipai/shared";
+import type { ActivityEvent } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunForIssue } from "../api/activity";
+import type { AskUserQuestionsInteraction, IssueThreadInteraction } from "../lib/issue-thread-interactions";
 import { IssueRunLedgerContent } from "./IssueRunLedger";
 
 vi.mock("@/lib/router", () => ({
@@ -50,6 +51,9 @@ function renderLedger(props: Partial<ComponentProps<typeof IssueRunLedgerContent
         renderActivityEvent={props.renderActivityEvent}
         cancellingInteractionId={props.cancellingInteractionId}
         onCancelInteraction={props.onCancelInteraction}
+        onSubmitInteractionAnswers={props.onSubmitInteractionAnswers}
+        onAcceptInteraction={props.onAcceptInteraction}
+        onRejectInteraction={props.onRejectInteraction}
       />,
     );
   });
@@ -88,7 +92,7 @@ function activity(overrides: Partial<ActivityEvent> = {}): ActivityEvent {
   };
 }
 
-function interaction(overrides: Partial<IssueThreadInteraction> = {}): IssueThreadInteraction {
+function interaction(overrides: Partial<AskUserQuestionsInteraction> = {}): AskUserQuestionsInteraction {
   return {
     id: "interaction-1",
     companyId: "company-1",
@@ -143,11 +147,10 @@ describe("IssueRunLedger", () => {
     });
 
     expect(container.textContent).toContain("live");
-    expect(container.textContent).toContain("Answer submission is not available in this UI yet");
+    expect(container.textContent).toContain("Submit answers");
     expect(container.textContent).toContain("Cancel question");
-    expect(container.querySelectorAll('[role="radio"]')).toHaveLength(0);
-    expect(container.querySelectorAll('[role="checkbox"]')).toHaveLength(0);
-    expect(container.querySelectorAll("button")).toHaveLength(1);
+    expect(container.querySelectorAll('[role="radio"]')).toHaveLength(1);
+    expect(container.querySelectorAll("button").length).toBeGreaterThanOrEqual(2);
 
     const cancelButton = Array.from(container.querySelectorAll("button")).find((button) =>
       button.textContent?.includes("Cancel question"),

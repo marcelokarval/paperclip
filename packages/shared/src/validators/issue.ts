@@ -212,6 +212,64 @@ export const issueThreadInteractionContinuationPolicySchema = z.enum(
   ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES,
 );
 
+export const suggestedTaskDraftSchema = z.object({
+  clientKey: z.string().trim().min(1).max(120),
+  parentClientKey: z.string().trim().min(1).max(120).nullable().optional(),
+  parentId: z.string().uuid().nullable().optional(),
+  title: z.string().trim().min(1).max(240),
+  description: z.string().trim().max(20000).nullable().optional(),
+  priority: z.enum(ISSUE_PRIORITIES).nullable().optional(),
+  assigneeAgentId: z.string().uuid().nullable().optional(),
+  assigneeUserId: z.string().trim().min(1).nullable().optional(),
+  projectId: z.string().uuid().nullable().optional(),
+  goalId: z.string().uuid().nullable().optional(),
+  billingCode: z.string().trim().max(120).nullable().optional(),
+  labels: z.array(z.string().trim().min(1).max(48)).max(20).optional(),
+  hiddenInPreview: z.boolean().optional(),
+}).superRefine((value, ctx) => {
+  if (value.assigneeAgentId && value.assigneeUserId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Suggested tasks can only target one assignee",
+      path: ["assigneeAgentId"],
+    });
+  }
+});
+
+export const suggestTasksPayloadSchema = z.object({
+  version: z.literal(1),
+  defaultParentId: z.string().uuid().nullable().optional(),
+  tasks: z.array(suggestedTaskDraftSchema).min(1).max(50),
+}).superRefine((value, ctx) => {
+  const seenClientKeys = new Set<string>();
+  for (const [index, task] of value.tasks.entries()) {
+    if (seenClientKeys.has(task.clientKey)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "clientKey must be unique within one interaction",
+        path: ["tasks", index, "clientKey"],
+      });
+    }
+    seenClientKeys.add(task.clientKey);
+  }
+});
+
+export const suggestTasksResultCreatedTaskSchema = z.object({
+  clientKey: z.string().trim().min(1).max(120),
+  issueId: z.string().uuid(),
+  identifier: z.string().trim().min(1).nullable().optional(),
+  title: z.string().trim().min(1).nullable().optional(),
+  parentIssueId: z.string().uuid().nullable().optional(),
+  parentIdentifier: z.string().trim().min(1).nullable().optional(),
+});
+
+export const suggestTasksResultSchema = z.object({
+  version: z.literal(1),
+  createdTasks: z.array(suggestTasksResultCreatedTaskSchema).max(50).optional(),
+  skippedClientKeys: z.array(z.string().trim().min(1).max(120)).max(50).optional(),
+  rejectionReason: z.string().trim().max(4000).nullable().optional(),
+});
+
 export const askUserQuestionsQuestionOptionSchema = z.object({
   id: z.string().trim().min(1).max(120),
   label: z.string().trim().min(1).max(120),
@@ -232,6 +290,30 @@ export const askUserQuestionsPayloadSchema = z.object({
   title: z.string().trim().max(240).nullable().optional(),
   submitLabel: z.string().trim().max(120).nullable().optional(),
   questions: z.array(askUserQuestionsQuestionSchema).min(1).max(10),
+}).superRefine((value, ctx) => {
+  const seenQuestionIds = new Set<string>();
+  for (const [questionIndex, question] of value.questions.entries()) {
+    if (seenQuestionIds.has(question.id)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Question ids must be unique within one interaction",
+        path: ["questions", questionIndex, "id"],
+      });
+    }
+    seenQuestionIds.add(question.id);
+
+    const seenOptionIds = new Set<string>();
+    for (const [optionIndex, option] of question.options.entries()) {
+      if (seenOptionIds.has(option.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Option ids must be unique within one question",
+          path: ["questions", questionIndex, "options", optionIndex, "id"],
+        });
+      }
+      seenOptionIds.add(option.id);
+    }
+  }
 });
 
 export const askUserQuestionsAnswerSchema = z.object({
@@ -246,6 +328,65 @@ export const askUserQuestionsResultSchema = z.object({
   cancellationReason: z.string().trim().max(4000).nullable().optional(),
   summaryMarkdown: z.string().max(20000).nullable().optional(),
 });
+
+export const requestConfirmationPayloadSchema = z.object({
+  version: z.literal(1),
+  prompt: z.string().trim().min(1).max(1000),
+  acceptLabel: z.string().trim().min(1).max(80).nullable().optional(),
+  rejectLabel: z.string().trim().min(1).max(80).nullable().optional(),
+  rejectRequiresReason: z.boolean().optional(),
+  rejectReasonLabel: z.string().trim().min(1).max(160).nullable().optional(),
+  allowDeclineReason: z.boolean().optional().default(true),
+  declineReasonPlaceholder: z.string().trim().min(1).max(240).nullable().optional(),
+  detailsMarkdown: z.string().max(20000).nullable().optional(),
+});
+
+export const requestConfirmationResultSchema = z.object({
+  version: z.literal(1),
+  outcome: z.enum(["accepted", "rejected"]),
+  reason: z.string().trim().max(4000).nullable().optional(),
+});
+
+const createIssueThreadInteractionBaseSchema = z.object({
+  idempotencyKey: z.string().trim().max(255).nullable().optional(),
+  sourceCommentId: z.string().uuid().nullable().optional(),
+  sourceRunId: z.string().uuid().nullable().optional(),
+  title: z.string().trim().max(240).nullable().optional(),
+  summary: z.string().trim().max(1000).nullable().optional(),
+});
+
+export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
+  createIssueThreadInteractionBaseSchema.extend({
+    kind: z.literal("suggest_tasks"),
+    continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
+    payload: suggestTasksPayloadSchema,
+  }),
+  createIssueThreadInteractionBaseSchema.extend({
+    kind: z.literal("ask_user_questions"),
+    continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
+    payload: askUserQuestionsPayloadSchema,
+  }),
+  createIssueThreadInteractionBaseSchema.extend({
+    kind: z.literal("request_confirmation"),
+    continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("none"),
+    payload: requestConfirmationPayloadSchema,
+  }),
+]);
+export type CreateIssueThreadInteraction = z.infer<typeof createIssueThreadInteractionSchema>;
+
+export const acceptIssueThreadInteractionSchema = z.object({}).strict();
+export type AcceptIssueThreadInteraction = z.infer<typeof acceptIssueThreadInteractionSchema>;
+
+export const rejectIssueThreadInteractionSchema = z.object({
+  reason: z.string().trim().max(4000).optional(),
+});
+export type RejectIssueThreadInteraction = z.infer<typeof rejectIssueThreadInteractionSchema>;
+
+export const respondIssueThreadInteractionSchema = z.object({
+  answers: z.array(askUserQuestionsAnswerSchema).max(20),
+  summaryMarkdown: z.string().max(20000).nullable().optional(),
+});
+export type RespondIssueThreadInteraction = z.infer<typeof respondIssueThreadInteractionSchema>;
 
 export const cancelIssueThreadInteractionSchema = z.object({
   reason: z.string().trim().max(4000).optional(),

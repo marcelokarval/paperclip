@@ -1,7 +1,14 @@
 import { useMemo, type ReactNode } from "react";
-import type { ActivityEvent, Agent, IssueThreadInteraction } from "@paperclipai/shared";
+import type { ActivityEvent, Agent } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import type { RunForIssue } from "../api/activity";
+import type {
+  AskUserQuestionsAnswer,
+  AskUserQuestionsInteraction,
+  IssueThreadInteraction,
+  RequestConfirmationInteraction,
+  SuggestTasksInteraction,
+} from "../lib/issue-thread-interactions";
 import { cn, relativeTime } from "../lib/utils";
 import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
 
@@ -13,6 +20,17 @@ type IssueRunLedgerContentProps = {
   renderActivityEvent?: (event: ActivityEvent) => ReactNode;
   cancellingInteractionId?: string | null;
   onCancelInteraction?: (interaction: IssueThreadInteraction) => Promise<void> | void;
+  onSubmitInteractionAnswers?: (
+    interaction: AskUserQuestionsInteraction,
+    answers: AskUserQuestionsAnswer[],
+  ) => Promise<void> | void;
+  onAcceptInteraction?: (
+    interaction: RequestConfirmationInteraction,
+  ) => Promise<void> | void;
+  onRejectInteraction?: (
+    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    reason?: string,
+  ) => Promise<void> | void;
 };
 
 type LedgerFeedItem =
@@ -72,6 +90,9 @@ export function IssueRunLedgerContent({
   renderActivityEvent,
   cancellingInteractionId = null,
   onCancelInteraction,
+  onSubmitInteractionAnswers,
+  onAcceptInteraction,
+  onRejectInteraction,
 }: IssueRunLedgerContentProps) {
   const feedItems = useMemo<LedgerFeedItem[]>(() => {
     const items: LedgerFeedItem[] = [];
@@ -148,6 +169,9 @@ export function IssueRunLedgerContent({
                   interaction={item.interaction}
                   cancelling={cancellingInteractionId === item.interaction.id}
                   onCancelInteraction={onCancelInteraction}
+                  onSubmitInteractionAnswers={onSubmitInteractionAnswers}
+                  onAcceptInteraction={onAcceptInteraction}
+                  onRejectInteraction={onRejectInteraction}
                 />
               );
             }

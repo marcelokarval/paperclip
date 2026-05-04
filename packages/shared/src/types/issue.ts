@@ -199,6 +199,44 @@ export interface IssueApprovalSummary {
   total: number;
 }
 
+export interface SuggestedTaskDraft {
+  clientKey: string;
+  parentClientKey?: string | null;
+  parentId?: string | null;
+  title: string;
+  description?: string | null;
+  priority?: IssuePriority | null;
+  assigneeAgentId?: string | null;
+  assigneeUserId?: string | null;
+  projectId?: string | null;
+  goalId?: string | null;
+  billingCode?: string | null;
+  labels?: string[];
+  hiddenInPreview?: boolean;
+}
+
+export interface SuggestTasksPayload {
+  version: 1;
+  defaultParentId?: string | null;
+  tasks: SuggestedTaskDraft[];
+}
+
+export interface SuggestTasksResultCreatedTask {
+  clientKey: string;
+  issueId: string;
+  identifier?: string | null;
+  title?: string | null;
+  parentIssueId?: string | null;
+  parentIdentifier?: string | null;
+}
+
+export interface SuggestTasksResult {
+  version: 1;
+  createdTasks?: SuggestTasksResultCreatedTask[];
+  skippedClientKeys?: string[];
+  rejectionReason?: string | null;
+}
+
 export interface AskUserQuestionsQuestionOption {
   id: string;
   label: string;
@@ -234,6 +272,24 @@ export interface AskUserQuestionsResult {
   summaryMarkdown?: string | null;
 }
 
+export interface RequestConfirmationPayload {
+  version: 1;
+  prompt: string;
+  acceptLabel?: string | null;
+  rejectLabel?: string | null;
+  rejectRequiresReason?: boolean;
+  rejectReasonLabel?: string | null;
+  allowDeclineReason?: boolean;
+  declineReasonPlaceholder?: string | null;
+  detailsMarkdown?: string | null;
+}
+
+export interface RequestConfirmationResult {
+  version: 1;
+  outcome: "accepted" | "rejected";
+  reason?: string | null;
+}
+
 export interface IssueThreadInteractionBase {
   id: string;
   companyId: string;
@@ -261,9 +317,30 @@ export interface AskUserQuestionsInteraction extends IssueThreadInteractionBase 
   result?: AskUserQuestionsResult | null;
 }
 
-export type IssueThreadInteraction = AskUserQuestionsInteraction;
-export type IssueThreadInteractionPayload = AskUserQuestionsPayload;
-export type IssueThreadInteractionResult = AskUserQuestionsResult;
+export interface SuggestTasksInteraction extends IssueThreadInteractionBase {
+  kind: "suggest_tasks";
+  payload: SuggestTasksPayload;
+  result?: SuggestTasksResult | null;
+}
+
+export interface RequestConfirmationInteraction extends IssueThreadInteractionBase {
+  kind: "request_confirmation";
+  payload: RequestConfirmationPayload;
+  result?: RequestConfirmationResult | null;
+}
+
+export type IssueThreadInteraction =
+  | AskUserQuestionsInteraction
+  | SuggestTasksInteraction
+  | RequestConfirmationInteraction;
+export type IssueThreadInteractionPayload =
+  | AskUserQuestionsPayload
+  | SuggestTasksPayload
+  | RequestConfirmationPayload;
+export type IssueThreadInteractionResult =
+  | AskUserQuestionsResult
+  | SuggestTasksResult
+  | RequestConfirmationResult;
 
 export interface Issue {
   id: string;

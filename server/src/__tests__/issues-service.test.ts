@@ -12,9 +12,12 @@ import {
   heartbeatRuns,
   instanceSettings,
   issueComments,
+  issueThreadInteractions,
   issueInboxArchives,
+  issueApprovals,
   issueRelations,
   issues,
+  approvals,
   projectWorkspaces,
   projects,
 } from "@paperclipai/db";
@@ -64,10 +67,13 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
 
   afterEach(async () => {
     await db.delete(issueComments);
+    await db.delete(issueThreadInteractions);
+    await db.delete(issueApprovals);
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(costEvents);
+    await db.delete(approvals);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(executionWorkspaces);
@@ -240,6 +246,76 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       .from(costEvents)
       .where(eq(costEvents.id, costEventId));
     expect(costEvent?.issueId).toBeNull();
+  });
+
+  it("removes issue-thread interactions and related issue rows before removing an issue", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const commentId = randomUUID();
+    const approvalId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Browser proof temporary issue",
+      status: "todo",
+      priority: "medium",
+    });
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      authorUserId: "local-board",
+      body: "Temporary proof comment",
+    });
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      sourceCommentId: commentId,
+      payload: { version: 1, questions: [] },
+    });
+    await db.insert(approvals).values({
+      id: approvalId,
+      companyId,
+      type: "issue_execution",
+      status: "pending",
+      payload: { issueId },
+    });
+    await db.insert(issueApprovals).values({
+      companyId,
+      issueId,
+      approvalId,
+      linkedByUserId: "local-board",
+    });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "user",
+      actorId: "local-board",
+      action: "issue.thread_interaction_created",
+      entityType: "issue",
+      entityId: issueId,
+      details: { commentId },
+    });
+
+    const removed = await svc.remove(issueId);
+
+    expect(removed?.id).toBe(issueId);
+    await expect(db.select().from(issues).where(eq(issues.id, issueId))).resolves.toEqual([]);
+    await expect(
+      db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issueId)),
+    ).resolves.toEqual([]);
+    await expect(db.select().from(issueComments).where(eq(issueComments.issueId, issueId))).resolves.toEqual([]);
+    await expect(db.select().from(issueApprovals).where(eq(issueApprovals.issueId, issueId))).resolves.toEqual([]);
+    await expect(db.select().from(activityLog).where(eq(activityLog.entityId, issueId))).resolves.toHaveLength(1);
   });
 
   it("paginates earlier comments in descending order from an anchor comment", async () => {

@@ -47,8 +47,9 @@ This fork uses selective upstream backports. Do not infer that upstream
   lifecycle breadth source-of-truth audit for create/respond/suggest/
   confirmation behavior.
 - Backup work tied to `#4960` / `#4859` is closed for this fork's local
-  JavaScript backup path only. This does not claim full `pg_dump` parity or
-  streaming safety for very large tables.
+  JavaScript backup path only. The local path has cursor-batched writes and
+  opt-in per-table row/SQL-byte guardrails, but does not claim upstream's
+  `pg_dump` / `psql` engine behavior or full PostgreSQL object parity.
 
 ## Closed Local Residuals
 
@@ -60,4 +61,5 @@ This fork uses selective upstream backports. Do not infer that upstream
   - `pnpm --filter @paperclipai/shared typecheck`
 - Backup schema/restore hardening from `#4859` / `#4960` was completed for the
   local JavaScript backup path. Docs now state the supported PostgreSQL object
-  set and explicit exclusions.
+  set, explicit exclusions, cursor-batched write behavior, and optional
+  per-table row/SQL-byte guardrails.

@@ -24,6 +24,8 @@ export type RunDatabaseBackupOptions = {
   includeMigrationJournal?: boolean;
   excludeTables?: string[];
   nullifyColumns?: Record<string, string[]>;
+  maxRowsPerTable?: number;
+  maxBytesPerTable?: number;
 };
 
 export type RunDatabaseBackupResult = {
@@ -220,6 +222,13 @@ function normalizeNullifyColumnMap(values: Record<string, string[]> | undefined)
   return out;
 }
 
+function normalizePositiveIntegerLimit(value: number | undefined): number | null {
+  if (value === undefined) return null;
+  if (!Number.isFinite(value)) return null;
+  const normalized = Math.trunc(value);
+  return normalized > 0 ? normalized : null;
+}
+
 function quoteIdentifier(value: string): string {
   return `"${value.replaceAll("\"", "\"\"")}"`;
 }
@@ -394,6 +403,8 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   const connectTimeout = Math.max(1, Math.trunc(opts.connectTimeoutSeconds ?? 5));
   const excludedTableNames = normalizeTableNameSet(opts.excludeTables);
   const nullifiedColumnsByTable = normalizeNullifyColumnMap(opts.nullifyColumns);
+  const maxRowsPerTable = normalizePositiveIntegerLimit(opts.maxRowsPerTable);
+  const maxBytesPerTable = normalizePositiveIntegerLimit(opts.maxBytesPerTable);
   const sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
   mkdirSync(opts.backupDir, { recursive: true });
   const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
@@ -716,6 +727,12 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       const qualifiedTableName = quoteQualifiedName(schema_name, tablename);
       const count = await sql.unsafe<{ n: number }[]>(`SELECT count(*)::int AS n FROM ${qualifiedTableName}`);
       if (excludedTableNames.has(currentTableKey) || (count[0]?.n ?? 0) === 0) continue;
+      const rowCount = count[0]?.n ?? 0;
+      if (maxRowsPerTable !== null && rowCount > maxRowsPerTable) {
+        throw new Error(
+          `Backup table ${currentTableKey} has ${rowCount} rows, exceeding maxRowsPerTable ${maxRowsPerTable}`,
+        );
+      }
 
       // Get column info for this table
       const cols = await sql<{ column_name: string; data_type: string }[]>`
@@ -726,9 +743,10 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       `;
       const colNames = cols.map((c) => `"${c.column_name}"`).join(", ");
 
-      emit(`-- Data for: ${schema_name}.${tablename} (${count[0]!.n} rows)`);
+      emit(`-- Data for: ${schema_name}.${tablename} (${rowCount} rows)`);
 
       const nullifiedColumns = nullifiedColumnsByTable.get(currentTableKey) ?? new Set<string>();
+      let tableDataBytes = 0;
       const rowCursor = sql
         .unsafe(`SELECT * FROM ${qualifiedTableName}`)
         .values()
@@ -738,7 +756,14 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           const values = row.map((rawValue, index) =>
             formatSqlValue(rawValue, cols[index]?.column_name, nullifiedColumns),
           );
-          emitStatement(`INSERT INTO ${qualifiedTableName} (${colNames}) VALUES (${values.join(", ")});`);
+          const insertStatement = `INSERT INTO ${qualifiedTableName} (${colNames}) VALUES (${values.join(", ")});`;
+          tableDataBytes += Buffer.byteLength(insertStatement, "utf8");
+          if (maxBytesPerTable !== null && tableDataBytes > maxBytesPerTable) {
+            throw new Error(
+              `Backup table ${currentTableKey} emitted ${tableDataBytes} SQL bytes, exceeding maxBytesPerTable ${maxBytesPerTable}`,
+            );
+          }
+          emitStatement(insertStatement);
         }
         await writer.drain();
       }

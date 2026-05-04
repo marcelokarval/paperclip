@@ -22,6 +22,7 @@ import {
   issueComments,
   issueDocuments,
   issueReadStates,
+  issueThreadInteractions,
   issues,
   labels,
   projectWorkspaces,
@@ -1927,6 +1928,7 @@ export function issueService(db: Db) {
           .update(issues)
           .set({ parentId: null })
           .where(eq(issues.parentId, id));
+        await tx.delete(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, id));
         await tx.delete(issueComments).where(eq(issueComments.issueId, id));
         await tx.delete(issueReadStates).where(eq(issueReadStates.issueId, id));
         await tx.delete(issueInboxArchives).where(eq(issueInboxArchives.issueId, id));

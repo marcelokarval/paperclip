@@ -12,6 +12,10 @@ const mockAccessService = vi.hoisted(() => ({
 }));
 
 const mockCancelQuestions = vi.hoisted(() => vi.fn());
+const mockCreateInteraction = vi.hoisted(() => vi.fn());
+const mockAcceptInteraction = vi.hoisted(() => vi.fn());
+const mockRejectInteraction = vi.hoisted(() => vi.fn());
+const mockAnswerQuestions = vi.hoisted(() => vi.fn());
 const mockListForIssue = vi.hoisted(() => vi.fn());
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockHeartbeatWakeup = vi.hoisted(() => vi.fn(async () => undefined));
@@ -27,6 +31,10 @@ vi.mock("../telemetry.js", () => ({
 
 vi.mock("../services/issue-thread-interactions.js", () => ({
   issueThreadInteractionService: () => ({
+    create: mockCreateInteraction,
+    acceptInteraction: mockAcceptInteraction,
+    rejectInteraction: mockRejectInteraction,
+    answerQuestions: mockAnswerQuestions,
     cancelQuestions: mockCancelQuestions,
     listForIssue: mockListForIssue,
   }),
@@ -143,13 +151,58 @@ function makeCancelledInteraction() {
   };
 }
 
-describe("issue thread interaction cancel route", () => {
+function makePendingQuestionInteraction() {
+  return {
+    ...makeCancelledInteraction(),
+    status: "pending",
+    result: null,
+  };
+}
+
+function makeAnsweredInteraction() {
+  return {
+    ...makeCancelledInteraction(),
+    status: "answered",
+    result: {
+      version: 1,
+      answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
+      summaryMarkdown: "Phase 1.",
+    },
+  };
+}
+
+function makeAcceptedConfirmation() {
+  return {
+    ...makeCancelledInteraction(),
+    kind: "request_confirmation",
+    status: "accepted",
+    continuationPolicy: "wake_assignee_on_accept",
+    payload: {
+      version: 1,
+      prompt: "Approve?",
+    },
+    result: {
+      version: 1,
+      outcome: "accepted",
+    },
+  };
+}
+
+describe("issue thread interaction lifecycle routes", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.resetAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockAccessService.canUser.mockResolvedValue(false);
     mockAccessService.hasPermission.mockResolvedValue(false);
+    mockCreateInteraction.mockResolvedValue(makePendingQuestionInteraction());
+    mockAcceptInteraction.mockResolvedValue(makeAcceptedConfirmation());
+    mockRejectInteraction.mockResolvedValue({
+      ...makeAcceptedConfirmation(),
+      status: "rejected",
+      result: { version: 1, outcome: "rejected", reason: "No" },
+    });
+    mockAnswerQuestions.mockResolvedValue(makeAnsweredInteraction());
     mockCancelQuestions.mockResolvedValue(makeCancelledInteraction());
     mockListForIssue.mockResolvedValue([makeCancelledInteraction()]);
   });
@@ -170,6 +223,117 @@ describe("issue thread interaction cancel route", () => {
       id: "11111111-1111-4111-8111-111111111111",
       companyId: "company-1",
     }));
+  });
+
+  it("lets board users create interactions", async () => {
+    const app = await installIssueRoutes(createApp(boardActor()));
+    const payload = {
+      kind: "ask_user_questions",
+      idempotencyKey: "ask-scope",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "scope",
+          prompt: "Choose scope",
+          selectionMode: "single",
+          options: [{ id: "phase-1", label: "Phase 1" }],
+        }],
+      },
+    };
+    const res = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/interactions")
+      .send(payload);
+
+    expect(res.status).toBe(201);
+    expect(mockCreateInteraction).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "11111111-1111-4111-8111-111111111111", companyId: "company-1" }),
+      expect.objectContaining(payload),
+      { agentId: null, userId: "local-board" },
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "issue.thread_interaction_created",
+      details: expect.objectContaining({
+        interactionKind: "ask_user_questions",
+        interactionStatus: "pending",
+      }),
+    }));
+  });
+
+  it("lets board users answer ask_user_questions interactions and wakes the assignee", async () => {
+    const app = await installIssueRoutes(createApp(boardActor()));
+    const res = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/interactions/33333333-3333-4333-8333-333333333333/respond")
+      .send({
+        answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
+        summaryMarkdown: "Phase 1.",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      status: "answered",
+      result: {
+        answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
+      },
+    });
+    expect(mockAnswerQuestions).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "11111111-1111-4111-8111-111111111111", companyId: "company-1" }),
+      "33333333-3333-4333-8333-333333333333",
+      {
+        answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
+        summaryMarkdown: "Phase 1.",
+      },
+      { agentId: null, userId: "local-board" },
+    );
+    expect(mockHeartbeatWakeup).toHaveBeenCalledWith(
+      "44444444-4444-4444-8444-444444444444",
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          interactionStatus: "answered",
+          mutation: "interaction",
+        }),
+        contextSnapshot: expect.objectContaining({
+          source: "issue.interaction.respond",
+          interactionStatus: "answered",
+        }),
+      }),
+    );
+  });
+
+  it("lets board users accept and reject supported interactions", async () => {
+    const app = await installIssueRoutes(createApp(boardActor()));
+    const accepted = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/interactions/33333333-3333-4333-8333-333333333333/accept")
+      .send({});
+
+    expect(accepted.status).toBe(200);
+    expect(mockAcceptInteraction).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "11111111-1111-4111-8111-111111111111", companyId: "company-1" }),
+      "33333333-3333-4333-8333-333333333333",
+      {},
+      { agentId: null, userId: "local-board" },
+    );
+
+    const rejected = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/interactions/33333333-3333-4333-8333-333333333333/reject")
+      .send({ reason: "No" });
+
+    expect(rejected.status).toBe(200);
+    expect(mockRejectInteraction).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "11111111-1111-4111-8111-111111111111", companyId: "company-1" }),
+      "33333333-3333-4333-8333-333333333333",
+      { reason: "No" },
+      { agentId: null, userId: "local-board" },
+    );
+  });
+
+  it("does not expose selected task acceptance through the accept route contract", async () => {
+    const app = await installIssueRoutes(createApp(boardActor()));
+    const res = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/interactions/33333333-3333-4333-8333-333333333333/accept")
+      .send({ selectedClientKeys: ["task-1"] });
+
+    expect(res.status).toBe(400);
+    expect(mockAcceptInteraction).not.toHaveBeenCalled();
   });
 
   it("lets board users cancel pending question interactions", async () => {
