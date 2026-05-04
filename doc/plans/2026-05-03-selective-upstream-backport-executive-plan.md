@@ -202,6 +202,12 @@ Final residuals:
 - `#4960` / `#4859` backup engine hardening remains a follow-up because the
   upstream backup/restore diff is broader than this selective operational
   safety slice.
-- `pnpm --filter @paperclipai/ui typecheck` remains red in
-  `ui/src/components/IssueProperties.test.tsx` because two local test fixtures
-  use incomplete `Project` objects. Focused PR-C/PR-D UI tests pass.
+
+Closed after this plan:
+
+- `pnpm --filter @paperclipai/ui typecheck` was fixed by completing the
+  `Project` fixture in `ui/src/components/IssueProperties.test.tsx`.
+- Verified passing after commit `f7c93178`:
+  - `pnpm --filter @paperclipai/ui typecheck`
+  - `pnpm --filter @paperclipai/server typecheck`
+  - `pnpm --filter @paperclipai/shared typecheck`

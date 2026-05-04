@@ -435,6 +435,13 @@
       "when": 1777507200000,
       "tag": "0061_finance_events_nullable_runtime_refs",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1777852800000,
+      "tag": "0062_issue_thread_interactions",
+      "breakpoints": true
     }
   ]
 }

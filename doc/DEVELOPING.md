@@ -400,7 +400,10 @@ If you set `DATABASE_URL`, the server will use that instead of embedded PostgreS
 
 ## Automatic DB Backups
 
-Paperclip can run automatic DB backups on a timer. Defaults:
+Paperclip can run automatic logical database backups on a timer. The current
+JavaScript backup path covers supported objects in non-system schemas, including
+the Drizzle migration journal and plugin tables that use that supported object
+set. Defaults:
 
 - enabled
 - every 60 minutes
@@ -427,6 +430,16 @@ Environment overrides:
 - `PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES=<minutes>`
 - `PAPERCLIP_DB_BACKUP_RETENTION_DAYS=<days>`
 - `PAPERCLIP_DB_BACKUP_DIR=/absolute/or/~/path`
+
+DB backups are not full instance filesystem backups. For full local disaster
+recovery, also back up local storage files and the local encrypted secrets key
+if those providers are enabled.
+
+The supported JavaScript backup object set is schemas, enum types, base tables,
+primary keys, foreign keys, unique constraints, non-constraint indexes, owned
+sequences, table data, and sequence values. PostgreSQL objects outside that set,
+such as views, functions, triggers, row-level-security policies, grants, and
+arbitrary extension state, may require separate backup handling.
 
 ## Secrets in Dev
 

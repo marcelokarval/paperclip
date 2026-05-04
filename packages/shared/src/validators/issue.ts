@@ -4,6 +4,9 @@ import {
   ISSUE_EXECUTION_POLICY_MODES,
   ISSUE_EXECUTION_STAGE_TYPES,
   ISSUE_EXECUTION_STATE_STATUSES,
+  ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES,
+  ISSUE_THREAD_INTERACTION_KINDS,
+  ISSUE_THREAD_INTERACTION_STATUSES,
   ISSUE_PRIORITIES,
   ISSUE_STATUSES,
   MODEL_PROFILE_KEYS,
@@ -202,6 +205,52 @@ export const addIssueCommentSchema = z.object({
 });
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
+
+export const issueThreadInteractionStatusSchema = z.enum(ISSUE_THREAD_INTERACTION_STATUSES);
+export const issueThreadInteractionKindSchema = z.enum(ISSUE_THREAD_INTERACTION_KINDS);
+export const issueThreadInteractionContinuationPolicySchema = z.enum(
+  ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES,
+);
+
+export const askUserQuestionsQuestionOptionSchema = z.object({
+  id: z.string().trim().min(1).max(120),
+  label: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(500).nullable().optional(),
+});
+
+export const askUserQuestionsQuestionSchema = z.object({
+  id: z.string().trim().min(1).max(120),
+  prompt: z.string().trim().min(1).max(500),
+  description: z.string().trim().max(1000).nullable().optional(),
+  selectionMode: z.enum(["single", "multi"]),
+  required: z.boolean().optional(),
+  options: z.array(askUserQuestionsQuestionOptionSchema).min(1).max(10),
+});
+
+export const askUserQuestionsPayloadSchema = z.object({
+  version: z.literal(1),
+  title: z.string().trim().max(240).nullable().optional(),
+  submitLabel: z.string().trim().max(120).nullable().optional(),
+  questions: z.array(askUserQuestionsQuestionSchema).min(1).max(10),
+});
+
+export const askUserQuestionsAnswerSchema = z.object({
+  questionId: z.string().trim().min(1).max(120),
+  optionIds: z.array(z.string().trim().min(1).max(120)).max(20),
+});
+
+export const askUserQuestionsResultSchema = z.object({
+  version: z.literal(1),
+  answers: z.array(askUserQuestionsAnswerSchema).max(20),
+  cancelled: z.literal(true).optional(),
+  cancellationReason: z.string().trim().max(4000).nullable().optional(),
+  summaryMarkdown: z.string().max(20000).nullable().optional(),
+});
+
+export const cancelIssueThreadInteractionSchema = z.object({
+  reason: z.string().trim().max(4000).optional(),
+});
+export type CancelIssueThreadInteraction = z.infer<typeof cancelIssueThreadInteractionSchema>;
 
 export const linkIssueApprovalSchema = z.object({
   approvalId: z.string().uuid(),

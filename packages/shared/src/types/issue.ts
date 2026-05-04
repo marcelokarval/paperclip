@@ -5,6 +5,9 @@ import type {
   IssueExecutionStateStatus,
   IssueOriginKind,
   IssuePriority,
+  IssueThreadInteractionContinuationPolicy,
+  IssueThreadInteractionKind,
+  IssueThreadInteractionStatus,
   IssueStatus,
 } from "../constants.js";
 import type { Goal } from "./goal.js";
@@ -195,6 +198,72 @@ export interface IssueApprovalSummary {
   pendingHitl?: number;
   total: number;
 }
+
+export interface AskUserQuestionsQuestionOption {
+  id: string;
+  label: string;
+  description?: string | null;
+}
+
+export interface AskUserQuestionsQuestion {
+  id: string;
+  prompt: string;
+  description?: string | null;
+  selectionMode: "single" | "multi";
+  required?: boolean;
+  options: AskUserQuestionsQuestionOption[];
+}
+
+export interface AskUserQuestionsPayload {
+  version: 1;
+  title?: string | null;
+  submitLabel?: string | null;
+  questions: AskUserQuestionsQuestion[];
+}
+
+export interface AskUserQuestionsAnswer {
+  questionId: string;
+  optionIds: string[];
+}
+
+export interface AskUserQuestionsResult {
+  version: 1;
+  answers: AskUserQuestionsAnswer[];
+  cancelled?: true;
+  cancellationReason?: string | null;
+  summaryMarkdown?: string | null;
+}
+
+export interface IssueThreadInteractionBase {
+  id: string;
+  companyId: string;
+  issueId: string;
+  kind: IssueThreadInteractionKind;
+  status: IssueThreadInteractionStatus;
+  continuationPolicy: IssueThreadInteractionContinuationPolicy;
+  idempotencyKey?: string | null;
+  sourceCommentId?: string | null;
+  sourceRunId?: string | null;
+  title?: string | null;
+  summary?: string | null;
+  createdByAgentId?: string | null;
+  createdByUserId?: string | null;
+  resolvedByAgentId?: string | null;
+  resolvedByUserId?: string | null;
+  resolvedAt?: Date | string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}
+
+export interface AskUserQuestionsInteraction extends IssueThreadInteractionBase {
+  kind: "ask_user_questions";
+  payload: AskUserQuestionsPayload;
+  result?: AskUserQuestionsResult | null;
+}
+
+export type IssueThreadInteraction = AskUserQuestionsInteraction;
+export type IssueThreadInteractionPayload = AskUserQuestionsPayload;
+export type IssueThreadInteractionResult = AskUserQuestionsResult;
 
 export interface Issue {
   id: string;

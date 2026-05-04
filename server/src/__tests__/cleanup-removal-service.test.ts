@@ -16,6 +16,7 @@ import {
   issueExecutionDecisions,
   issueInboxArchives,
   issueReadStates,
+  issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
 import {
@@ -51,6 +52,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await db.delete(feedbackVotes);
     await db.delete(issueInboxArchives);
     await db.delete(issueReadStates);
+    await db.delete(issueThreadInteractions);
     await db.delete(issueComments);
     await db.delete(issueExecutionDecisions);
     await db.delete(heartbeatRunEvents);
@@ -346,6 +348,23 @@ describeEmbeddedPostgres("cleanup removal services", () => {
       authorUserId: "user-1",
       vote: "down",
     });
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      payload: {
+        version: 1,
+        title: "Confirm cleanup",
+        questions: [{
+          id: "q1",
+          label: "Can this company be deleted?",
+          required: true,
+          type: "text",
+        }],
+      },
+    });
 
     const removed = await companyService(db).remove(companyId);
 
@@ -354,6 +373,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await expect(db.select().from(issues).where(eq(issues.id, issueId))).resolves.toHaveLength(0);
     await expect(db.select().from(issueReadStates).where(eq(issueReadStates.companyId, companyId))).resolves.toHaveLength(0);
     await expect(db.select().from(issueInboxArchives).where(eq(issueInboxArchives.companyId, companyId))).resolves.toHaveLength(0);
+    await expect(db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.companyId, companyId))).resolves.toHaveLength(0);
     await expect(db.select().from(feedbackVotes).where(eq(feedbackVotes.companyId, companyId))).resolves.toHaveLength(0);
     await expect(db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).resolves.toHaveLength(0);
   });

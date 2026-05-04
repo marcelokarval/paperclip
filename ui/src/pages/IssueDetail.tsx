@@ -60,6 +60,7 @@ import { projectWorkspaceUrl } from "../lib/utils";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { InlineEditor } from "../components/InlineEditor";
 import { IssueChatThread, type IssueChatComposerHandle } from "../components/IssueChatThread";
+import { IssueThreadInteractionsPanel } from "../components/IssueThreadInteractionsPanel";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssuesList } from "../components/IssuesList";
 import { IssueProperties } from "../components/IssueProperties";
@@ -121,6 +122,7 @@ import {
   type IssueAttachment,
   type IssueCostSummary,
   type IssueComment,
+  type IssueThreadInteraction,
 } from "@paperclipai/shared";
 
 type CommentReassignment = IssueCommentReassignment;
@@ -876,6 +878,8 @@ function IssueDetailActivityTab({
   pendingApprovalAction,
   onApprovalAction,
 }: IssueDetailActivityTabProps) {
+  const queryClient = useQueryClient();
+  const { pushToast } = useToastActions();
   const { data: activity, isLoading: activityLoading } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
     queryFn: () => activityApi.forIssue(issueId),
@@ -896,6 +900,27 @@ function IssueDetailActivityTab({
     queryFn: () => issuesApi.listApprovals(issueId),
     placeholderData: keepPreviousDataForSameQueryTail<Awaited<ReturnType<typeof issuesApi.listApprovals>>>(issueId),
   });
+  const { data: interactions, isLoading: interactionsLoading } = useQuery({
+    queryKey: queryKeys.issues.interactions(issueId),
+    queryFn: () => issuesApi.listInteractions(issueId),
+    placeholderData: keepPreviousDataForSameQueryTail<IssueThreadInteraction[]>(issueId),
+  });
+  const cancelInteraction = useMutation({
+    mutationFn: ({ interactionId }: { interactionId: string }) =>
+      issuesApi.cancelInteraction(issueId, interactionId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(issueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId) });
+      pushToast({ title: "Question cancelled", tone: "success" });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Unable to cancel question",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
   const pendingHitlApprovals = useMemo(
     () => (linkedApprovals ?? []).filter((approval) => isIssueHitlApproval(approval) && (approval.status === "pending" || approval.status === "revision_requested")),
     [linkedApprovals],
@@ -903,7 +928,8 @@ function IssueDetailActivityTab({
   const initialLoading =
     (activityLoading && activity === undefined)
     || (linkedRunsLoading && linkedRuns === undefined)
-    || (costSummaryLoading && costSummary === undefined && linkedRuns === undefined);
+    || (costSummaryLoading && costSummary === undefined && linkedRuns === undefined)
+    || (interactionsLoading && interactions === undefined);
   const issueCostSummary = useMemo(
     () => buildIssueCostSummaryForDisplay(costSummary, linkedRuns),
     [costSummary, linkedRuns],
@@ -917,6 +943,11 @@ function IssueDetailActivityTab({
 
   return (
     <>
+      <IssueThreadInteractionsPanel
+        interactions={interactions ?? []}
+        cancellingInteractionId={cancelInteraction.variables?.interactionId ?? null}
+        onCancel={(interactionId) => cancelInteraction.mutate({ interactionId })}
+      />
       {pendingHitlApprovals.length > 0 && (
         <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2">
           <div className="flex flex-wrap items-center justify-between gap-2">

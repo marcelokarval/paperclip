@@ -11,6 +11,7 @@ import type {
   IssueCostSummary,
   IssueHitlRequest,
   IssueLabel,
+  IssueThreadInteraction,
   IssueWorkProduct,
   UpsertIssueDocument,
 } from "@paperclipai/shared";
@@ -115,6 +116,7 @@ export const issuesApi = {
   },
   getComment: (id: string, commentId: string) =>
     api.get<IssueComment>(`/issues/${id}/comments/${commentId}`),
+  listInteractions: (id: string) => api.get<IssueThreadInteraction[]>(`/issues/${id}/interactions`),
   listFeedbackVotes: (id: string) => api.get<FeedbackVote[]>(`/issues/${id}/feedback-votes`),
   listFeedbackTraces: (id: string, filters?: Record<string, string | boolean | undefined>) => {
     const params = new URLSearchParams();
@@ -149,6 +151,8 @@ export const issuesApi = {
     api.post<{ comment: IssueComment | null; hitlApproval: Approval }>(`/issues/${id}/hitl-approval`, data),
   cancelComment: (id: string, commentId: string) =>
     api.delete<IssueComment>(`/issues/${id}/comments/${commentId}`),
+  cancelInteraction: (id: string, interactionId: string, reason?: string) =>
+    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/cancel`, reason ? { reason } : {}),
   listDocuments: (id: string) => api.get<IssueDocument[]>(`/issues/${id}/documents`),
   getDocument: (id: string, key: string) => api.get<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`),
   upsertDocument: (id: string, key: string, data: UpsertIssueDocument) =>

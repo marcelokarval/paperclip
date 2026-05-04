@@ -23,9 +23,9 @@ This fork uses selective upstream backports. Do not infer that upstream
   support in heartbeat runtime.
 - `#4861`: issue thread / markdown / optimistic comment hardening where
   compatible with local UI.
-- `#4862`: issue subtree cost summaries. Interaction cancellation remains a
-  follow-up because the upstream issue-thread interaction subsystem is not
-  present in this fork.
+- `#4862`: issue subtree cost summaries plus a minimum local
+  `ask_user_questions` issue-thread interaction foundation with list/cancel
+  API, board-only cancellation, issue detail rendering, and cancellation tests.
 - `#4957`: live-run comment context.
 - `#4963`: live-run no-padding default and explicit padding tests.
 - `#4863`: compatible board/settings/skills workflow polish.
@@ -39,9 +39,21 @@ This fork uses selective upstream backports. Do not infer that upstream
 
 ## Explicit Follow-Ups
 
-- `#4862` interaction cancellation requires a separate foundational
-  issue-thread interaction subsystem port.
+- Full upstream `#4862` interaction breadth remains broader than this fork's
+  current local implementation. The local backport covers cancellable
+  `ask_user_questions` interactions, but does not add every upstream
+  create/respond/suggest/confirmation interaction flow.
 - `#4960` / `#4859` backup schema and restore hardening remain separate follow-up
   work because the upstream diff is broader than this selective backport slice.
-- UI package typecheck still has a local fixture residual in
-  `ui/src/components/IssueProperties.test.tsx`.
+
+## Closed Local Residuals
+
+- UI typecheck residual in `ui/src/components/IssueProperties.test.tsx` was
+  fixed in local commit `f7c93178`.
+- Verified after that fix:
+  - `pnpm --filter @paperclipai/ui typecheck`
+  - `pnpm --filter @paperclipai/server typecheck`
+  - `pnpm --filter @paperclipai/shared typecheck`
+- Backup schema/restore hardening from `#4859` / `#4960` was completed for the
+  local JavaScript backup path. Docs now state the supported PostgreSQL object
+  set and explicit exclusions.

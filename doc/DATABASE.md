@@ -131,6 +131,26 @@ The database mode is controlled by `DATABASE_URL`:
 
 Your Drizzle schema (`packages/db/src/schema/`) stays the same regardless of mode.
 
+## Backups
+
+Paperclip supports automatic and manual logical database backups. The current
+JavaScript backup path includes non-system schemas such as `public`, the
+Drizzle migration journal, and plugin schemas when their state is represented by
+the supported object set.
+
+The supported object set is schemas, enum types, base tables, primary keys,
+foreign keys, unique constraints, non-constraint indexes, owned sequences, table
+data, and sequence values. It does not claim complete PostgreSQL object
+coverage: views, materialized views, functions, triggers, row-level-security
+policies, publications/subscriptions, grants/ownership, and arbitrary extension
+state may require separate handling. See `doc/DEVELOPING.md` for the current
+`paperclipai db:backup` / `pnpm db:backup` commands and backup retention
+configuration.
+
+Database backups do not include non-database instance files such as local-disk
+uploads, workspace files, or the local encrypted secrets master key. Back those
+paths up separately when you need full instance disaster recovery.
+
 ## Secret storage
 
 Paperclip stores secret metadata and versions in:
