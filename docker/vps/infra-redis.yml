@@ -1,0 +1,131 @@
+x-redis-deploy-defaults: &redis_deploy_defaults
+  mode: replicated
+  replicas: 1
+  placement:
+    constraints:
+      - node.role == manager
+  restart_policy:
+    condition: on-failure
+    delay: 10s
+
+x-redis-defaults: &redis_defaults
+  image: redis:7.4-alpine
+  hostname: "{{.Service.Name}}.{{.Task.Slot}}"
+  networks:
+    - portainer_agent_network
+  healthcheck:
+    test: ["CMD", "redis-cli", "ping"]
+    interval: 10s
+    timeout: 5s
+    retries: 5
+    start_period: 60s
+  deploy:
+    <<: *redis_deploy_defaults
+
+services:
+  redis:
+    <<: *redis_defaults
+    command: redis-server --appendonly yes --auto-aof-rewrite-percentage 100 --auto-aof-rewrite-min-size 64mb --port 6379
+    volumes:
+      - redis_data:/data
+    deploy:
+      <<: *redis_deploy_defaults
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1024M
+
+  redis_landing:
+    <<: *redis_defaults
+    command: redis-server --appendonly no --maxmemory 128mb --maxmemory-policy allkeys-lru --port 6379
+    volumes:
+      - redis_landing_data:/data
+    deploy:
+      <<: *redis_deploy_defaults
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+  redis_n8n:
+    <<: *redis_defaults
+    command: redis-server --appendonly yes --auto-aof-rewrite-percentage 100 --auto-aof-rewrite-min-size 64mb --maxmemory 1024mb --maxmemory-policy allkeys-lru --port 6379
+    volumes:
+      - redis_n8n_data:/data
+    deploy:
+      <<: *redis_deploy_defaults
+      resources:
+        limits:
+          cpus: "1"
+          memory: 2048M
+
+  redis_evolution:
+    <<: *redis_defaults
+    command: redis-server --appendonly yes --auto-aof-rewrite-percentage 100 --auto-aof-rewrite-min-size 64mb --maxmemory 1024mb --maxmemory-policy allkeys-lru --port 6379
+    volumes:
+      - redis_evolution_data:/data
+    deploy:
+      <<: *redis_deploy_defaults
+      resources:
+        limits:
+          cpus: "1"
+          memory: 2048M
+
+  redis_chatwoot:
+    <<: *redis_defaults
+    command: redis-server --appendonly yes --auto-aof-rewrite-percentage 100 --auto-aof-rewrite-min-size 64mb --maxmemory 2760mb --maxmemory-policy allkeys-lru --port 6379
+    volumes:
+      - redis_chatwoot_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 240s
+    deploy:
+      <<: *redis_deploy_defaults
+      resources:
+        limits:
+          cpus: "1"
+          memory: 6G
+        reservations:
+          memory: 3G
+
+  redis_mautic:
+    <<: *redis_defaults
+    command: redis-server --appendonly yes --auto-aof-rewrite-percentage 100 --auto-aof-rewrite-min-size 64mb --maxmemory 512mb --maxmemory-policy allkeys-lru --port 6379
+    volumes:
+      - redis_mautic_data:/data
+    deploy:
+      <<: *redis_deploy_defaults
+      resources:
+        limits:
+          cpus: "1"
+          memory: 2048M
+        reservations:
+          memory: 256M
+
+volumes:
+  redis_data:
+    external: true
+    name: redis_data
+  redis_landing_data:
+    external: true
+    name: redis_landing_data
+  redis_n8n_data:
+    external: true
+    name: redis_n8n_data
+  redis_evolution_data:
+    external: true
+    name: redis_evolution_data
+  redis_chatwoot_data:
+    external: true
+    name: redis_chatwoot_data
+  redis_mautic_data:
+    external: true
+    name: redis_mautic_data
+
+networks:
+  portainer_agent_network:
+    external: true
+    name: portainer_agent_network

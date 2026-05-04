@@ -1,0 +1,55 @@
+services:
+  postgres:
+    image: supabase/postgres:17.6.1.002
+    hostname: "{{.Service.Name}}.{{.Task.Slot}}"
+    command:
+      - postgres
+      - -c
+      - max_connections=500
+      - -c
+      - shared_buffers=1GB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - log_min_messages=fatal
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: paperclip
+      POSTGRES_INIT_SQL: "CREATE EXTENSION IF NOT EXISTS vector;"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - portainer_agent_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d paperclip -h localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 2560M
+        reservations:
+          memory: 1024M
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+
+volumes:
+  postgres_data:
+    external: true
+    name: postgres_data
+
+networks:
+  portainer_agent_network:
+    external: true
+    name: portainer_agent_network

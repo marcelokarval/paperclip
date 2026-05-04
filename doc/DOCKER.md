@@ -212,6 +212,32 @@ systemctl --user stop paperclip-pod      # Stop all
 - Paperclip data persists at `~/.local/share/paperclip`.
 - For rootful quadlet deployment, remove `%h` prefixes and use absolute paths.
 
+## VPS / Portainer / Swarm
+
+For a VPS topology with Portainer, Traefik, shared PostgreSQL, MinIO, and
+external Docker volumes, use the production-oriented stack files in
+`docker/vps/`.
+
+The entrypoint is:
+
+```sh
+cp docker/vps/.env.example docker/vps/.env
+# edit docker/vps/.env on the VPS or provide the same variables in Portainer
+./scripts/deploy-vps-build-registry.sh
+./scripts/deploy-vps-stack.sh --infra
+```
+
+Main files:
+
+- `docker/vps/paperclip-stack.yml`: Paperclip app service with Traefik labels.
+- `docker/vps/infra-postgres.yml`: shared PostgreSQL 17 service.
+- `docker/vps/infra-minio.yml`: MinIO service plus optional scripts-bucket sync sidecar.
+- `docker/vps/infra-redis.yml`: Redis services matching the broader Agrelli VPS topology.
+- `docker/vps/.env.example`: sanitized environment template.
+
+The VPS files intentionally use placeholders only. Do not commit the real
+`docker/vps/.env` file or registry credentials.
+
 ## Onboard Smoke Test (Ubuntu + npm only)
 
 Use this when you want to mimic a fresh machine that only has Ubuntu + npm and verify:

@@ -1,0 +1,101 @@
+services:
+  minio:
+    image: quay.io/minio/minio
+    hostname: "{{.Service.Name}}.{{.Task.Slot}}"
+    command: server /data --console-address ":9001"
+    networks:
+      - portainer_agent_network
+    volumes:
+      - minio_data:/data
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+      - MINIO_BROWSER_REDIRECT_URL=${MINIO_BROWSER_REDIRECT_URL:?MINIO_BROWSER_REDIRECT_URL is required}
+      - MINIO_SERVER_URL=${MINIO_SERVER_URL:?MINIO_SERVER_URL is required}
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 1024M
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+      labels:
+        - traefik.enable=true
+        - traefik.docker.network=${TRAEFIK_NETWORK:-portainer_agent_network}
+        - traefik.http.routers.minio-public.rule=Host(`${MINIO_PUBLIC_HOST:?MINIO_PUBLIC_HOST is required}`)
+        - traefik.http.routers.minio-public.entrypoints=websecure
+        - traefik.http.routers.minio-public.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-le}
+        - traefik.http.routers.minio-public.tls=true
+        - traefik.http.routers.minio-public.service=minio-public
+        - traefik.http.services.minio-public.loadbalancer.server.port=9000
+        - traefik.http.services.minio-public.loadbalancer.passHostHeader=true
+        - traefik.http.routers.minio-console.rule=Host(`${MINIO_CONSOLE_HOST:?MINIO_CONSOLE_HOST is required}`)
+        - traefik.http.routers.minio-console.entrypoints=websecure
+        - traefik.http.routers.minio-console.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-le}
+        - traefik.http.routers.minio-console.tls=true
+        - traefik.http.routers.minio-console.service=minio-console
+        - traefik.http.services.minio-console.loadbalancer.server.port=9001
+        - traefik.http.services.minio-console.loadbalancer.passHostHeader=true
+
+  minio-scripts-sync:
+    image: alpine:3.20
+    hostname: "minio-scripts-sync"
+    networks:
+      - portainer_agent_network
+    volumes:
+      - checkout_scripts:/scripts
+    environment:
+      - MINIO_HOST=http://minio:9000
+      - MINIO_USER=${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      - MINIO_PASS=${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+      - BUCKET=${MINIO_SYNC_BUCKET:-scripts}
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -eu
+        echo "Installing MinIO client..."
+        apk add --no-cache curl ca-certificates
+        curl -sSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc
+        chmod +x /usr/local/bin/mc
+        echo "Configuring MinIO client..."
+        mc alias set minio "$$MINIO_HOST" "$$MINIO_USER" "$$MINIO_PASS"
+        echo "Starting sync loop..."
+        while true; do
+          echo "[sync] Syncing $$BUCKET bucket to local volume..."
+          mc mirror --overwrite "minio/$$BUCKET" /scripts 2>/dev/null || echo "[sync] Bucket not found or empty"
+          echo "[sync] Done. Sleeping 60s..."
+          sleep 60
+        done
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "0.1"
+          memory: 128M
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+
+volumes:
+  minio_data:
+    external: true
+    name: minio_data
+  checkout_scripts:
+    external: true
+    name: checkout_scripts
+
+networks:
+  portainer_agent_network:
+    external: true
+    name: portainer_agent_network
