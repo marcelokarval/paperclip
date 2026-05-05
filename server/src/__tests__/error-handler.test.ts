@@ -56,4 +56,30 @@ describe("errorHandler", () => {
     expect(res.__errorContext?.reqParams).toBeUndefined();
     expect(res.__errorContext?.reqQuery).toBeUndefined();
   });
+
+  it("returns an actionable 413 for oversized JSON payloads", () => {
+    const req = makeReq();
+    const res = makeRes() as any;
+    const next = vi.fn() as unknown as NextFunction;
+    const err = Object.assign(new Error("request entity too large"), {
+      type: "entity.too.large",
+      status: 413,
+      limit: 10_485_760,
+      length: 34_684_368,
+    });
+
+    errorHandler(err, req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(413);
+    expect(res.json).toHaveBeenCalledWith({
+      error: "Request payload too large",
+      details: {
+        message:
+          "The request body exceeded the server JSON body limit. Large company imports can inline full zip packages; increase PAPERCLIP_JSON_BODY_LIMIT or import a smaller package.",
+        limit: 10_485_760,
+        length: 34_684_368,
+      },
+    });
+    expect(res.err).toBeUndefined();
+  });
 });

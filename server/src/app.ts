@@ -76,6 +76,8 @@ const VITE_DEV_STATIC_PATHS = new Set([
   "/site.webmanifest",
 ]);
 
+const JSON_BODY_LIMIT = process.env.PAPERCLIP_JSON_BODY_LIMIT ?? "100mb";
+
 function deriveTrustedBoardOrigins(opts: {
   serverPort: number;
   allowedHostnames: string[];
@@ -143,8 +145,8 @@ export async function createApp(
   const app = express();
 
   app.use(express.json({
-    // Company import/export payloads can inline full portable packages.
-    limit: "10mb",
+    // Company import payloads can inline full portable packages, including assets.
+    limit: JSON_BODY_LIMIT,
     verify: (req, _res, buf) => {
       (req as unknown as { rawBody: Buffer }).rawBody = buf;
     },

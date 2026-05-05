@@ -26,12 +26,37 @@ function attachErrorContext(
   }
 }
 
+function isPayloadTooLargeError(err: unknown): err is Error & {
+  type?: string;
+  status?: number;
+  statusCode?: number;
+  limit?: number;
+  length?: number;
+} {
+  if (!(err instanceof Error)) return false;
+  const candidate = err as Error & { type?: unknown; status?: unknown; statusCode?: unknown };
+  return candidate.type === "entity.too.large" || candidate.status === 413 || candidate.statusCode === 413;
+}
+
 export function errorHandler(
   err: unknown,
   req: Request,
   res: Response,
   _next: NextFunction,
 ) {
+  if (isPayloadTooLargeError(err)) {
+    res.status(413).json({
+      error: "Request payload too large",
+      details: {
+        message:
+          "The request body exceeded the server JSON body limit. Large company imports can inline full zip packages; increase PAPERCLIP_JSON_BODY_LIMIT or import a smaller package.",
+        limit: typeof err.limit === "number" ? err.limit : undefined,
+        length: typeof err.length === "number" ? err.length : undefined,
+      },
+    });
+    return;
+  }
+
   if (err instanceof HttpError) {
     if (err.status >= 500) {
       attachErrorContext(

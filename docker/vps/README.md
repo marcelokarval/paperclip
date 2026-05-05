@@ -99,6 +99,9 @@ or copy `.env.example` to `docker/vps/.env` for CLI-driven deployment.
 - `PAPERCLIP_BOOTSTRAP_ROTATE_EXISTING_INVITE`: defaults to `false`; set to
   `true` only when you need startup to revoke an existing unused bootstrap
   invite and print a fresh URL
+- `PAPERCLIP_JSON_BODY_LIMIT`: defaults to `100mb`; keep this high enough for
+  local company zip import previews because the browser sends portable packages
+  inline as JSON.
 
 The YAML defaults are intentionally deployable placeholders, not production
 secrets. They exist so the stack can be edited and validated in Portainer before
