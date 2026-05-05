@@ -202,6 +202,54 @@ This starts the API server at `http://localhost:3100`. An embedded PostgreSQL da
 
 <br/>
 
+## Docker Swarm / Portainer Deploy
+
+For a VPS running Docker Swarm with Portainer and Traefik, use the deployment
+artifacts in [docker/vps/](docker/vps/). The stack is designed for:
+
+- external `portainer_agent_network`
+- Traefik HTTPS routing
+- external named volumes
+- shared PostgreSQL, optional MinIO, and optional Redis infrastructure
+- local image builds on the VPS or registry-backed builds
+
+Clone or update the project on the VPS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/marcelokarval/paperclip/local-pr-d-data-integrity-cascades/setup-paperclip-vps.sh -o setup-paperclip-vps.sh
+chmod +x setup-paperclip-vps.sh
+sudo ./setup-paperclip-vps.sh local-pr-d-data-integrity-cascades
+cd paperclip
+```
+
+Build a local Docker image on the VPS:
+
+```bash
+sudo ./scripts/deploy-vps-build.sh local-pr-d-data-integrity-cascades
+```
+
+Or build and push to a private registry:
+
+```bash
+sudo ./scripts/deploy-vps-build-registry.sh local-pr-d-data-integrity-cascades
+```
+
+Deploy the app and shared infrastructure:
+
+```bash
+sudo ./scripts/deploy-vps-stack.sh --infra
+```
+
+The YAML files are self-contained with safe placeholder values, so they can be
+edited directly in Portainer without requiring a separate `.env`. Replace the
+placeholder hostnames, auth secret, database password, image name, and storage
+credentials before production use.
+
+See [docker/vps/README.md](docker/vps/README.md) and
+[doc/DOCKER.md](doc/DOCKER.md) for the full VPS deployment guide.
+
+<br/>
+
 ## FAQ
 
 **What does a typical setup look like?**
