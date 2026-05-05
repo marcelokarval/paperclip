@@ -4,10 +4,10 @@ import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import type { Request as ExpressRequest, RequestHandler } from "express";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import {
   createDb,
   ensurePostgresDatabase,
@@ -23,10 +23,12 @@ import {
   companies,
   companyMemberships,
   instanceUserRoles,
+  invites,
 } from "@paperclipai/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
+import type { Config } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
@@ -77,6 +79,117 @@ type EmbeddedPostgresCredentials = {
   password: string;
   source: "file" | "generated";
 };
+
+function hashBootstrapInviteToken(token: string) {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+function createBootstrapInviteToken() {
+  return `pcp_bootstrap_${randomBytes(24).toString("hex")}`;
+}
+
+function parseBooleanEnv(value: string | undefined, defaultValue: boolean): boolean {
+  if (value === undefined) return defaultValue;
+  return value === "true";
+}
+
+async function maybeCreateBootstrapCeoInvite(input: {
+  db: ReturnType<typeof createDb>;
+  config: Config;
+  listenPort: number;
+}): Promise<void> {
+  if (input.config.deploymentMode !== "authenticated") return;
+
+  const autoBootstrap = parseBooleanEnv(process.env.PAPERCLIP_AUTO_BOOTSTRAP_CEO, true);
+  if (!autoBootstrap) {
+    logger.info("Bootstrap CEO auto-invite disabled by PAPERCLIP_AUTO_BOOTSTRAP_CEO");
+    return;
+  }
+
+  const existingAdminCount = await input.db
+    .select()
+    .from(instanceUserRoles)
+    .where(eq(instanceUserRoles.role, "instance_admin"))
+    .then((rows) => rows.length);
+
+  if (existingAdminCount > 0) {
+    logger.info("Bootstrap CEO auto-invite skipped because the instance already has an admin");
+    return;
+  }
+
+  const now = new Date();
+  const activeBootstrapInviteCount = await input.db
+    .select()
+    .from(invites)
+    .where(
+      and(
+        eq(invites.inviteType, "bootstrap_ceo"),
+        isNull(invites.revokedAt),
+        isNull(invites.acceptedAt),
+        gt(invites.expiresAt, now),
+      ),
+    )
+    .then((rows) => rows.length);
+
+  const rotateExistingInvite = parseBooleanEnv(process.env.PAPERCLIP_BOOTSTRAP_ROTATE_EXISTING_INVITE, false);
+  if (activeBootstrapInviteCount > 0 && !rotateExistingInvite) {
+    logger.warn(
+      "Bootstrap CEO auto-invite skipped because an active bootstrap invite already exists. Set PAPERCLIP_BOOTSTRAP_ROTATE_EXISTING_INVITE=true to rotate it on startup.",
+    );
+    return;
+  }
+
+  await input.db
+    .update(invites)
+    .set({ revokedAt: now, updatedAt: now })
+    .where(
+      and(
+        eq(invites.inviteType, "bootstrap_ceo"),
+        isNull(invites.revokedAt),
+        isNull(invites.acceptedAt),
+        gt(invites.expiresAt, now),
+      ),
+    );
+
+  const token = createBootstrapInviteToken();
+  const expiresHours = Math.max(1, Math.min(24 * 30, Number(process.env.PAPERCLIP_BOOTSTRAP_EXPIRES_HOURS) || 72));
+  const created = await input.db
+    .insert(invites)
+    .values({
+      inviteType: "bootstrap_ceo",
+      tokenHash: hashBootstrapInviteToken(token),
+      allowedJoinTypes: "human",
+      expiresAt: new Date(Date.now() + expiresHours * 60 * 60 * 1000),
+      invitedByUserId: "system",
+    })
+    .returning()
+    .then((rows) => rows[0]);
+
+  const fallbackHost = input.config.host === "0.0.0.0" || input.config.host === "::" ? "localhost" : input.config.host;
+  const baseUrl = (
+    process.env.PAPERCLIP_PUBLIC_URL ??
+    process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL ??
+    process.env.BETTER_AUTH_URL ??
+    input.config.authPublicBaseUrl ??
+    `http://${fallbackHost}:${input.listenPort}`
+  ).replace(/\/+$/, "");
+  const inviteUrl = `${baseUrl}/invite/${token}`;
+
+  logger.warn(
+    {
+      expiresAt: created.expiresAt.toISOString(),
+      inviteUrl,
+    },
+    "Created bootstrap CEO invite for first instance admin",
+  );
+  console.log(
+    [
+      "PAPERCLIP BOOTSTRAP CEO INVITE",
+      `Invite URL: ${inviteUrl}`,
+      `Expires: ${created.expiresAt.toISOString()}`,
+    ].join("\n"),
+  );
+}
 
 function resolveEmbeddedPostgresCredentials(dataDir: string): EmbeddedPostgresCredentials {
   const credentialsPath = resolve(dataDir, ".paperclip-embedded-postgres-credentials.json");
@@ -551,6 +664,12 @@ export async function startServer(): Promise<StartedServer> {
   if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
     config.authPublicBaseUrl = rewriteLocalUrlPort(config.authPublicBaseUrl, listenPort);
   }
+
+  await maybeCreateBootstrapCeoInvite({
+    db: db as ReturnType<typeof createDb>,
+    config,
+    listenPort,
+  });
 
   let authReady = config.deploymentMode === "local_trusted";
   let betterAuthHandler: RequestHandler | undefined;

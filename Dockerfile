@@ -37,6 +37,7 @@ FROM base AS build
 WORKDIR /app
 COPY --from=deps /app /app
 COPY . .
+RUN pnpm --filter paperclipai build
 RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/plugin-sdk build
 RUN pnpm --filter @paperclipai/server build
@@ -54,8 +55,8 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/cod
   && mkdir -p /paperclip \
   && chown node:node /paperclip
 
-COPY scripts/docker-entrypoint.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+COPY scripts/docker-entrypoint.sh scripts/docker-start.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/docker-start.sh
 
 ENV NODE_ENV=production \
   HOME=/paperclip \
@@ -75,4 +76,4 @@ VOLUME ["/paperclip"]
 EXPOSE 3100
 
 ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
+CMD ["/usr/local/bin/docker-start.sh"]

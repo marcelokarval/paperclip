@@ -6,6 +6,7 @@ import { createDb, instanceUserRoles, invites } from "@paperclipai/db";
 import { inferBindModeFromHost } from "@paperclipai/shared";
 import { loadPaperclipEnvFile } from "../config/env.js";
 import { readConfig, resolveConfigPath } from "../config/store.js";
+import type { PaperclipConfig } from "../config/schema.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -15,10 +16,10 @@ function createInviteToken() {
   return `pcp_bootstrap_${randomBytes(24).toString("hex")}`;
 }
 
-function resolveDbUrl(configPath?: string, explicitDbUrl?: string) {
+function resolveDbUrl(configPath?: string, explicitDbUrl?: string, config?: PaperclipConfig | null) {
   if (explicitDbUrl) return explicitDbUrl;
-  const config = readConfig(configPath);
   if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
+  config ??= readConfig(configPath);
   if (config?.database.mode === "postgres" && config.database.connectionString) {
     return config.database.connectionString;
   }
@@ -29,7 +30,7 @@ function resolveDbUrl(configPath?: string, explicitDbUrl?: string) {
   return null;
 }
 
-function resolveBaseUrl(configPath?: string, explicitBaseUrl?: string) {
+function resolveBaseUrl(configPath?: string, explicitBaseUrl?: string, config?: PaperclipConfig | null) {
   if (explicitBaseUrl) return explicitBaseUrl.replace(/\/+$/, "");
   const fromEnv =
     process.env.PAPERCLIP_PUBLIC_URL ??
@@ -37,7 +38,7 @@ function resolveBaseUrl(configPath?: string, explicitBaseUrl?: string) {
     process.env.BETTER_AUTH_URL ??
     process.env.BETTER_AUTH_BASE_URL;
   if (fromEnv?.trim()) return fromEnv.trim().replace(/\/+$/, "");
-  const config = readConfig(configPath);
+  config ??= readConfig(configPath);
   if (config?.auth.baseUrlMode === "explicit" && config.auth.publicBaseUrl) {
     return config.auth.publicBaseUrl.replace(/\/+$/, "");
   }
@@ -61,17 +62,18 @@ export async function bootstrapCeoInvite(opts: {
   const configPath = resolveConfigPath(opts.config);
   loadPaperclipEnvFile(configPath);
   const config = readConfig(configPath);
-  if (!config) {
+  const deploymentMode = process.env.PAPERCLIP_DEPLOYMENT_MODE ?? config?.server.deploymentMode;
+  if (!config && deploymentMode !== "authenticated") {
     p.log.error(`No config found at ${configPath}. Run ${pc.cyan("paperclip onboard")} first.`);
     return;
   }
 
-  if (config.server.deploymentMode !== "authenticated") {
+  if (deploymentMode !== "authenticated") {
     p.log.info("Deployment mode is local_trusted. Bootstrap CEO invite is only required for authenticated mode.");
     return;
   }
 
-  const dbUrl = resolveDbUrl(configPath, opts.dbUrl);
+  const dbUrl = resolveDbUrl(configPath, opts.dbUrl, config);
   if (!dbUrl) {
     p.log.error(
       "Could not resolve database connection for bootstrap.",
@@ -124,7 +126,7 @@ export async function bootstrapCeoInvite(opts: {
       .returning()
       .then((rows) => rows[0]);
 
-    const baseUrl = resolveBaseUrl(configPath, opts.baseUrl);
+    const baseUrl = resolveBaseUrl(configPath, opts.baseUrl, config);
     const inviteUrl = `${baseUrl}/invite/${token}`;
     p.log.success("Created bootstrap CEO invite.");
     p.log.message(`Invite URL: ${pc.cyan(inviteUrl)}`);

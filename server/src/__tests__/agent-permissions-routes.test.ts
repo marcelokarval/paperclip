@@ -91,8 +91,14 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockTrackAgentCreated = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 const mockSyncInstructionsBundleConfigFromFilePath = vi.hoisted(() => vi.fn());
+const mockRunCodexLogin = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
+  vi.doMock("@paperclipai/adapter-codex-local/server", async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    runCodexLogin: mockRunCodexLogin,
+  }));
+
   vi.doMock("@paperclipai/shared/telemetry", () => ({
     trackAgentCreated: mockTrackAgentCreated,
     trackErrorHandlerCrash: vi.fn(),
@@ -225,6 +231,11 @@ describe("agent permission routes", () => {
     );
     mockSecretService.normalizeAdapterConfigForPersistence.mockImplementation(async (_companyId, config) => config);
     mockSecretService.resolveAdapterConfigForRuntime.mockImplementation(async (_companyId, config) => ({ config }));
+    mockRunCodexLogin.mockResolvedValue({
+      status: "ok",
+      loginUrl: null,
+      message: "Codex login started",
+    });
     mockLogActivity.mockResolvedValue(undefined);
   });
 
@@ -464,5 +475,72 @@ describe("agent permission routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("rejects codex login for non-codex local agents", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app).post(`/api/agents/${agentId}/codex-login`).send({});
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Login is only supported for codex_local agents");
+    expect(mockSecretService.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
+    expect(mockRunCodexLogin).not.toHaveBeenCalled();
+  });
+
+  it("starts codex login with resolved runtime config for codex local agents", async () => {
+    const adapterConfig = {
+      instructionsFilePath: "/tmp/AGENTS.md",
+      env: {
+        OPENAI_API_KEY: { secretRef: "company-secret" },
+      },
+    };
+    const runtimeConfig = {
+      instructionsFilePath: "/tmp/AGENTS.md",
+      env: {
+        OPENAI_API_KEY: "resolved-key",
+      },
+    };
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterType: "codex_local",
+      adapterConfig,
+    });
+    mockSecretService.resolveAdapterConfigForRuntime.mockResolvedValue({ config: runtimeConfig });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app).post(`/api/agents/${agentId}/codex-login`).send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      status: "ok",
+      loginUrl: null,
+      message: "Codex login started",
+    });
+    expect(mockSecretService.resolveAdapterConfigForRuntime).toHaveBeenCalledWith(companyId, adapterConfig);
+    expect(mockRunCodexLogin).toHaveBeenCalledWith({
+      runId: expect.stringMatching(/^codex-login-[0-9a-f-]+$/),
+      agent: {
+        id: agentId,
+        companyId,
+        name: "Builder",
+        adapterType: "codex_local",
+        adapterConfig,
+      },
+      config: runtimeConfig,
+    });
   });
 });

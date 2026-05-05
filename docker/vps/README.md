@@ -72,6 +72,17 @@ or copy `.env.example` to `docker/vps/.env` for CLI-driven deployment.
    ./scripts/deploy-vps-stack.sh
    ```
 
+6. On the first authenticated deployment, read the Paperclip service logs and
+   open the generated bootstrap CEO invite URL:
+
+   ```sh
+   docker service logs paperclip_paperclip --tail 200
+   ```
+
+   The production server creates this invite automatically during startup when
+   no instance admin exists yet. This is controlled by
+   `PAPERCLIP_AUTO_BOOTSTRAP_CEO=true`.
+
 ## Required values to replace before real production use
 
 - `PAPERCLIP_HOST`: public hostname, for example `paperclip.example.com`
@@ -81,6 +92,13 @@ or copy `.env.example` to `docker/vps/.env` for CLI-driven deployment.
 - `POSTGRES_PASSWORD` and `DATABASE_URL`: must use the same PostgreSQL password
 - `PAPERCLIP_IMAGE`: image reference, for example `registry.example.com/paperclip` or `paperclip`
 - `VERSION`: image tag deployed by the stack
+- `PAPERCLIP_AUTO_BOOTSTRAP_CEO`: defaults to `true`; generates the first admin
+  invite from the image startup path when the authenticated instance has no
+  admin
+- `PAPERCLIP_BOOTSTRAP_EXPIRES_HOURS`: defaults to `72`
+- `PAPERCLIP_BOOTSTRAP_ROTATE_EXISTING_INVITE`: defaults to `false`; set to
+  `true` only when you need startup to revoke an existing unused bootstrap
+  invite and print a fresh URL
 
 The YAML defaults are intentionally deployable placeholders, not production
 secrets. They exist so the stack can be edited and validated in Portainer before

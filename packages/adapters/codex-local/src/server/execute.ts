@@ -35,7 +35,7 @@ import {
   isCodexUnknownSessionError,
   parseCodexJsonl,
 } from "./parse.js";
-import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
+import { pathExists, prepareEffectiveCodexHome, resolveSharedCodexHomeDir } from "./codex-home.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { buildCodexExecArgs } from "./codex-args.js";
 
@@ -280,18 +280,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   const envConfig = parseObject(config.env);
-  const configuredCodexHome =
-    typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
-      ? path.resolve(envConfig.CODEX_HOME.trim())
-      : null;
   const codexSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = resolveCodexDesiredSkillNames(config, codexSkillEntries);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
-  const preparedManagedCodexHome =
-    configuredCodexHome ? null : await prepareManagedCodexHome(process.env, onLog, agent.companyId);
-  const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId);
-  const effectiveCodexHome = configuredCodexHome ?? preparedManagedCodexHome ?? defaultCodexHome;
-  await fs.mkdir(effectiveCodexHome, { recursive: true });
+  const effectiveCodexHome = await prepareEffectiveCodexHome(process.env, envConfig, onLog, agent.companyId);
   // Inject skills into the same CODEX_HOME that Codex will actually run with
   // (managed home in the default case, or an explicit override from adapter config).
   const codexSkillsDir = resolveCodexSkillsDir(effectiveCodexHome);
@@ -380,6 +372,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     truthLedger: context.paperclipTruthLedger,
   });
   for (const [k, v] of Object.entries(envConfig)) {
+    if (k === "CODEX_HOME") continue;
     if (typeof v === "string") env[k] = v;
   }
   if (!disableDirectPaperclipApi && !hasExplicitApiKey && authToken) {

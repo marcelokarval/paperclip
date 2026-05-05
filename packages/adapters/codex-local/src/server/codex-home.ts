@@ -141,3 +141,24 @@ export async function prepareManagedCodexHome(
   );
   return targetHome;
 }
+
+export async function prepareEffectiveCodexHome(
+  env: NodeJS.ProcessEnv,
+  adapterEnvConfig: Record<string, unknown>,
+  onLog: AdapterExecutionContext["onLog"],
+  companyId?: string,
+): Promise<string> {
+  const configuredCodexHome =
+    typeof adapterEnvConfig.CODEX_HOME === "string" && adapterEnvConfig.CODEX_HOME.trim().length > 0
+      ? path.resolve(adapterEnvConfig.CODEX_HOME.trim())
+      : null;
+  if (configuredCodexHome) {
+    await fs.mkdir(configuredCodexHome, { recursive: true });
+    return configuredCodexHome;
+  }
+
+  const preparedManagedCodexHome = await prepareManagedCodexHome(env, onLog, companyId);
+  const effectiveCodexHome = preparedManagedCodexHome || resolveManagedCodexHomeDir(env, companyId);
+  await fs.mkdir(effectiveCodexHome, { recursive: true });
+  return effectiveCodexHome;
+}
