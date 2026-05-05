@@ -26,4 +26,15 @@ if [ "$changed" = "1" ]; then
     chown -R node:node /paperclip
 fi
 
+mkdir -p /paperclip /paperclip/.codex
+if ! gosu node sh -c '
+    test -w /paperclip &&
+    test -w /paperclip/.codex &&
+    { [ ! -e /paperclip/.codex/config.toml ] || test -r /paperclip/.codex/config.toml; } &&
+    { [ ! -e /paperclip/.codex/auth.json ] || test -r /paperclip/.codex/auth.json; }
+'; then
+    echo "Fixing /paperclip volume ownership for node user"
+    chown -R node:node /paperclip
+fi
+
 exec gosu node "$@"
