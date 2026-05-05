@@ -16,11 +16,14 @@ services:
       - PAPERCLIP_CONFIG=/paperclip/instances/default/config.json
       - PAPERCLIP_DEPLOYMENT_MODE=${PAPERCLIP_DEPLOYMENT_MODE:-authenticated}
       - PAPERCLIP_DEPLOYMENT_EXPOSURE=${PAPERCLIP_DEPLOYMENT_EXPOSURE:-private}
-      - PAPERCLIP_PUBLIC_URL=${PAPERCLIP_PUBLIC_URL:?PAPERCLIP_PUBLIC_URL is required}
+      - PAPERCLIP_PUBLIC_URL=${PAPERCLIP_PUBLIC_URL:-https://paperclip.example.com}
+      - PAPERCLIP_AUTH_PUBLIC_BASE_URL=${PAPERCLIP_AUTH_PUBLIC_BASE_URL:-https://paperclip.example.com}
       - PAPERCLIP_ALLOWED_HOSTNAMES=${PAPERCLIP_ALLOWED_HOSTNAMES:-}
       - PAPERCLIP_ENABLE_COMPANY_DELETION=${PAPERCLIP_ENABLE_COMPANY_DELETION:-false}
-      - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET is required}
-      - DATABASE_URL=${DATABASE_URL:-postgres://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/paperclip}
+      - BETTER_AUTH_URL=${BETTER_AUTH_URL:-https://paperclip.example.com}
+      - BETTER_AUTH_TRUSTED_ORIGINS=${BETTER_AUTH_TRUSTED_ORIGINS:-https://paperclip.example.com}
+      - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET:-replace-with-32-byte-random-secret}
+      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:${POSTGRES_PASSWORD:-replace-with-postgres-password}@postgres:5432/${POSTGRES_DB:-paperclip}}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - GOOGLE_GENERATIVE_AI_API_KEY=${GOOGLE_GENERATIVE_AI_API_KEY:-}
@@ -71,7 +74,7 @@ services:
       labels:
         - traefik.enable=true
         - traefik.docker.network=${TRAEFIK_NETWORK:-portainer_agent_network}
-        - traefik.http.routers.paperclip.rule=Host(`${PAPERCLIP_HOST:?PAPERCLIP_HOST is required}`)
+        - traefik.http.routers.paperclip.rule=Host(`${PAPERCLIP_HOST:-paperclip.example.com}`)
         - traefik.http.routers.paperclip.entrypoints=websecure
         - traefik.http.routers.paperclip.tls=true
         - traefik.http.routers.paperclip.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-le}
@@ -79,7 +82,7 @@ services:
         - traefik.http.services.paperclip.loadbalancer.server.port=3100
         - traefik.http.services.paperclip.loadbalancer.server.scheme=http
         - traefik.http.services.paperclip.loadbalancer.passHostHeader=true
-        - traefik.http.routers.paperclip-http.rule=Host(`${PAPERCLIP_HOST:?PAPERCLIP_HOST is required}`)
+        - traefik.http.routers.paperclip-http.rule=Host(`${PAPERCLIP_HOST:-paperclip.example.com}`)
         - traefik.http.routers.paperclip-http.entrypoints=web
         - traefik.http.routers.paperclip-http.middlewares=paperclip-redirect-to-https
         - traefik.http.middlewares.paperclip-redirect-to-https.redirectscheme.scheme=https

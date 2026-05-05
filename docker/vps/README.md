@@ -10,9 +10,10 @@ stacks:
 - optional shared infrastructure stacks for PostgreSQL, MinIO, and Redis
 - build scripts that can publish a versioned image to a private registry
 
-The files intentionally do not contain real credentials. Copy
-`.env.example` to a private `.env` file on the VPS or define these variables in
-Portainer stack environment settings.
+The files intentionally do not contain real credentials. The stack YAML files
+are self-contained with safe placeholders, so Portainer can render them without
+a separate `.env`. Replace placeholder values directly in the Portainer editor
+or copy `.env.example` to `docker/vps/.env` for CLI-driven deployment.
 
 ## Files
 
@@ -22,9 +23,18 @@ Portainer stack environment settings.
 | `infra-postgres.yml` | Shared PostgreSQL 17 stack, compatible with Paperclip `DATABASE_URL` |
 | `infra-minio.yml` | Shared MinIO stack plus optional `scripts` bucket sync sidecar |
 | `infra-redis.yml` | Shared Redis stack pattern matching the Agrelli VPS topology |
-| `.env.example` | Sanitized environment template for all stacks |
+| `.env.example` | Optional sanitized environment template for CLI-driven deploys |
 
 ## Minimal deployment order
+
+0. On a VPS clean directory, clone or update the project:
+
+   ```sh
+   curl -fsSL https://raw.githubusercontent.com/marcelokarval/paperclip/local-pr-d-data-integrity-cascades/setup-paperclip-vps.sh -o setup-paperclip-vps.sh
+   chmod +x setup-paperclip-vps.sh
+   sudo ./setup-paperclip-vps.sh local-pr-d-data-integrity-cascades
+   cd paperclip
+   ```
 
 1. Create the external network once:
 
@@ -51,7 +61,9 @@ Portainer stack environment settings.
 4. Build and publish the app image:
 
    ```sh
-   ./scripts/deploy-vps-build-registry.sh
+   ./scripts/deploy-vps-build.sh local-pr-d-data-integrity-cascades
+   # or, for a private registry:
+   ./scripts/deploy-vps-build-registry.sh local-pr-d-data-integrity-cascades
    ```
 
 5. Deploy Paperclip:
@@ -60,14 +72,19 @@ Portainer stack environment settings.
    ./scripts/deploy-vps-stack.sh
    ```
 
-## Required Paperclip env
+## Required values to replace before real production use
 
 - `PAPERCLIP_HOST`: public hostname, for example `paperclip.example.com`
 - `PAPERCLIP_PUBLIC_URL`: canonical public URL, for example `https://paperclip.example.com`
+- `PAPERCLIP_AUTH_PUBLIC_BASE_URL`, `BETTER_AUTH_URL`, and `BETTER_AUTH_TRUSTED_ORIGINS`: normally the same canonical URL
 - `BETTER_AUTH_SECRET`: 32+ byte secret
-- `POSTGRES_PASSWORD`: PostgreSQL password used by `infra-postgres.yml`
-- `PAPERCLIP_IMAGE`: image reference, for example `registry.example.com/paperclip`
+- `POSTGRES_PASSWORD` and `DATABASE_URL`: must use the same PostgreSQL password
+- `PAPERCLIP_IMAGE`: image reference, for example `registry.example.com/paperclip` or `paperclip`
 - `VERSION`: image tag deployed by the stack
+
+The YAML defaults are intentionally deployable placeholders, not production
+secrets. They exist so the stack can be edited and validated in Portainer before
+real values are supplied.
 
 ## Optional MinIO / S3 storage env
 

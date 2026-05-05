@@ -10,14 +10,25 @@ load_vps_env
 require_command docker
 
 APP_IMAGE_NAME="${APP_IMAGE_NAME:-paperclip}"
-VERSION="${1:-${VERSION:-$(date +%Y%m%d%H%M%S)}}"
+DEFAULT_BRANCH="$(git -C "$REPO_ROOT" branch --show-current 2>/dev/null || echo main)"
+BRANCH="${1:-${BRANCH:-$DEFAULT_BRANCH}}"
+VERSION="${VERSION:-${CUSTOM_VERSION:-$(date +%Y%m%d%H%M%S)}}"
 USER_UID="${USER_UID:-1000}"
 USER_GID="${USER_GID:-1000}"
 
 cd "$REPO_ROOT"
 
+if [ -n "$BRANCH" ]; then
+  log "Updating repository branch: $BRANCH"
+  git fetch origin
+  git checkout "$BRANCH" 2>/dev/null || git checkout -b "$BRANCH" "origin/$BRANCH"
+  git reset --hard "origin/$BRANCH"
+  git pull origin "$BRANCH"
+fi
+
 log "Building Paperclip VPS image"
 log "Image: $APP_IMAGE_NAME"
+log "Branch: $BRANCH"
 log "Version: $VERSION"
 
 docker build \

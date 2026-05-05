@@ -15,15 +15,15 @@ services:
       - -c
       - log_min_messages=fatal
     environment:
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
-      POSTGRES_DB: paperclip
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-replace-with-postgres-password}
+      POSTGRES_DB: ${POSTGRES_DB:-paperclip}
       POSTGRES_INIT_SQL: "CREATE EXTENSION IF NOT EXISTS vector;"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - portainer_agent_network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d paperclip -h localhost"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d \"$${POSTGRES_DB}\" -h localhost"]
       interval: 5s
       timeout: 5s
       retries: 10

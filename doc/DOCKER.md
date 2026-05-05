@@ -221,11 +221,17 @@ external Docker volumes, use the production-oriented stack files in
 The entrypoint is:
 
 ```sh
-cp docker/vps/.env.example docker/vps/.env
-# edit docker/vps/.env on the VPS or provide the same variables in Portainer
-./scripts/deploy-vps-build-registry.sh
+curl -fsSL https://raw.githubusercontent.com/marcelokarval/paperclip/local-pr-d-data-integrity-cascades/setup-paperclip-vps.sh -o setup-paperclip-vps.sh
+chmod +x setup-paperclip-vps.sh
+sudo ./setup-paperclip-vps.sh local-pr-d-data-integrity-cascades
+cd paperclip
+./scripts/deploy-vps-build.sh local-pr-d-data-integrity-cascades
 ./scripts/deploy-vps-stack.sh --infra
 ```
+
+For registry-backed deploys, use
+`./scripts/deploy-vps-build-registry.sh local-pr-d-data-integrity-cascades`
+instead of the local-only build script.
 
 Main files:
 
@@ -233,10 +239,14 @@ Main files:
 - `docker/vps/infra-postgres.yml`: shared PostgreSQL 17 service.
 - `docker/vps/infra-minio.yml`: MinIO service plus optional scripts-bucket sync sidecar.
 - `docker/vps/infra-redis.yml`: Redis services matching the broader Agrelli VPS topology.
-- `docker/vps/.env.example`: sanitized environment template.
+- `setup-paperclip-vps.sh`: VPS clone/update helper matching the Agrelli setup-script pattern.
+- `scripts/deploy-vps-build.sh`: local VPS image build helper.
+- `scripts/deploy-vps-build-registry.sh`: image build and registry push helper.
+- `docker/vps/.env.example`: optional sanitized environment template for CLI-driven deploys.
 
-The VPS files intentionally use placeholders only. Do not commit the real
-`docker/vps/.env` file or registry credentials.
+The VPS stack YAML files intentionally use placeholders only and can be edited
+directly in Portainer without a separate `.env`. Do not commit the real
+`docker/vps/.env` file, production YAML overrides, or registry credentials.
 
 ## Onboard Smoke Test (Ubuntu + npm only)
 
