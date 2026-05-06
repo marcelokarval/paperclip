@@ -1,6 +1,6 @@
 # Upstream Backport Status
 
-Last updated: 2026-05-05
+Last updated: 2026-05-06
 
 This fork uses selective upstream backports. Do not infer that upstream
 `master` was merged wholesale.
@@ -9,12 +9,29 @@ This fork uses selective upstream backports. Do not infer that upstream
 
 - Last upstream PR reviewed before this selective backport window: `#3679`
 - Latest upstream PR reviewed before the current deep-scan batch: `#5285`
-- Latest upstream PR reviewed by the current deep-scan batch: `#5308`
-- Latest upstream PR selectively integrated in this local fork: `#5307`
+- Latest upstream PR reviewed by the current deep-scan batch: `#5356`
+- Latest upstream PR selectively integrated in this local fork: `#5323`
 - Latest upstream issue explicitly addressed in this local fork: `#5299`
 - Previous execution plan: `doc/plans/2026-05-05-recovery-loop-and-upstream-sync-plan.md`
-- Current execution batch source: `.tmp/upstream-deep-scan-2026-05-05.md`
+- Current execution batch source: `.tmp/upstream-incremental-scan-2026-05-06.md`
 - Current execution batch plan: `doc/plans/2026-05-05-upstream-p0-execution-plan.md`
+
+## Current Incremental Scan - Started 2026-05-06
+
+The 2026-05-06 upstream scan reviewed upstream `master` through `#5356` and
+identified a new runtime/control-plane batch. This fork still uses selective
+backports; upstream `master` was not merged wholesale.
+
+| Task | Upstream signal | Local batch status | Local result |
+| --- | --- | --- | --- |
+| UP-20260506-01 | `#5323` manual heartbeat scope preservation | integrated | legacy `/heartbeat/invoke` forwards supplied wake scope fields through `heartbeat.wakeup`; empty-body callers keep the legacy minimal shape |
+| UP-20260506-02 | `#5324` sandbox callback allowlist | deferred | upstream depends on remote/sandbox callback bridge files not present in this fork |
+| UP-20260506-03 | `#5325` remote execution env sanitization | deferred | upstream depends on remote execution target/SSH boundary files not present in this fork |
+| UP-20260506-04 | `#5326` callback bridge concurrency serialization | deferred | upstream depends on `sandbox-callback-bridge`/`ssh` infrastructure not present in this fork |
+| UP-20260506-05 | `#5289`, `#5292`, `#5356` recovery/control-plane notices | pending | local recovery logic lives in `server/src/services/heartbeat.ts`, not upstream's split `server/src/services/recovery/` module layout |
+
+Proof for the incremental scan is recorded in
+`.tmp/upstream-incremental-scan-2026-05-06.md`.
 
 ## Current Execution Batch - Completed 2026-05-05
 
@@ -84,6 +101,9 @@ Required handling before the next migration-bearing upstream backport:
 - `#5244`: automation/assignment paths now honor `pausedAt` in addition to
   paused/terminated/pending states, cancel pre-existing queued work for
   non-invokable agents, and re-check invokability under the enqueue lock.
+- `#5323`: legacy manual heartbeat invoke now preserves supplied wake scope
+  (`reason`, `payload`, `idempotencyKey`, and `forceFreshSession`) instead of
+  dropping issue/run targeting.
 
 ## Addressed Issue References
 
