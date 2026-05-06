@@ -11,11 +11,14 @@ import {
   ensurePathInEnv,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
+import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { parseCodexJsonl } from "./parse.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
 import { buildCodexExecArgs } from "./codex-args.js";
 import { isCodexLocalFastModeSupported } from "../index.js";
+import { writeApiKeyAuthJson } from "./codex-home.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -185,19 +188,38 @@ export async function testEnvironment(
         });
       }
 
-      const probe = await runChildProcess(
-        `codex-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        "codex",
-        args,
-        {
-          cwd,
-          env,
-          timeoutSec: 45,
-          graceSec: 5,
-          stdin: "Respond with hello.",
-          onLog: async () => {},
-        },
-      );
+      const probeApiKey = isNonEmpty(configOpenAiKey)
+        ? configOpenAiKey.trim()
+        : isNonEmpty(hostOpenAiKey)
+          ? hostOpenAiKey.trim()
+          : null;
+      const probeEnv = { ...env };
+      const probeHome = probeApiKey
+        ? await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-probe-"))
+        : null;
+      let probe: Awaited<ReturnType<typeof runChildProcess>>;
+      try {
+        if (probeApiKey && probeHome) {
+          await writeApiKeyAuthJson(probeHome, probeApiKey);
+          probeEnv.CODEX_HOME = probeHome;
+        }
+
+        probe = await runChildProcess(
+          `codex-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          "codex",
+          args,
+          {
+            cwd,
+            env: probeEnv,
+            timeoutSec: 45,
+            graceSec: 5,
+            stdin: "Respond with hello.",
+            onLog: async () => {},
+          },
+        );
+      } finally {
+        if (probeHome) await fs.rm(probeHome, { recursive: true, force: true }).catch(() => {});
+      }
       const parsed = parseCodexJsonl(probe.stdout);
       const detail = summarizeProbeDetail(probe.stdout, probe.stderr, parsed.errorMessage);
       const authEvidence = `${parsed.errorMessage ?? ""}\n${probe.stdout}\n${probe.stderr}`.trim();
@@ -231,7 +253,9 @@ export async function testEnvironment(
           level: "warn",
           message: "Codex CLI is installed, but authentication is not ready.",
           ...(detail ? { detail } : {}),
-          hint: "Configure OPENAI_API_KEY in adapter env/shell or run `codex login`, then retry the probe.",
+          hint: probeApiKey
+            ? "OPENAI_API_KEY was provided but Codex still rejected the request. Verify the key is valid for the OpenAI Responses API, or run `codex login` and seed the shared Codex auth.json."
+            : "Codex CLI does not read OPENAI_API_KEY directly from the environment; set OPENAI_API_KEY in adapter env/shell so Paperclip can write `$CODEX_HOME/auth.json`, or run `codex login` first.",
         });
       } else {
         checks.push({

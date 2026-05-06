@@ -8,6 +8,7 @@ const mockIssueService = vi.hoisted(() => ({
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
+  listComments: vi.fn(),
   findMentionedAgents: vi.fn(),
   getRelationSummaries: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
@@ -92,6 +93,11 @@ describe("issue execution policy routes", () => {
     registerModuleMocks();
     vi.clearAllMocks();
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+    mockIssueService.addComment.mockResolvedValue({
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      body: "test comment",
+    });
+    mockIssueService.listComments.mockResolvedValue([]);
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
@@ -204,5 +210,76 @@ describe("issue execution policy routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("tasks:assign");
     expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("lets a checked-out agent advance to review after executionAgentNameKey was cleared", async () => {
+    const reviewStageId = "11111111-1111-4111-8111-111111111111";
+    const coderAgentId = "22222222-2222-4222-8222-222222222222";
+    const qaAgentId = "33333333-3333-4333-8333-333333333333";
+    const runId = "44444444-4444-4444-8444-444444444444";
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: reviewStageId,
+          type: "review",
+          participants: [{ type: "agent", agentId: qaAgentId }],
+        },
+      ],
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: coderAgentId,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1001",
+      title: "Execution key cleared before advance",
+      checkoutRunId: runId,
+      executionRunId: runId,
+      executionAgentNameKey: null,
+      executionPolicy: policy,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(
+      await createApp({
+        type: "agent",
+        agentId: coderAgentId,
+        companyId: "company-1",
+        runId,
+      }),
+    )
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "done", comment: "Implementation complete; verification: focused route regression passed" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.assertCheckoutOwner).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      coderAgentId,
+      runId,
+    );
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        status: "in_review",
+        assigneeAgentId: qaAgentId,
+        assigneeUserId: null,
+        actorAgentId: coderAgentId,
+        actorUserId: null,
+        executionState: expect.objectContaining({
+          status: "pending",
+          currentStageId: reviewStageId,
+          currentParticipant: expect.objectContaining({ type: "agent", agentId: qaAgentId }),
+          returnAssignee: expect.objectContaining({ type: "agent", agentId: coderAgentId }),
+        }),
+      }),
+    );
   });
 });

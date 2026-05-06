@@ -1,4 +1,4 @@
-import type { UsageSummary } from "@paperclipai/adapter-utils";
+import type { AdapterProviderRateLimitBlock, UsageSummary } from "@paperclipai/adapter-utils";
 import { asString, asNumber, parseObject, parseJson } from "@paperclipai/adapter-utils/server-utils";
 
 const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+`?claude\s+login`?|login\s+required|requires\s+login|unauthorized|authentication\s+required)/i;
@@ -132,6 +132,63 @@ function buildClaudeErrorHaystack(input: {
     .join("\n");
 }
 
+function classifyClaudeLimitKind(text: string): { limitKind: string; modelFamily: string | null } {
+  const normalized = text.toLowerCase();
+  if (normalized.includes("opus") && normalized.includes("week")) {
+    return { limitKind: "opus_weekly", modelFamily: "opus" };
+  }
+  if (normalized.includes("weekly") || normalized.includes("seven_day") || normalized.includes("7 day")) {
+    return { limitKind: "weekly", modelFamily: null };
+  }
+  return { limitKind: "five_hour", modelFamily: null };
+}
+
+function parseIsoDate(value: unknown): Date | null {
+  if (typeof value !== "string" || value.trim().length === 0) return null;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) ? parsed : null;
+}
+
+function extractClaudeStructuredRateLimit(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+}): AdapterProviderRateLimitBlock | null {
+  const candidates: Record<string, unknown>[] = [];
+  if (input.parsed) candidates.push(input.parsed);
+  for (const rawLine of (input.stdout ?? "").split(/\r?\n/)) {
+    const parsed = parseJson(rawLine.trim());
+    if (parsed) candidates.push(parsed);
+  }
+
+  for (const candidate of candidates) {
+    const type = asString(candidate.type, "");
+    const rateLimitInfo = parseObject(candidate.rate_limit_info ?? candidate.rateLimitInfo);
+    if (type !== "rate_limit_event" && Object.keys(rateLimitInfo).length === 0) continue;
+    const reset =
+      parseIsoDate(rateLimitInfo.resets_at) ??
+      parseIsoDate(rateLimitInfo.resetsAt) ??
+      parseIsoDate(candidate.resets_at) ??
+      parseIsoDate(candidate.resetsAt);
+    if (!reset) continue;
+    const { limitKind, modelFamily } = classifyClaudeLimitKind([
+      asString(rateLimitInfo.limit_kind, ""),
+      asString(rateLimitInfo.limitKind, ""),
+      asString(rateLimitInfo.message, ""),
+      asString(candidate.message, ""),
+      asString(candidate.error, ""),
+    ].join(" "));
+    return {
+      provider: "anthropic",
+      adapterType: "claude_local",
+      limitKind,
+      modelFamily,
+      resetsAt: reset.toISOString(),
+    };
+  }
+
+  return null;
+}
+
 function parseLocalClockTime(clockText: string, now: Date): Date | null {
   const match = clockText.trim().match(/^(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s*m\.?/i);
   if (!match) return null;
@@ -159,6 +216,27 @@ export function extractClaudeRetryNotBefore(input: {
   return parseLocalClockTime(resetMatch[1] ?? "", now);
 }
 
+export function extractClaudeRateLimitBlock(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}, now = new Date()): AdapterProviderRateLimitBlock | null {
+  const structured = extractClaudeStructuredRateLimit(input);
+  if (structured) return structured;
+  const resetsAt = extractClaudeRetryNotBefore(input, now);
+  if (!resetsAt) return null;
+  const haystack = buildClaudeErrorHaystack(input);
+  const { limitKind, modelFamily } = classifyClaudeLimitKind(haystack);
+  return {
+    provider: "anthropic",
+    adapterType: "claude_local",
+    limitKind,
+    modelFamily,
+    resetsAt: resetsAt.toISOString(),
+  };
+}
+
 export function isClaudeTransientUpstreamError(input: {
   parsed?: Record<string, unknown> | null;
   stdout?: string | null;
@@ -173,6 +251,7 @@ export function isClaudeTransientUpstreamError(input: {
   }).requiresLogin) return false;
   if (isClaudeMaxTurnsResult(input.parsed ?? null)) return false;
   if (isClaudeUnknownSessionError(input.parsed ?? null, input.stdout ?? "", input.stderr ?? "")) return false;
+  if (extractClaudeRateLimitBlock(input) != null) return false;
   return CLAUDE_TRANSIENT_UPSTREAM_RE.test(haystack);
 }
 

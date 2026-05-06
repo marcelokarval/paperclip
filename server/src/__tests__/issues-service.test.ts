@@ -477,6 +477,395 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
   });
 
+  it("restores execution agent name key when checkout resumes an issue after the key was cleared", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Codex Worker",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      startedAt: new Date("2026-05-05T12:00:00.000Z"),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Cleared execution agent key",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    });
+
+    const checkedOut = await svc.checkout(issueId, agentId, ["in_review"], runId);
+
+    expect(checkedOut).toMatchObject({
+      id: issueId,
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: runId,
+      executionRunId: runId,
+      executionAgentNameKey: "codex worker",
+    });
+
+    await db
+      .update(issues)
+      .set({ executionAgentNameKey: null })
+      .where(eq(issues.id, issueId));
+
+    const ownership = await svc.assertCheckoutOwner(issueId, agentId, runId);
+
+    const repaired = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(repaired?.executionAgentNameKey).toBe("codex worker");
+    expect(ownership).toMatchObject({
+      checkoutRunId: runId,
+      executionRunId: runId,
+      executionAgentNameKey: "codex worker",
+    });
+  });
+
+  it("repairs a missing execution agent name key on same-run checkout", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Codex Worker",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      startedAt: new Date("2026-05-05T12:00:00.000Z"),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Same run missing execution agent key",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      checkoutRunId: runId,
+      executionRunId: runId,
+      executionAgentNameKey: null,
+      executionLockedAt: new Date("2026-05-05T12:00:00.000Z"),
+    });
+
+    const checkedOut = await svc.checkout(issueId, agentId, ["todo"], runId);
+
+    expect(checkedOut).toMatchObject({
+      id: issueId,
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: runId,
+      executionRunId: runId,
+      executionAgentNameKey: "codex worker",
+    });
+  });
+
+  it("clears matching checkout lock when terminal execution lock is cleared", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const terminalRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: terminalRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "failed",
+      finishedAt: new Date("2026-05-05T12:00:00.000Z"),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Terminal lock pair",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      checkoutRunId: terminalRunId,
+      executionRunId: terminalRunId,
+      executionLockedAt: new Date("2026-05-05T11:00:00.000Z"),
+    });
+
+    await svc.clearExecutionRunIfTerminal(issueId);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.checkoutRunId).toBeNull();
+  });
+
+  it("rejects assignment to paused agents and agents with pausedAt set", async () => {
+    const companyId = randomUUID();
+    const pausedAgentId = randomUUID();
+    const pausedAtAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: pausedAgentId,
+        companyId,
+        name: "PausedStatus",
+        role: "engineer",
+        status: "paused",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: pausedAtAgentId,
+        companyId,
+        name: "PausedAtOnly",
+        role: "engineer",
+        status: "idle",
+        pausedAt: new Date("2026-05-05T12:00:00.000Z"),
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await expect(
+      svc.create(companyId, {
+        title: "Paused status assignment",
+        assigneeAgentId: pausedAgentId,
+      }),
+    ).rejects.toMatchObject({ status: 409, message: "Cannot assign work to paused agents" });
+
+    await expect(
+      svc.create(companyId, {
+        title: "PausedAt assignment",
+        assigneeAgentId: pausedAtAgentId,
+      }),
+    ).rejects.toMatchObject({ status: 409, message: "Cannot assign work to paused agents" });
+  });
+
+  it("preserves a different checkout owner when terminal execution lock is cleared", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const terminalRunId = randomUUID();
+    const checkoutRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: terminalRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "failed",
+      finishedAt: new Date("2026-05-05T12:00:00.000Z"),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: checkoutRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "queued",
+      startedAt: new Date("2026-05-05T12:05:00.000Z"),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Terminal execution with newer checkout",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      checkoutRunId,
+      executionRunId: terminalRunId,
+      executionLockedAt: new Date("2026-05-05T11:00:00.000Z"),
+    });
+
+    await svc.clearExecutionRunIfTerminal(issueId);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.checkoutRunId).toBe(checkoutRunId);
+  });
+
+  it("does not adopt a stale checkout lock while a different active execution run owns the issue", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const otherAgentId = randomUUID();
+    const issueId = randomUUID();
+    const staleCheckoutRunId = randomUUID();
+    const activeExecutionRunId = randomUUID();
+    const actorRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: agentId,
+        companyId,
+        name: "Codex Worker",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: otherAgentId,
+        companyId,
+        name: "Other Worker",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(heartbeatRuns).values([
+      {
+        id: staleCheckoutRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "failed",
+        finishedAt: new Date("2026-05-05T12:00:00.000Z"),
+      },
+      {
+        id: activeExecutionRunId,
+        companyId,
+        agentId: otherAgentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "running",
+        startedAt: new Date("2026-05-05T12:05:00.000Z"),
+      },
+      {
+        id: actorRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "running",
+        startedAt: new Date("2026-05-05T12:10:00.000Z"),
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale checkout with active execution owner",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      checkoutRunId: staleCheckoutRunId,
+      executionRunId: activeExecutionRunId,
+      executionAgentNameKey: "other worker",
+      executionLockedAt: new Date("2026-05-05T12:05:00.000Z"),
+    });
+
+    await expect(
+      svc.checkout(issueId, agentId, ["todo"], actorRunId),
+    ).rejects.toMatchObject({ status: 409 });
+    await expect(
+      svc.assertCheckoutOwner(issueId, agentId, actorRunId),
+    ).rejects.toMatchObject({ status: 409 });
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue).toMatchObject({
+      checkoutRunId: staleCheckoutRunId,
+      executionRunId: activeExecutionRunId,
+      executionAgentNameKey: "other worker",
+    });
+  });
+
   it("keeps checkout blocked while another active execution lock owns the issue", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

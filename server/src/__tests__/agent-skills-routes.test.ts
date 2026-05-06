@@ -6,6 +6,8 @@ const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
   update: vi.fn(),
   create: vi.fn(),
+  createIdempotent: vi.fn(),
+  findCompatibleCreate: vi.fn(),
   resolveByReference: vi.fn(),
 }));
 
@@ -218,6 +220,7 @@ describe("agent skill routes", () => {
       ambiguous: false,
       agent: makeAgent("claude_local"),
     });
+    mockAgentService.findCompatibleCreate.mockResolvedValue(null);
     mockSecretService.resolveAdapterConfigForRuntime.mockResolvedValue({ config: { env: {} } });
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([
       {
@@ -268,6 +271,10 @@ describe("agent skill routes", () => {
       runtimeConfig: input.runtimeConfig ?? {},
       budgetMonthlyCents: Number(input.budgetMonthlyCents ?? 0),
       permissions: null,
+    }));
+    mockAgentService.createIdempotent.mockImplementation(async (companyId: string, input: Record<string, unknown>) => ({
+      agent: await mockAgentService.create(companyId, input),
+      reused: false,
     }));
     mockApprovalService.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
       id: "approval-1",

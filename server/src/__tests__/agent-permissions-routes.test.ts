@@ -34,6 +34,8 @@ const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
   list: vi.fn(),
   create: vi.fn(),
+  createIdempotent: vi.fn(),
+  findCompatibleCreate: vi.fn(),
   updatePermissions: vi.fn(),
   getChainOfCommand: vi.fn(),
   resolveByReference: vi.fn(),
@@ -151,16 +153,19 @@ async function loadAppModules() {
 }
 
 function createDbStub() {
+  const result = [{
+    id: companyId,
+    name: "Paperclip",
+    requireBoardApprovalForNewAgents: false,
+  }];
+  const whereResult = {
+    orderBy: vi.fn().mockResolvedValue([]),
+    then: vi.fn().mockResolvedValue(result),
+  };
   return {
     select: vi.fn().mockReturnValue({
       from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          then: vi.fn().mockResolvedValue([{
-            id: companyId,
-            name: "Paperclip",
-            requireBoardApprovalForNewAgents: false,
-          }]),
-        }),
+        where: vi.fn().mockReturnValue(whereResult),
       }),
     }),
   };
@@ -189,6 +194,11 @@ describe("agent permission routes", () => {
     mockAgentService.getChainOfCommand.mockResolvedValue([]);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: baseAgent });
     mockAgentService.create.mockResolvedValue(baseAgent);
+    mockAgentService.createIdempotent.mockImplementation(async (companyIdArg: string, input: Record<string, unknown>) => ({
+      agent: await mockAgentService.create(companyIdArg, input),
+      reused: false,
+    }));
+    mockAgentService.findCompatibleCreate.mockResolvedValue(null);
     mockAgentService.updatePermissions.mockResolvedValue(baseAgent);
     mockAccessService.getMembership.mockResolvedValue({
       id: "membership-1",
@@ -324,6 +334,98 @@ describe("agent permission routes", () => {
     );
   });
 
+  it("reuses a compatible idempotent agent creation without duplicate side effects", async () => {
+    mockAgentService.createIdempotent.mockResolvedValue({
+      reused: true,
+      agent: {
+      ...baseAgent,
+      id: "33333333-3333-4333-8333-333333333333",
+      name: "Builder",
+      },
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .set("Idempotency-Key", "create-builder")
+      .send({
+        name: "Builder",
+        role: "engineer",
+        adapterType: "process",
+        adapterConfig: {},
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe("33333333-3333-4333-8333-333333333333");
+    expect(mockAgentService.createIdempotent).toHaveBeenCalledWith(
+      companyId,
+      expect.any(Object),
+      expect.objectContaining({
+        key: "explicit:create-builder",
+        requestHash: expect.any(String),
+      }),
+    );
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "agent.created" }),
+    );
+    expect(mockTrackAgentCreated).not.toHaveBeenCalled();
+  });
+
+  it("ignores forged client paperclip idempotency metadata", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .set("Idempotency-Key", "trusted-key")
+      .send({
+        name: "Builder",
+        role: "engineer",
+        adapterType: "process",
+        adapterConfig: {},
+        metadata: {
+          paperclipIdempotency: {
+            key: "explicit:forged-key",
+            requestHash: "forged-hash",
+          },
+          safe: true,
+        },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockAgentService.createIdempotent).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({
+        metadata: {
+          safe: true,
+          paperclipIdempotency: {
+            key: "explicit:trusted-key",
+            requestHash: expect.any(String),
+            version: 1,
+          },
+        },
+      }),
+      expect.objectContaining({
+        key: "explicit:trusted-key",
+        requestHash: expect.any(String),
+      }),
+    );
+  });
+
   it("normalizes hire requests to disable timer heartbeats by default", async () => {
     const app = await createApp({
       type: "board",
@@ -359,6 +461,51 @@ describe("agent permission routes", () => {
         },
       }),
     );
+  });
+
+  it("reuses a compatible idempotent hire without duplicate agent or approval creation", async () => {
+    mockAgentService.createIdempotent.mockResolvedValue({
+      reused: true,
+      agent: {
+      ...baseAgent,
+      id: "44444444-4444-4444-8444-444444444444",
+      status: "pending_approval",
+      },
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .set("X-Paperclip-Idempotency-Key", "hire-builder")
+      .send({
+        name: "Builder",
+        role: "engineer",
+        adapterType: "process",
+        adapterConfig: {},
+        sourceIssueId: "55555555-5555-4555-8555-555555555555",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.agent.id).toBe("44444444-4444-4444-8444-444444444444");
+    expect(mockAgentService.createIdempotent).toHaveBeenCalledWith(
+      companyId,
+      expect.any(Object),
+      expect.objectContaining({
+        key: "explicit:hire-builder",
+        requestHash: expect.any(String),
+      }),
+    );
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+    expect(mockIssueApprovalService.linkManyForApproval).not.toHaveBeenCalled();
+    expect(mockTrackAgentCreated).not.toHaveBeenCalled();
   });
 
   it("exposes explicit task assignment access on agent detail", async () => {

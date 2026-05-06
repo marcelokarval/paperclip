@@ -203,6 +203,12 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
 
 const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
 
+function normalizeAgentNameKey(value: string | null | undefined) {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  return normalized.length > 0 ? normalized : null;
+}
+
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
 }
@@ -962,7 +968,9 @@ export function issueService(db: Db) {
       .select({
         id: agents.id,
         companyId: agents.companyId,
+        name: agents.name,
         status: agents.status,
+        pausedAt: agents.pausedAt,
       })
       .from(agents)
       .where(eq(agents.id, agentId))
@@ -978,6 +986,10 @@ export function issueService(db: Db) {
     if (assignee.status === "terminated") {
       throw conflict("Cannot assign work to terminated agents");
     }
+    if (assignee.status === "paused" || assignee.pausedAt) {
+      throw conflict("Cannot assign work to paused agents");
+    }
+    return assignee;
   }
 
   async function assertAssignableUser(companyId: string, userId: string) {
@@ -1265,7 +1277,10 @@ export function issueService(db: Db) {
     return db.transaction(async (tx) => {
       await tx.execute(sql`select id from issues where id = ${issueId} for update`);
       const current = await tx
-        .select({ executionRunId: issues.executionRunId })
+        .select({
+          executionRunId: issues.executionRunId,
+          checkoutRunId: issues.checkoutRunId,
+        })
         .from(issues)
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
@@ -1284,6 +1299,7 @@ export function issueService(db: Db) {
           executionRunId: null,
           executionAgentNameKey: null,
           executionLockedAt: null,
+          checkoutRunId: current.checkoutRunId === current.executionRunId ? null : current.checkoutRunId,
           updatedAt: now,
         })
         .where(and(eq(issues.id, issueId), eq(issues.executionRunId, current.executionRunId)));
@@ -1295,6 +1311,7 @@ export function issueService(db: Db) {
     issueId: string;
     actorAgentId: string;
     actorRunId: string;
+    actorAgentNameKey?: string | null;
   }) {
     const now = new Date();
     return db
@@ -1302,6 +1319,7 @@ export function issueService(db: Db) {
       .set({
         checkoutRunId: input.actorRunId,
         executionRunId: input.actorRunId,
+        ...(input.actorAgentNameKey !== undefined ? { executionAgentNameKey: input.actorAgentNameKey } : {}),
         executionLockedAt: now,
         updatedAt: now,
       })
@@ -1329,6 +1347,7 @@ export function issueService(db: Db) {
     actorAgentId: string;
     actorRunId: string;
     expectedCheckoutRunId: string;
+    actorAgentNameKey?: string | null;
   }) {
     const stale = await isTerminalOrMissingHeartbeatRun(input.expectedCheckoutRunId);
     if (!stale) return null;
@@ -1339,6 +1358,7 @@ export function issueService(db: Db) {
       .set({
         checkoutRunId: input.actorRunId,
         executionRunId: input.actorRunId,
+        ...(input.actorAgentNameKey !== undefined ? { executionAgentNameKey: input.actorAgentNameKey } : {}),
         executionLockedAt: now,
         updatedAt: now,
       })
@@ -1348,6 +1368,7 @@ export function issueService(db: Db) {
           eq(issues.status, "in_progress"),
           eq(issues.assigneeAgentId, input.actorAgentId),
           eq(issues.checkoutRunId, input.expectedCheckoutRunId),
+          or(isNull(issues.executionRunId), eq(issues.executionRunId, input.actorRunId)),
         ),
       )
       .returning({
@@ -1966,7 +1987,8 @@ export function issueService(db: Db) {
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
-      await assertAssignableAgent(issueCompany.companyId, agentId);
+      const assignee = await assertAssignableAgent(issueCompany.companyId, agentId);
+      const agentNameKey = normalizeAgentNameKey(assignee.name);
 
       const now = new Date();
 
@@ -1988,6 +2010,7 @@ export function issueService(db: Db) {
           assigneeUserId: null,
           checkoutRunId,
           executionRunId: checkoutRunId,
+          executionAgentNameKey: agentNameKey,
           status: "in_progress",
           startedAt: now,
           updatedAt: now,
@@ -2033,6 +2056,7 @@ export function issueService(db: Db) {
           issueId: id,
           actorAgentId: agentId,
           actorRunId: checkoutRunId,
+          actorAgentNameKey: agentNameKey,
         });
         if (adopted) return adopted;
       }
@@ -2049,6 +2073,7 @@ export function issueService(db: Db) {
           actorAgentId: agentId,
           actorRunId: checkoutRunId,
           expectedCheckoutRunId: current.checkoutRunId,
+          actorAgentNameKey: agentNameKey,
         });
         if (adopted) {
           const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
@@ -2064,6 +2089,37 @@ export function issueService(db: Db) {
         current.status === "in_progress" &&
         sameRunLock(current.checkoutRunId, checkoutRunId)
       ) {
+        if (
+          checkoutRunId &&
+          current.executionRunId &&
+          current.executionRunId !== checkoutRunId
+        ) {
+          throw conflict("Issue checkout conflict", {
+            issueId: current.id,
+            status: current.status,
+            assigneeAgentId: current.assigneeAgentId,
+            checkoutRunId: current.checkoutRunId,
+            executionRunId: current.executionRunId,
+          });
+        }
+        if (checkoutRunId && agentNameKey) {
+          await db
+            .update(issues)
+            .set({
+              executionRunId: checkoutRunId,
+              executionAgentNameKey: agentNameKey,
+              executionLockedAt: now,
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(issues.id, id),
+                eq(issues.assigneeAgentId, agentId),
+                eq(issues.checkoutRunId, checkoutRunId),
+                or(isNull(issues.executionAgentNameKey), isNull(issues.executionRunId)),
+              ),
+            );
+        }
         const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
         if (!row) throw notFound("Issue not found");
         const [enriched] = await withIssueLabels(db, [row]);
@@ -2085,10 +2141,12 @@ export function issueService(db: Db) {
       const current = await db
         .select({
           id: issues.id,
+          companyId: issues.companyId,
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
           checkoutRunId: issues.checkoutRunId,
           executionRunId: issues.executionRunId,
+          executionAgentNameKey: issues.executionAgentNameKey,
         })
         .from(issues)
         .where(eq(issues.id, id))
@@ -2096,11 +2154,65 @@ export function issueService(db: Db) {
 
       if (!current) throw notFound("Issue not found");
 
+      const actorAgentNameKey = actorRunId
+        ? await db
+          .select({ name: agents.name })
+          .from(agents)
+          .where(and(eq(agents.id, actorAgentId), eq(agents.companyId, current.companyId)))
+          .then((rows) => normalizeAgentNameKey(rows[0]?.name))
+        : null;
+
       if (
         current.status === "in_progress" &&
         current.assigneeAgentId === actorAgentId &&
         sameRunLock(current.checkoutRunId, actorRunId)
       ) {
+        if (
+          actorRunId &&
+          current.executionRunId &&
+          current.executionRunId !== actorRunId
+        ) {
+          throw conflict("Issue run ownership conflict", {
+            issueId: current.id,
+            status: current.status,
+            assigneeAgentId: current.assigneeAgentId,
+            checkoutRunId: current.checkoutRunId,
+            executionRunId: current.executionRunId,
+            actorAgentId,
+            actorRunId,
+          });
+        }
+        if (actorRunId && actorAgentNameKey && !normalizeAgentNameKey(current.executionAgentNameKey)) {
+          const repaired = await db
+            .update(issues)
+            .set({
+              executionRunId: actorRunId,
+              executionAgentNameKey: actorAgentNameKey,
+              executionLockedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(issues.id, id),
+                eq(issues.assigneeAgentId, actorAgentId),
+                eq(issues.checkoutRunId, actorRunId),
+                isNull(issues.executionAgentNameKey),
+              ),
+            )
+            .returning({
+              id: issues.id,
+              companyId: issues.companyId,
+              status: issues.status,
+              assigneeAgentId: issues.assigneeAgentId,
+              checkoutRunId: issues.checkoutRunId,
+              executionRunId: issues.executionRunId,
+              executionAgentNameKey: issues.executionAgentNameKey,
+            })
+            .then((rows) => rows[0] ?? null);
+          if (repaired) {
+            return { ...repaired, adoptedFromRunId: null as string | null };
+          }
+        }
         return { ...current, adoptedFromRunId: null as string | null };
       }
 
@@ -2115,6 +2227,7 @@ export function issueService(db: Db) {
           issueId: id,
           actorAgentId,
           actorRunId,
+          actorAgentNameKey,
         });
 
         if (adopted) {
@@ -2137,6 +2250,7 @@ export function issueService(db: Db) {
           actorAgentId,
           actorRunId,
           expectedCheckoutRunId: current.checkoutRunId,
+          actorAgentNameKey,
         });
 
         if (adopted) {

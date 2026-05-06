@@ -43,6 +43,7 @@ import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { agentInstructionsService } from "./agent-instructions.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
+import { providerRateLimitService } from "./provider-rate-limits.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
@@ -1529,6 +1530,11 @@ function isSameTaskScope(left: string | null, right: string | null) {
   return (left ?? null) === (right ?? null);
 }
 
+function isCoalescableTaskScope(run: typeof heartbeatRuns.$inferSelect, incomingTaskKey: string | null) {
+  if (!incomingTaskKey) return true;
+  return isSameTaskScope(runTaskKey(run), incomingTaskKey);
+}
+
 function isTrackedLocalChildProcessAdapter(adapterType: string) {
   return SESSIONED_LOCAL_ADAPTERS.has(adapterType);
 }
@@ -2529,13 +2535,13 @@ export function heartbeatService(db: Db) {
 
     const retryRun = await db.transaction(async (tx) => {
       await tx.execute(
-        sql`select id from issues where company_id = ${run.companyId} and execution_run_id = ${run.id} for update`,
+        sql`select id from issues where company_id = ${run.companyId} and id = ${issueId} for update`,
       );
 
       const issue = await tx
         .select({ id: issues.id })
         .from(issues)
-        .where(and(eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)))
+        .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
         .then((rows) => rows[0] ?? null);
       if (!issue) return null;
 
@@ -2586,15 +2592,36 @@ export function heartbeatService(db: Db) {
         })
         .where(eq(agentWakeupRequests.id, wakeupRequest.id));
 
-      await tx
-        .update(issues)
-        .set({
-          executionRunId: queuedRun.id,
-          executionAgentNameKey: normalizeAgentNameKey(agent.name),
-          executionLockedAt: now,
-          updatedAt: now,
-        })
-        .where(eq(issues.id, issue.id));
+      const lockTransferred = await transferIssueLockToRetryRun(tx, {
+        companyId: run.companyId,
+        issueId: issue.id,
+        sourceRunId: run.id,
+        retryRunId: queuedRun.id,
+        agentName: agent.name,
+        now,
+      });
+      if (!lockTransferred) {
+        await tx
+          .update(heartbeatRuns)
+          .set({
+            status: "cancelled",
+            finishedAt: now,
+            error: "Cancelled missing-comment retry because issue checkout moved to a newer run",
+            errorCode: "cancelled",
+            updatedAt: now,
+          })
+          .where(eq(heartbeatRuns.id, queuedRun.id));
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            status: "cancelled",
+            finishedAt: now,
+            error: "Cancelled missing-comment retry because issue checkout moved to a newer run",
+            updatedAt: now,
+          })
+          .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+        return null;
+      }
 
       await tx
         .update(heartbeatRuns)
@@ -2677,6 +2704,27 @@ export function heartbeatService(db: Db) {
       return { outcome: "not_applicable" as const, queuedRun: null };
     }
 
+    const deferredIssueWake = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, run.companyId),
+          eq(agentWakeupRequests.status, "deferred_issue_execution"),
+          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (deferredIssueWake) {
+      await patchRunIssueCommentStatus(run.id, {
+        issueCommentStatus: "not_applicable",
+        issueCommentSatisfiedByCommentId: null,
+        issueCommentRetryQueuedAt: null,
+      });
+      return { outcome: "not_applicable" as const, queuedRun: null };
+    }
+
     const queuedRun = await enqueueMissingIssueCommentRetry(run, agent, issueId);
     if (queuedRun) {
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
@@ -2693,6 +2741,40 @@ export function heartbeatService(db: Db) {
       issueCommentSatisfiedByCommentId: null,
     });
     return { outcome: "retry_exhausted" as const, queuedRun: null };
+  }
+
+  async function transferIssueLockToRetryRun(
+    tx: Pick<Db, "update">,
+    input: {
+      companyId: string;
+      issueId: string;
+      sourceRunId: string;
+      retryRunId: string;
+      agentName: string | null;
+      now: Date;
+    },
+  ) {
+    const transferred = await tx
+      .update(issues)
+      .set({
+        executionRunId: input.retryRunId,
+        checkoutRunId: input.retryRunId,
+        executionAgentNameKey: normalizeAgentNameKey(input.agentName),
+        executionLockedAt: input.now,
+        updatedAt: input.now,
+      })
+      .where(
+        and(
+          eq(issues.companyId, input.companyId),
+          eq(issues.id, input.issueId),
+          or(isNull(issues.executionRunId), eq(issues.executionRunId, input.sourceRunId)),
+          or(isNull(issues.checkoutRunId), eq(issues.checkoutRunId, input.sourceRunId)),
+        ),
+      )
+      .returning({ id: issues.id })
+      .then((rows) => rows.length > 0);
+
+    return transferred;
   }
 
   async function enqueueProcessLossRetry(
@@ -2759,19 +2841,68 @@ export function heartbeatService(db: Db) {
         .where(eq(agentWakeupRequests.id, wakeupRequest.id));
 
       if (issueId) {
-        await tx
-          .update(issues)
-          .set({
-            executionRunId: retryRun.id,
-            executionAgentNameKey: normalizeAgentNameKey(agent.name),
-            executionLockedAt: now,
-            updatedAt: now,
-          })
-          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
+        const lockTransferred = await transferIssueLockToRetryRun(tx, {
+          companyId: run.companyId,
+          issueId,
+          sourceRunId: run.id,
+          retryRunId: retryRun.id,
+          agentName: agent.name,
+          now,
+        });
+        if (!lockTransferred) {
+          const message = "Cancelled stale process-loss retry because issue checkout moved to a newer run";
+          await tx
+            .update(issues)
+            .set({
+              executionRunId: null,
+              executionAgentNameKey: null,
+              executionLockedAt: null,
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(issues.companyId, run.companyId),
+                eq(issues.id, issueId),
+                eq(issues.executionRunId, run.id),
+                sql`${issues.checkoutRunId} is distinct from ${run.id}`,
+              ),
+            );
+          const [cancelledRetry] = await tx
+            .update(heartbeatRuns)
+            .set({
+              status: "cancelled",
+              finishedAt: now,
+              error: message,
+              errorCode: "cancelled",
+              updatedAt: now,
+            })
+            .where(eq(heartbeatRuns.id, retryRun.id))
+            .returning();
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: now,
+              error: message,
+              updatedAt: now,
+            })
+            .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+          return cancelledRetry ?? retryRun;
+        }
       }
 
       return retryRun;
     });
+
+    if (queued.status !== "queued") {
+      await appendRunEvent(queued, 1, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: queued.error ?? "Cancelled stale process-loss retry before execution",
+      });
+      return queued;
+    }
 
     publishLiveEvent({
       companyId: queued.companyId,
@@ -2863,19 +2994,68 @@ export function heartbeatService(db: Db) {
         .where(eq(agentWakeupRequests.id, wakeupRequest.id));
 
       if (issueId) {
-        await tx
-          .update(issues)
-          .set({
-            executionRunId: retryRun.id,
-            executionAgentNameKey: normalizeAgentNameKey(input.agent.name),
-            executionLockedAt: now,
-            updatedAt: now,
-          })
-          .where(and(eq(issues.companyId, input.run.companyId), eq(issues.id, issueId)));
+        const lockTransferred = await transferIssueLockToRetryRun(tx, {
+          companyId: input.run.companyId,
+          issueId,
+          sourceRunId: input.run.id,
+          retryRunId: retryRun.id,
+          agentName: input.agent.name,
+          now,
+        });
+        if (!lockTransferred) {
+          const message = "Cancelled stale transient retry because issue checkout moved to a newer run";
+          await tx
+            .update(issues)
+            .set({
+              executionRunId: null,
+              executionAgentNameKey: null,
+              executionLockedAt: null,
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(issues.companyId, input.run.companyId),
+                eq(issues.id, issueId),
+                eq(issues.executionRunId, input.run.id),
+                sql`${issues.checkoutRunId} is distinct from ${input.run.id}`,
+              ),
+            );
+          const [cancelledRetry] = await tx
+            .update(heartbeatRuns)
+            .set({
+              status: "cancelled",
+              finishedAt: now,
+              error: message,
+              errorCode: "cancelled",
+              updatedAt: now,
+            })
+            .where(eq(heartbeatRuns.id, retryRun.id))
+            .returning();
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: now,
+              error: message,
+              updatedAt: now,
+            })
+            .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+          return cancelledRetry ?? retryRun;
+        }
       }
 
       return retryRun;
     });
+
+    if (queued.status !== "queued") {
+      await appendRunEvent(queued, 1, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: queued.error ?? "Cancelled stale transient retry before execution",
+      });
+      return queued;
+    }
 
     publishLiveEvent({
       companyId: queued.companyId,
@@ -2916,6 +3096,15 @@ export function heartbeatService(db: Db) {
     };
   }
 
+  function isAgentInvokable(agent: Pick<typeof agents.$inferSelect, "status" | "pausedAt">) {
+    return (
+      !agent.pausedAt &&
+      agent.status !== "paused" &&
+      agent.status !== "terminated" &&
+      agent.status !== "pending_approval"
+    );
+  }
+
   async function countRunningRunsForAgent(agentId: string) {
     const [{ count }] = await db
       .select({ count: sql<number>`count(*)` })
@@ -2928,11 +3117,11 @@ export function heartbeatService(db: Db) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
     if (!agent) {
-      await cancelRunInternal(run.id, "Cancelled because the agent no longer exists");
+      await cancelQueuedRunWithoutPromotion(run, "Cancelled because the agent no longer exists");
       return null;
     }
-    if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
-      await cancelRunInternal(run.id, "Cancelled because the agent is not invokable");
+    if (!isAgentInvokable(agent)) {
+      await cancelQueuedRunWithoutPromotion(run, "Cancelled because the agent is not invokable");
       return null;
     }
 
@@ -2988,7 +3177,7 @@ export function heartbeatService(db: Db) {
     const claimedIssueId = readNonEmptyString(parseObject(claimed.contextSnapshot).issueId);
     if (claimedIssueId) {
       const claimedAgent = await getAgent(claimed.agentId);
-      await db
+      const stampedIssue = await db
         .update(issues)
         .set({
           executionRunId: claimed.id,
@@ -3001,8 +3190,34 @@ export function heartbeatService(db: Db) {
             eq(issues.id, claimedIssueId),
             eq(issues.companyId, claimed.companyId),
             or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
+            or(isNull(issues.checkoutRunId), eq(issues.checkoutRunId, claimed.id)),
           ),
-        );
+        )
+        .returning({ id: issues.id })
+        .then((rows) => rows[0] ?? null);
+      if (!stampedIssue) {
+        const message = "Cancelled stale queued issue wake: issue checkout moved to another run";
+        const cancelled = await setRunStatus(claimed.id, "cancelled", {
+          finishedAt: new Date(),
+          error: message,
+          errorCode: "cancelled",
+        });
+        await setWakeupStatus(claimed.wakeupRequestId, "cancelled", {
+          finishedAt: new Date(),
+          error: message,
+        });
+        if (cancelled) {
+          await releaseIssueExecutionWithoutPromote(cancelled);
+          await appendRunEvent(cancelled, 1, {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "warn",
+            message,
+          });
+          await finalizeAgentStatus(cancelled.agentId, "cancelled");
+        }
+        return null;
+      }
     }
 
     return claimed;
@@ -3090,7 +3305,7 @@ export function heartbeatService(db: Db) {
     const existing = await getAgent(agentId);
     if (!existing) return;
 
-    if (existing.status === "paused" || existing.status === "terminated") {
+    if (!isAgentInvokable(existing)) {
       return;
     }
 
@@ -3229,10 +3444,11 @@ export function heartbeatService(db: Db) {
       });
 
       let retriedRun: typeof heartbeatRuns.$inferSelect | null = null;
+      let retryAgent: typeof agents.$inferSelect | null = null;
       if (shouldRetry) {
-        const agent = await getAgent(run.agentId);
-        if (agent) {
-          retriedRun = await enqueueProcessLossRetry(finalizedRun, agent, now);
+        retryAgent = await getAgent(run.agentId);
+        if (retryAgent) {
+          retriedRun = await enqueueProcessLossRetry(finalizedRun, retryAgent, now);
         }
       } else {
         await releaseIssueExecutionAndPromote(finalizedRun);
@@ -3254,7 +3470,9 @@ export function heartbeatService(db: Db) {
       });
 
       await finalizeAgentStatus(run.agentId, "failed");
-      await startNextQueuedRunForAgent(run.agentId);
+      if (!shouldRetry || (retryAgent && !isAgentInvokable(retryAgent))) {
+        await startNextQueuedRunForAgent(run.agentId);
+      }
       runningProcesses.delete(run.id);
       reaped.push(run.id);
     }
@@ -3290,6 +3508,70 @@ export function heartbeatService(db: Db) {
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
       .limit(1)
       .then((rows) => rows[0] ?? null);
+  }
+
+  type AutomaticRecoveryRetryReason = "assignment_recovery" | "issue_continuation_needed";
+
+  function readAutomaticRecoveryRetryReason(context: Record<string, unknown>): AutomaticRecoveryRetryReason | null {
+    const retryReason = readNonEmptyString(context.retryReason);
+    if (retryReason === "assignment_recovery" || retryReason === "issue_continuation_needed") {
+      return retryReason;
+    }
+    return null;
+  }
+
+  async function resolveExhaustedAutomaticRecoveryChain(input: {
+    latestRun: typeof heartbeatRuns.$inferSelect | null;
+    issueId: string;
+  }): Promise<{
+    retryReason: AutomaticRecoveryRetryReason;
+    source: string | null;
+    originRun: typeof heartbeatRuns.$inferSelect;
+  } | null> {
+    if (!input.latestRun || input.latestRun.status === "succeeded") return null;
+
+    const latestContext = parseObject(input.latestRun.contextSnapshot);
+    const directRetryReason = readAutomaticRecoveryRetryReason(latestContext);
+    if (directRetryReason) {
+      return {
+        retryReason: directRetryReason,
+        source: readNonEmptyString(latestContext.source),
+        originRun: input.latestRun,
+      };
+    }
+
+    const latestRetryReason = readNonEmptyString(latestContext.retryReason);
+    const latestWakeReason = readNonEmptyString(latestContext.wakeReason);
+    if (latestRetryReason !== "process_lost" && latestWakeReason !== "process_lost_retry") {
+      return null;
+    }
+
+    let parentRunId = input.latestRun.retryOfRunId ?? readNonEmptyString(latestContext.retryOfRunId);
+    for (let depth = 0; parentRunId && depth < 8; depth += 1) {
+      const parentRun = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, parentRunId), eq(heartbeatRuns.companyId, input.latestRun.companyId)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!parentRun) return null;
+
+      const parentContext = parseObject(parentRun.contextSnapshot);
+      if (readNonEmptyString(parentContext.issueId) !== input.issueId) return null;
+
+      const parentRetryReason = readAutomaticRecoveryRetryReason(parentContext);
+      if (parentRetryReason) {
+        return {
+          retryReason: parentRetryReason,
+          source: readNonEmptyString(parentContext.source),
+          originRun: parentRun,
+        };
+      }
+
+      parentRunId = parentRun.retryOfRunId ?? readNonEmptyString(parentContext.retryOfRunId);
+    }
+
+    return null;
   }
 
   async function hasActiveExecutionPath(companyId: string, issueId: string) {
@@ -3645,7 +3927,7 @@ export function heartbeatService(db: Db) {
         result.skipped += 1;
         continue;
       }
-      if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
+      if (!isAgentInvokable(agent)) {
         result.skipped += 1;
         continue;
       }
@@ -3778,6 +4060,30 @@ export function heartbeatService(db: Db) {
         continue;
       }
 
+      const exhaustedRecoveryChain = await resolveExhaustedAutomaticRecoveryChain({
+        latestRun,
+        issueId: currentIssue.id,
+      });
+      if (exhaustedRecoveryChain?.retryReason === "issue_continuation_needed") {
+        const updated = await escalateStrandedAssignedIssue({
+          issue: currentIssue,
+          previousStatus: "in_progress",
+          latestRun,
+          comment:
+            "Paperclip automatically retried continuation for this assigned `in_progress` issue, then a follow-up " +
+            "process-loss retry also failed, leaving no live execution path. Moving it to `blocked` so it is " +
+            `visible for intervention. Latest failed run: ${latestRun?.id ?? "unknown"}; exhausted recovery run: ` +
+            `${exhaustedRecoveryChain.originRun.id}.`,
+        });
+        if (updated) {
+          result.escalated += 1;
+          result.issueIds.push(currentIssue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+
       if (await isInvocationBudgetBlocked(currentIssue, agentId)) {
         result.skipped += 1;
         continue;
@@ -3873,7 +4179,8 @@ export function heartbeatService(db: Db) {
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
       if (!agent) return [];
-      if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
+      if (!isAgentInvokable(agent)) {
+        await cancelQueuedRunsForNonInvokableAgent(agentId, "Cancelled because the agent is not invokable");
         return [];
       }
       const policy = parseHeartbeatPolicy(agent);
@@ -4758,6 +5065,7 @@ export function heartbeatService(db: Db) {
           retryNotBefore: adapterResult.retryNotBefore,
           transientRetryNotBefore: adapterResult.retryNotBefore,
         } : {}),
+        ...(adapterResult.rateLimitBlock ? { rateLimitBlock: adapterResult.rateLimitBlock } : {}),
         ...(modelProfileMetadata ? { modelProfile: modelProfileMetadata } : {}),
       };
       const persistedResultJson = mergeHeartbeatRunResultJson(
@@ -4861,6 +5169,29 @@ export function heartbeatService(db: Db) {
             contextSnapshot: finalizedRun.contextSnapshot,
           })
           : { shouldRetry: false, retryNotBefore: null, skipReason: "not_failed" };
+        if (outcome === "failed" && adapterResult.rateLimitBlock) {
+          const providerRateLimits = providerRateLimitService(db);
+          const recordedBlock = await providerRateLimits.recordBlock({
+            companyId: finalizedRun.companyId,
+            runId: finalizedRun.id,
+            issueId,
+            block: adapterResult.rateLimitBlock,
+          });
+          await appendRunEvent(finalizedRun, seq++, {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "warn",
+            message: "provider rate-limit block recorded",
+            payload: {
+              blockId: recordedBlock?.id ?? null,
+              provider: adapterResult.rateLimitBlock.provider,
+              adapterType: adapterResult.rateLimitBlock.adapterType,
+              limitKind: adapterResult.rateLimitBlock.limitKind,
+              modelFamily: adapterResult.rateLimitBlock.modelFamily ?? null,
+              resetsAt: adapterResult.rateLimitBlock.resetsAt,
+            },
+          });
+        }
         await releaseIssueExecutionAndPromote(finalizedRun);
         if (outcome === "failed" && transientRetry.shouldRetry) {
           const retryRun = await enqueueTransientUpstreamRetry({
@@ -5050,6 +5381,7 @@ export function heartbeatService(db: Db) {
           identifier: issues.identifier,
           status: issues.status,
           executionRunId: issues.executionRunId,
+          checkoutRunId: issues.checkoutRunId,
         })
         .from(issues)
         .where(
@@ -5070,7 +5402,7 @@ export function heartbeatService(db: Db) {
             executionRunId: null,
             executionAgentNameKey: null,
             executionLockedAt: null,
-            checkoutRunId: null,
+            checkoutRunId: issue.checkoutRunId === run.id ? null : issue.checkoutRunId,
             updatedAt: new Date(),
           })
           .where(eq(issues.id, issue.id));
@@ -5102,9 +5434,7 @@ export function heartbeatService(db: Db) {
         if (
           !deferredAgent ||
           deferredAgent.companyId !== issue.companyId ||
-          deferredAgent.status === "paused" ||
-          deferredAgent.status === "terminated" ||
-          deferredAgent.status === "pending_approval"
+          !isAgentInvokable(deferredAgent)
         ) {
           await tx
             .update(agentWakeupRequests)
@@ -5256,6 +5586,84 @@ export function heartbeatService(db: Db) {
     await startNextQueuedRunForAgent(promotedRun.agentId);
   }
 
+  async function cancelQueuedRunWithoutPromotion(run: typeof heartbeatRuns.$inferSelect, reason: string) {
+    const now = new Date();
+    const cancelled = await setRunStatus(run.id, "cancelled", {
+      finishedAt: now,
+      error: reason,
+      errorCode: "cancelled",
+    });
+    await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+      finishedAt: now,
+      error: reason,
+    });
+    if (cancelled) {
+      await appendRunEvent(cancelled, 1, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: reason,
+      });
+    }
+    return cancelled;
+  }
+
+  async function cancelQueuedRunsForNonInvokableAgent(agentId: string, reason: string) {
+    const queuedRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
+      .orderBy(asc(heartbeatRuns.createdAt));
+
+    for (const queuedRun of queuedRuns) {
+      await cancelQueuedRunWithoutPromotion(queuedRun, reason);
+    }
+  }
+
+  async function releaseIssueExecutionWithoutPromote(run: typeof heartbeatRuns.$inferSelect) {
+    const runContext = parseObject(run.contextSnapshot);
+    const contextIssueId = readNonEmptyString(runContext.issueId);
+    await db.transaction(async (tx) => {
+      if (contextIssueId) {
+        await tx.execute(
+          sql`select id from issues where company_id = ${run.companyId} and id = ${contextIssueId} for update`,
+        );
+      } else {
+        await tx.execute(
+          sql`select id from issues where company_id = ${run.companyId} and execution_run_id = ${run.id} for update`,
+        );
+      }
+
+      const issue = await tx
+        .select({
+          id: issues.id,
+          executionRunId: issues.executionRunId,
+          checkoutRunId: issues.checkoutRunId,
+        })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, run.companyId),
+            contextIssueId ? eq(issues.id, contextIssueId) : eq(issues.executionRunId, run.id),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+
+      if (!issue || issue.executionRunId !== run.id) return;
+
+      await tx
+        .update(issues)
+        .set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          checkoutRunId: issue.checkoutRunId === run.id ? null : issue.checkoutRunId,
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, issue.id));
+    });
+  }
+
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
@@ -5315,6 +5723,19 @@ export function heartbeatService(db: Db) {
       });
     };
 
+    const providerRateLimits = providerRateLimitService(db);
+    await providerRateLimits.releaseExpired(new Date(), agent.companyId);
+    const providerRateLimitBlock = await providerRateLimits.hasActiveBlockForAgent(agent);
+    if (providerRateLimitBlock) {
+      await writeSkippedRequest("provider_rate_limit.blocked");
+      throw conflict("Provider rate limit is active for this agent", {
+        blockId: providerRateLimitBlock.id,
+        provider: providerRateLimitBlock.provider,
+        limitKind: providerRateLimitBlock.limitKind,
+        resetsAt: providerRateLimitBlock.resetsAt.toISOString(),
+      });
+    }
+
     let projectId = readNonEmptyString(enrichedContextSnapshot.projectId);
     if (!projectId && issueId) {
       projectId = await db
@@ -5337,9 +5758,7 @@ export function heartbeatService(db: Db) {
     }
 
     if (
-      agent.status === "paused" ||
-      agent.status === "terminated" ||
-      agent.status === "pending_approval"
+      !isAgentInvokable(agent)
     ) {
       throw conflict("Agent is not invokable in its current state", { status: agent.status });
     }
@@ -5362,6 +5781,33 @@ export function heartbeatService(db: Db) {
       const agentNameKey = normalizeAgentNameKey(agent.name);
 
       const outcome = await db.transaction(async (tx) => {
+        const lockedAgent = await tx
+          .select({
+            status: agents.status,
+            pausedAt: agents.pausedAt,
+          })
+          .from(agents)
+          .where(and(eq(agents.id, agentId), eq(agents.companyId, agent.companyId)))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+
+        if (!lockedAgent || !isAgentInvokable(lockedAgent)) {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "agent_not_invokable",
+            payload,
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+          });
+          return { kind: "skipped" as const };
+        }
+
         await tx.execute(
           sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
         );
@@ -5635,113 +6081,147 @@ export function heartbeatService(db: Db) {
       return newRun;
     }
 
-    const activeRuns = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, ["queued", "running"])))
-      .orderBy(desc(heartbeatRuns.createdAt));
+    const outcome = await db.transaction(async (tx) => {
+      const lockedAgent = await tx
+        .select({
+          status: agents.status,
+          pausedAt: agents.pausedAt,
+        })
+        .from(agents)
+        .where(and(eq(agents.id, agentId), eq(agents.companyId, agent.companyId)))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
 
-    const sameScopeQueuedRun = activeRuns.find(
-      (candidate) => candidate.status === "queued" && isSameTaskScope(runTaskKey(candidate), taskKey),
-    );
-    const sameScopeRunningRun = activeRuns.find(
-      (candidate) => candidate.status === "running" && isSameTaskScope(runTaskKey(candidate), taskKey),
-    );
-    const shouldQueueFollowupForCommentWake =
-      Boolean(wakeCommentId) && Boolean(sameScopeRunningRun) && !sameScopeQueuedRun;
+      if (!lockedAgent || !isAgentInvokable(lockedAgent)) {
+        await tx.insert(agentWakeupRequests).values({
+          companyId: agent.companyId,
+          agentId,
+          source,
+          triggerDetail,
+          reason: "agent_not_invokable",
+          payload,
+          status: "skipped",
+          requestedByActorType: opts.requestedByActorType ?? null,
+          requestedByActorId: opts.requestedByActorId ?? null,
+          idempotencyKey: opts.idempotencyKey ?? null,
+          finishedAt: new Date(),
+        });
+        return { kind: "skipped" as const };
+      }
 
-    const coalescedTargetRun =
-      sameScopeQueuedRun ??
-      (shouldQueueFollowupForCommentWake ? null : sameScopeRunningRun ?? null);
+      const activeRuns = await tx
+        .select()
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, ["queued", "running"])))
+        .orderBy(desc(heartbeatRuns.createdAt));
 
-    if (coalescedTargetRun) {
-      const mergedContextSnapshot = mergeCoalescedContextSnapshot(
-        coalescedTargetRun.contextSnapshot,
-        enrichedContextSnapshot,
+      const sameScopeQueuedRun = activeRuns.find(
+        (candidate) => candidate.status === "queued" && isCoalescableTaskScope(candidate, effectiveTaskKey),
       );
-      const mergedRun = await db
-        .update(heartbeatRuns)
+      const sameScopeRunningRun = activeRuns.find(
+        (candidate) => candidate.status === "running" && isCoalescableTaskScope(candidate, effectiveTaskKey),
+      );
+      const shouldQueueFollowupForCommentWake =
+        Boolean(wakeCommentId) && Boolean(sameScopeRunningRun) && !sameScopeQueuedRun;
+
+      const coalescedTargetRun =
+        sameScopeQueuedRun ??
+        (shouldQueueFollowupForCommentWake ? null : sameScopeRunningRun ?? null);
+
+      if (coalescedTargetRun) {
+        const mergedContextSnapshot = mergeCoalescedContextSnapshot(
+          coalescedTargetRun.contextSnapshot,
+          enrichedContextSnapshot,
+        );
+        const mergedRun = await tx
+          .update(heartbeatRuns)
+          .set({
+            contextSnapshot: mergedContextSnapshot,
+            updatedAt: new Date(),
+          })
+          .where(eq(heartbeatRuns.id, coalescedTargetRun.id))
+          .returning()
+          .then((rows) => rows[0] ?? coalescedTargetRun);
+
+        await tx.insert(agentWakeupRequests).values({
+          companyId: agent.companyId,
+          agentId,
+          source,
+          triggerDetail,
+          reason,
+          payload,
+          status: "coalesced",
+          coalescedCount: 1,
+          requestedByActorType: opts.requestedByActorType ?? null,
+          requestedByActorId: opts.requestedByActorId ?? null,
+          idempotencyKey: opts.idempotencyKey ?? null,
+          runId: mergedRun.id,
+          finishedAt: new Date(),
+        });
+        return { kind: "coalesced" as const, run: mergedRun };
+      }
+
+      const wakeupRequest = await tx
+        .insert(agentWakeupRequests)
+        .values({
+          companyId: agent.companyId,
+          agentId,
+          source,
+          triggerDetail,
+          reason,
+          payload,
+          status: "queued",
+          requestedByActorType: opts.requestedByActorType ?? null,
+          requestedByActorId: opts.requestedByActorId ?? null,
+          idempotencyKey: opts.idempotencyKey ?? null,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      const newRun = await tx
+        .insert(heartbeatRuns)
+        .values({
+          companyId: agent.companyId,
+          agentId,
+          invocationSource: source,
+          triggerDetail,
+          status: "queued",
+          wakeupRequestId: wakeupRequest.id,
+          contextSnapshot: enrichedContextSnapshot,
+          sessionIdBefore: sessionBefore,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      await tx
+        .update(agentWakeupRequests)
         .set({
-          contextSnapshot: mergedContextSnapshot,
+          runId: newRun.id,
           updatedAt: new Date(),
         })
-        .where(eq(heartbeatRuns.id, coalescedTargetRun.id))
-        .returning()
-        .then((rows) => rows[0] ?? coalescedTargetRun);
+        .where(eq(agentWakeupRequests.id, wakeupRequest.id));
 
-      await db.insert(agentWakeupRequests).values({
-        companyId: agent.companyId,
-        agentId,
-        source,
-        triggerDetail,
-        reason,
-        payload,
-        status: "coalesced",
-        coalescedCount: 1,
-        requestedByActorType: opts.requestedByActorType ?? null,
-        requestedByActorId: opts.requestedByActorId ?? null,
-        idempotencyKey: opts.idempotencyKey ?? null,
-        runId: mergedRun.id,
-        finishedAt: new Date(),
-      });
-      return mergedRun;
-    }
+      return { kind: "queued" as const, run: newRun };
+    });
 
-    const wakeupRequest = await db
-      .insert(agentWakeupRequests)
-      .values({
-        companyId: agent.companyId,
-        agentId,
-        source,
-        triggerDetail,
-        reason,
-        payload,
-        status: "queued",
-        requestedByActorType: opts.requestedByActorType ?? null,
-        requestedByActorId: opts.requestedByActorId ?? null,
-        idempotencyKey: opts.idempotencyKey ?? null,
-      })
-      .returning()
-      .then((rows) => rows[0]);
-
-    const newRun = await db
-      .insert(heartbeatRuns)
-      .values({
-        companyId: agent.companyId,
-        agentId,
-        invocationSource: source,
-        triggerDetail,
-        status: "queued",
-        wakeupRequestId: wakeupRequest.id,
-        contextSnapshot: enrichedContextSnapshot,
-        sessionIdBefore: sessionBefore,
-      })
-      .returning()
-      .then((rows) => rows[0]);
-
-    await db
-      .update(agentWakeupRequests)
-      .set({
-        runId: newRun.id,
-        updatedAt: new Date(),
-      })
-      .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+    if (outcome.kind === "skipped") return null;
+    if (outcome.kind === "coalesced") return outcome.run;
 
     publishLiveEvent({
-      companyId: newRun.companyId,
+      companyId: outcome.run.companyId,
       type: "heartbeat.run.queued",
       payload: {
-        runId: newRun.id,
-        agentId: newRun.agentId,
-        invocationSource: newRun.invocationSource,
-        triggerDetail: newRun.triggerDetail,
-        wakeupRequestId: newRun.wakeupRequestId,
+        runId: outcome.run.id,
+        agentId: outcome.run.agentId,
+        invocationSource: outcome.run.invocationSource,
+        triggerDetail: outcome.run.triggerDetail,
+        wakeupRequestId: outcome.run.wakeupRequestId,
       },
     });
 
     await startNextQueuedRunForAgent(agent.id);
 
-    return newRun;
+    return outcome.run;
   }
 
   async function listProjectScopedRunIds(companyId: string, projectId: string) {
@@ -6099,13 +6579,14 @@ export function heartbeatService(db: Db) {
     reconcileStrandedAssignedIssues,
 
     tickTimers: async (now = new Date()) => {
+      await providerRateLimitService(db).releaseExpired(now);
       const allAgents = await db.select().from(agents);
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
 
       for (const agent of allAgents) {
-        if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
+        if (!isAgentInvokable(agent)) continue;
         const policy = parseHeartbeatPolicy(agent);
         if (!policy.enabled || policy.intervalSec <= 0) continue;
 

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildHeartbeatRunIssueComment } from "../services/heartbeat-run-summary.js";
+import {
+  buildHeartbeatRunIssueComment,
+  summarizeHeartbeatRunForApi,
+  summarizeHeartbeatRunResultJson,
+} from "../services/heartbeat-run-summary.js";
 
 describe("buildHeartbeatRunIssueComment", () => {
   it("appends a truth reconciliation footer when provided", () => {
@@ -62,5 +66,49 @@ describe("buildHeartbeatRunIssueComment", () => {
     expect(comment).toContain("Accept repository context from Project Intake, then generate the CTO hiring brief.");
     expect(comment).toContain("<!-- paperclip:baseline-ceo-review-decision decision=\"sufficient_for_first_cto\" -->");
     expect(comment).not.toContain("A próxima ação única do operador deve ser adicionar uma freshness note");
+  });
+
+  it("caps the raw heartbeat run API projection without mutating other run fields", () => {
+    const run = {
+      id: "run-1",
+      status: "succeeded",
+      resultJson: {
+        summary: "s".repeat(600),
+        result: "r".repeat(4_200),
+        fullTrace: "x".repeat(4_200),
+      },
+    };
+
+    const projected = summarizeHeartbeatRunForApi(run);
+
+    expect(projected).toMatchObject({
+      id: "run-1",
+      status: "succeeded",
+    });
+    expect(projected.resultJson?.summary).toHaveLength(500);
+    expect(projected.resultJson?.result).toHaveLength(4_096);
+    expect(projected.resultJson).not.toHaveProperty("fullTrace");
+    expect(run.resultJson.summary).toHaveLength(600);
+  });
+});
+
+describe("summarizeHeartbeatRunResultJson", () => {
+  it("keeps summary short while allowing substantive output fields up to the output cap", () => {
+    const summaryText = "s".repeat(600);
+    const resultText = "r".repeat(4_200);
+    const messageText = "m".repeat(4_200);
+    const errorText = "e".repeat(4_200);
+
+    const projected = summarizeHeartbeatRunResultJson({
+      summary: summaryText,
+      result: resultText,
+      message: messageText,
+      error: errorText,
+    });
+
+    expect(projected?.summary).toHaveLength(500);
+    expect(projected?.result).toHaveLength(4_096);
+    expect(projected?.message).toHaveLength(4_096);
+    expect(projected?.error).toHaveLength(4_096);
   });
 });

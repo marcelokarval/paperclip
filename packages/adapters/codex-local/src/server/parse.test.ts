@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  extractCodexRateLimitBlock,
   extractCodexRetryNotBefore,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
@@ -88,13 +89,44 @@ describe("isCodexUnknownSessionError", () => {
 });
 
 describe("isCodexTransientUpstreamError", () => {
-  it("classifies usage-limit windows as transient and extracts the retry time", () => {
+  it("classifies usage-limit windows as hard provider blocks and extracts the retry time", () => {
     const errorMessage = "You've hit your usage limit for GPT-5.3-Codex-Spark. Switch to another model now, or try again at 11:31 PM.";
     const now = new Date(2026, 3, 22, 22, 29, 2);
 
-    expect(isCodexTransientUpstreamError({ errorMessage })).toBe(true);
+    expect(isCodexTransientUpstreamError({ errorMessage })).toBe(false);
     expect(extractCodexRetryNotBefore({ errorMessage }, now)?.getTime()).toBe(
       new Date(2026, 3, 22, 23, 31, 0, 0).getTime(),
+    );
+    expect(extractCodexRateLimitBlock({ errorMessage }, now)?.resetsAt).toBe(
+      new Date(2026, 3, 22, 23, 31, 0, 0).toISOString(),
+    );
+  });
+
+  it("classifies generic usage-limit credit messages and extracts the retry time", () => {
+    const errorMessage =
+      "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:35 AM.";
+    const now = new Date(2026, 4, 5, 2, 55, 0);
+
+    expect(isCodexTransientUpstreamError({ errorMessage })).toBe(false);
+    expect(extractCodexRetryNotBefore({ errorMessage }, now)?.getTime()).toBe(
+      new Date(2026, 4, 5, 3, 35, 0, 0).getTime(),
+    );
+    expect(extractCodexRateLimitBlock({ errorMessage }, now)).toMatchObject({
+      provider: "openai",
+      adapterType: "codex_local",
+      limitKind: "usage_limit",
+      modelFamily: null,
+      resetsAt: new Date(2026, 4, 5, 3, 35, 0, 0).toISOString(),
+    });
+  });
+
+  it("parses older relative usage-limit retry windows", () => {
+    const errorMessage = "You've hit your usage limit. Try again in 4 days 20 hours 9 minutes.";
+    const now = new Date("2026-04-23T03:29:02.000Z");
+
+    expect(isCodexTransientUpstreamError({ errorMessage })).toBe(false);
+    expect(extractCodexRetryNotBefore({ errorMessage }, now)?.toISOString()).toBe(
+      "2026-04-27T23:38:02.000Z",
     );
   });
 
@@ -105,6 +137,19 @@ describe("isCodexTransientUpstreamError", () => {
     expect(extractCodexRetryNotBefore({ errorMessage }, now)?.toISOString()).toBe(
       "2026-04-23T04:31:00.000Z",
     );
+  });
+
+  it("does not classify usage-limit messages without parseable retry windows as transient", () => {
+    expect(
+      isCodexTransientUpstreamError({
+        errorMessage: "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits.",
+      }),
+    ).toBe(false);
+    expect(
+      isCodexTransientUpstreamError({
+        errorMessage: "You've hit your usage limit. Try again after your plan resets.",
+      }),
+    ).toBe(false);
   });
 
   it("classifies remote compaction failures as transient", () => {
@@ -124,6 +169,18 @@ describe("isCodexTransientUpstreamError", () => {
       "server overloaded",
     ]) {
       expect(isCodexTransientUpstreamError({ errorMessage })).toBe(true);
+    }
+  });
+
+  it("does not classify authentication, setup, or config failures as transient", () => {
+    for (const errorMessage of [
+      "Invalid API key provided: sk-test. You can find your API key at https://platform.openai.com/account/api-keys.",
+      "Login required. Run `codex login` to authenticate before using Codex.",
+      "Permission denied while reading /home/user/.codex/config.toml",
+      "Billing setup required. Add a payment method to continue using the API.",
+      "Authentication failed. Please sign in and try again later.",
+    ]) {
+      expect(isCodexTransientUpstreamError({ errorMessage })).toBe(false);
     }
   });
 });

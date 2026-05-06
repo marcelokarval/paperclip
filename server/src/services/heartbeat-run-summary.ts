@@ -6,7 +6,10 @@ import {
   type RepositoryBaselineReviewDecision,
 } from "./repository-baseline-review-comments.js";
 
-function truncateSummaryText(value: unknown, maxLength = 500) {
+const HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS = 500;
+const HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS = 4096;
+
+function truncateProjectedText(value: unknown, maxLength: number) {
   if (typeof value !== "string") return null;
   return value.length > maxLength ? value.slice(0, maxLength) : value;
 }
@@ -57,9 +60,14 @@ export function summarizeHeartbeatRunResultJson(
   }
 
   const summary: Record<string, unknown> = {};
-  const textFields = ["summary", "result", "message", "error"] as const;
-  for (const key of textFields) {
-    const value = truncateSummaryText(resultJson[key]);
+  const textFieldCaps = {
+    summary: HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS,
+    result: HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS,
+    message: HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS,
+    error: HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS,
+  } as const;
+  for (const [key, maxLength] of Object.entries(textFieldCaps)) {
+    const value = truncateProjectedText(resultJson[key], maxLength);
     if (value !== null) {
       summary[key] = value;
     }
@@ -74,6 +82,17 @@ export function summarizeHeartbeatRunResultJson(
   }
 
   return Object.keys(summary).length > 0 ? summary : null;
+}
+
+export function summarizeHeartbeatRunForApi<
+  T extends {
+    resultJson?: Record<string, unknown> | null;
+  },
+>(run: T): T {
+  return {
+    ...run,
+    resultJson: summarizeHeartbeatRunResultJson(run.resultJson),
+  };
 }
 
 export function buildHeartbeatRunIssueComment(

@@ -130,7 +130,7 @@ vi.mock("../services/index.js", () => ({
   })),
   reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   routineService: vi.fn(() => ({
-    tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),
+    tickScheduledTriggers: vi.fn(async () => ({ triggered: 0, failed: 0 })),
   })),
 }));
 
@@ -165,6 +165,7 @@ describe("startServer feedback export wiring", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     process.env.BETTER_AUTH_SECRET = "test-secret";
+    process.env.PAPERCLIP_AUTO_BOOTSTRAP_CEO = "false";
   });
 
   it("passes the feedback export service into createApp so pending traces flush in runtime", async () => {

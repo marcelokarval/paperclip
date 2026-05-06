@@ -97,6 +97,7 @@ export const createAgentSchema = z.object({
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   permissions: agentPermissionsSchema.optional(),
   metadata: z.record(z.unknown()).optional().nullable(),
+  idempotencyKey: z.string().trim().min(1).optional().nullable(),
 });
 
 export type CreateAgent = z.infer<typeof createAgentSchema>;

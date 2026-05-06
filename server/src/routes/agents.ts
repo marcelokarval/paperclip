@@ -1,8 +1,8 @@
 import { Router, type Request } from "express";
-import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projectWorkspaces } from "@paperclipai/db";
+import { agents as agentsTable, approvals as approvalsTable, companies, heartbeatRuns, issues as issuesTable, projectWorkspaces } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
@@ -75,6 +75,7 @@ import {
   resolveDefaultAgentInstructionsBundleRole,
 } from "../services/default-agent-instructions.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { summarizeHeartbeatRunForApi } from "../services/heartbeat-run-summary.js";
 
 function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
   const parsed = Number(value);
@@ -392,6 +393,94 @@ export function agentRoutes(db: Db) {
       values.push(input.sourceIssueId);
     }
     return Array.from(new Set(values));
+  }
+
+  function stableJson(value: unknown): string {
+    if (Array.isArray(value)) {
+      return `[${value.map((item) => stableJson(item)).join(",")}]`;
+    }
+    if (typeof value === "object" && value !== null) {
+      const record = value as Record<string, unknown>;
+      return `{${Object.keys(record)
+        .sort()
+        .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`)
+        .join(",")}}`;
+    }
+    return JSON.stringify(value);
+  }
+
+  function hashStableJson(value: unknown): string {
+    return createHash("sha256").update(stableJson(value)).digest("hex");
+  }
+
+  function readCreateIdempotencyKey(req: Request, bodyKey: unknown): string | null {
+    const explicit =
+      asNonEmptyString(bodyKey)
+      ?? asNonEmptyString(req.header("idempotency-key"))
+      ?? asNonEmptyString(req.header("x-idempotency-key"))
+      ?? asNonEmptyString(req.header("x-paperclip-idempotency-key"));
+    if (explicit) return `explicit:${explicit}`;
+    const actor = getActorInfo(req);
+    if (actor.runId) return `run:${actor.actorType}:${actor.actorId}:${actor.runId}`;
+    return null;
+  }
+
+  function readHireIdempotencyKey(req: Request, bodyKey: unknown, sourceIssueIds: string[]): string | null {
+    const explicit = readCreateIdempotencyKey(req, bodyKey);
+    if (explicit) return explicit;
+    if (sourceIssueIds.length === 0) return null;
+    const actor = getActorInfo(req);
+    return `source-issues:${actor.actorType}:${actor.actorId}:${sourceIssueIds.sort().join(",")}`;
+  }
+
+  function buildAgentCreateIdempotency(
+    key: string | null,
+    request: Record<string, unknown>,
+  ) {
+    if (!key) return null;
+    return {
+      key,
+      requestHash: hashStableJson(request),
+    };
+  }
+
+  function mergeAgentIdempotencyMetadata(
+    metadata: Record<string, unknown> | null | undefined,
+    idempotency: { key: string; requestHash: string } | null,
+  ) {
+    if (!idempotency) return metadata ?? null;
+    return {
+      ...(metadata ?? {}),
+      paperclipIdempotency: {
+        key: idempotency.key,
+        requestHash: idempotency.requestHash,
+        version: 1,
+      },
+    };
+  }
+
+  function sanitizeClientAgentMetadata(metadata: Record<string, unknown> | null | undefined) {
+    if (!metadata) return null;
+    const { paperclipIdempotency: _ignoredClientIdempotency, ...safeMetadata } = metadata;
+    return Object.keys(safeMetadata).length > 0 ? safeMetadata : null;
+  }
+
+  async function findPendingHireApprovalForAgent(companyId: string, agentId: string) {
+    const rows = await db
+      .select()
+      .from(approvalsTable)
+      .where(
+        and(
+          eq(approvalsTable.companyId, companyId),
+          eq(approvalsTable.type, "hire_agent"),
+          eq(approvalsTable.status, "pending"),
+        ),
+      )
+      .orderBy(desc(approvalsTable.createdAt));
+    return rows.find((row) => {
+      const payload = asRecord(row.payload);
+      return payload?.agentId === agentId;
+    }) ?? null;
   }
 
   function asRecord(value: unknown): Record<string, unknown> | null {
@@ -1736,6 +1825,7 @@ export function agentRoutes(db: Db) {
       desiredSkills: requestedDesiredSkills,
       sourceIssueId: _sourceIssueId,
       sourceIssueIds: _sourceIssueIds,
+      idempotencyKey: requestedIdempotencyKey,
       ...hireInput
     } = req.body;
     hireInput.adapterType = assertKnownAdapterType(hireInput.adapterType);
@@ -1761,10 +1851,23 @@ export function agentRoutes(db: Db) {
     );
     const normalizedHireInput = {
       ...hireInput,
+      metadata: sanitizeClientAgentMetadata(hireInput.metadata),
       adapterConfig: normalizedAdapterConfig,
       runtimeConfig: normalizeNewAgentRuntimeConfig(hireInput.runtimeConfig),
     };
-
+    const actor = getActorInfo(req);
+    const hireIdempotency = buildAgentCreateIdempotency(
+      readHireIdempotencyKey(req, requestedIdempotencyKey, sourceIssueIds),
+      {
+        endpoint: "agent-hire",
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        runId: actor.runId,
+        sourceIssueIds: [...sourceIssueIds].sort(),
+        desiredSkills: desiredSkillAssignment.desiredSkills,
+        request: normalizedHireInput,
+      },
+    );
     const company = await db
       .select()
       .from(companies)
@@ -1777,12 +1880,19 @@ export function agentRoutes(db: Db) {
 
     const requiresApproval = company.requireBoardApprovalForNewAgents;
     const status = requiresApproval ? "pending_approval" : "idle";
-    const createdAgent = await svc.create(companyId, {
+    const createdResult = await svc.createIdempotent(companyId, {
       ...normalizedHireInput,
+      metadata: mergeAgentIdempotencyMetadata(normalizedHireInput.metadata, hireIdempotency),
       status,
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
-    });
+    }, hireIdempotency);
+    if (createdResult.reused) {
+      const approval = await findPendingHireApprovalForAgent(companyId, createdResult.agent.id);
+      res.status(200).json({ agent: createdResult.agent, approval });
+      return;
+    }
+    const createdAgent = createdResult.agent;
     const bootstrapProjectContext = await resolveBootstrapProjectContextForSourceIssues({
       companyId,
       sourceIssueIds,
@@ -1797,8 +1907,6 @@ export function agentRoutes(db: Db) {
     });
 
     let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
-    const actor = getActorInfo(req);
-
     if (requiresApproval) {
       const requestedAdapterType = normalizedHireInput.adapterType ?? agent.adapterType;
       const requestedAdapterConfig =
@@ -1920,6 +2028,7 @@ export function agentRoutes(db: Db) {
 
     const {
       desiredSkills: requestedDesiredSkills,
+      idempotencyKey: requestedIdempotencyKey,
       ...createInput
     } = req.body;
     createInput.adapterType = assertKnownAdapterType(createInput.adapterType);
@@ -1944,17 +2053,38 @@ export function agentRoutes(db: Db) {
       normalizedAdapterConfig,
     );
 
-    const createdAgent = await svc.create(companyId, {
+    const actor = getActorInfo(req);
+    const normalizedCreateInput = {
       ...createInput,
+      metadata: sanitizeClientAgentMetadata(createInput.metadata),
       adapterConfig: normalizedAdapterConfig,
       runtimeConfig: normalizeNewAgentRuntimeConfig(createInput.runtimeConfig),
+    };
+    const createIdempotency = buildAgentCreateIdempotency(
+      readCreateIdempotencyKey(req, requestedIdempotencyKey),
+      {
+        endpoint: "agent-create",
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        runId: actor.runId,
+        desiredSkills: desiredSkillAssignment.desiredSkills,
+        request: normalizedCreateInput,
+      },
+    );
+    const createdResult = await svc.createIdempotent(companyId, {
+      ...normalizedCreateInput,
+      metadata: mergeAgentIdempotencyMetadata(normalizedCreateInput.metadata, createIdempotency),
       status: "idle",
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
-    });
+    }, createIdempotency);
+    if (createdResult.reused) {
+      res.status(200).json(createdResult.agent);
+      return;
+    }
+    const createdAgent = createdResult.agent;
     const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent);
 
-    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId,
       actorType: actor.actorType,
@@ -2954,7 +3084,7 @@ export function agentRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, run.companyId);
-    res.json(redactCurrentUserValue(run, await getCurrentUserRedactionOptions()));
+    res.json(redactCurrentUserValue(summarizeHeartbeatRunForApi(run), await getCurrentUserRedactionOptions()));
   });
 
   router.post("/heartbeat-runs/:runId/cancel", async (req, res) => {

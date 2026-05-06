@@ -27,6 +27,16 @@ import { runningProcesses } from "../adapters/index.ts";
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackAgentFirstHeartbeat = vi.hoisted(() => vi.fn());
 const mockReleaseRuntimeServicesForRun = vi.hoisted(() => vi.fn(async () => undefined));
+const mockServerAdapterExecute = vi.hoisted(() =>
+  vi.fn(async () => ({
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    errorMessage: null,
+    provider: "test",
+    model: "test-model",
+  })),
+);
 
 vi.mock("../telemetry.ts", () => ({
   getTelemetryClient: () => mockTelemetryClient,
@@ -48,14 +58,7 @@ vi.mock("../adapters/index.ts", async () => {
     ...actual,
     getServerAdapter: vi.fn(() => ({
       supportsLocalAgentJwt: false,
-      execute: vi.fn(async () => ({
-        exitCode: 0,
-        signal: null,
-        timedOut: false,
-        errorMessage: null,
-        provider: "test",
-        model: "test-model",
-      })),
+      execute: mockServerAdapterExecute,
     })),
   };
 });
@@ -177,6 +180,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   afterEach(async () => {
     vi.clearAllMocks();
     mockReleaseRuntimeServicesForRun.mockClear();
+    mockServerAdapterExecute.mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      provider: "test",
+      model: "test-model",
+    });
     runningProcesses.clear();
     for (const child of childProcesses) {
       child.kill("SIGKILL");
@@ -254,6 +265,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   async function seedRunFixture(input?: {
     adapterType?: string;
     agentStatus?: "paused" | "idle" | "running";
+    agentPausedAt?: Date | null;
     runStatus?: "running" | "queued" | "failed";
     processPid?: number | null;
     processGroupId?: number | null;
@@ -284,6 +296,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexCoder",
       role: "engineer",
       status: input?.agentStatus ?? "paused",
+      pausedAt: input?.agentPausedAt ?? null,
       adapterType: input?.adapterType ?? "codex_local",
       adapterConfig: {},
       runtimeConfig: {},
@@ -346,6 +359,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     source?: string | null;
     livenessState?: "advanced" | "needs_followup" | null;
     assignToUser?: boolean;
+    agentPausedAt?: Date | null;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -368,6 +382,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexCoder",
       role: "engineer",
       status: "idle",
+      pausedAt: input.agentPausedAt ?? null,
       adapterType: "codex_local",
       adapterConfig: {},
       runtimeConfig: {},
@@ -472,7 +487,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(rows).toHaveLength(1);
   });
 
-  it("queues exactly one retry when the recorded local pid is dead", async () => {
+  it("cancels a process-loss retry for a paused agent instead of leaving it queued", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       processPid: 999_999_999,
     });
@@ -493,7 +508,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const retryRun = runs.find((row) => row.id !== runId);
     expect(failedRun?.status).toBe("failed");
     expect(failedRun?.errorCode).toBe("process_lost");
-    expect(retryRun?.status).toBe("queued");
+    expect(retryRun?.status).toBe("cancelled");
+    expect(retryRun?.error).toContain("agent is not invokable");
     expect(retryRun?.retryOfRunId).toBe(runId);
     expect(retryRun?.processLossRetryCount).toBe(1);
 
@@ -503,7 +519,209 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
-    expect(issue?.checkoutRunId).toBe(runId);
+    expect(issue?.checkoutRunId).toBe(retryRun?.id ?? null);
+
+    const retryWakeup = retryRun?.wakeupRequestId
+      ? await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, retryRun.wakeupRequestId))
+        .then((rows) => rows[0] ?? null)
+      : null;
+    expect(retryWakeup?.status).toBe("cancelled");
+    expect(retryWakeup?.error).toContain("agent is not invokable");
+  });
+
+  it("keeps a codex_local process-loss retry queued for an idle invokable agent", async () => {
+    const { agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      agentPausedAt: null,
+      adapterType: "codex_local",
+      processPid: 999_999_999,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+
+    const failedRun = runs.find((row) => row.id === runId);
+    const retryRun = runs.find((row) => row.id !== runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_lost");
+    expect(retryRun?.status).toBe("queued");
+    expect(retryRun?.errorCode).toBeNull();
+    expect(retryRun?.retryOfRunId).toBe(runId);
+    expect(retryRun?.processLossRetryCount).toBe(1);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
+    expect(issue?.checkoutRunId).toBe(retryRun?.id ?? null);
+
+    const retryWakeup = retryRun?.wakeupRequestId
+      ? await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, retryRun.wakeupRequestId))
+        .then((rows) => rows[0] ?? null)
+      : null;
+    expect(retryWakeup?.status).toBe("queued");
+    expect(retryWakeup?.error).toBeNull();
+  });
+
+  it("does not clobber a checkout lock that moved to another run before process-loss retry transfer", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      processPid: 999_999_999,
+    });
+    const otherRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: otherRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "queued",
+      contextSnapshot: { issueId },
+      updatedAt: new Date("2026-03-19T00:01:00.000Z"),
+    });
+    await db
+      .update(issues)
+      .set({ checkoutRunId: otherRunId })
+      .where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    let retryRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId))
+      .then((rows) => rows[0] ?? null);
+    const retryDeadline = Date.now() + 3_000;
+    while (!retryRun && Date.now() < retryDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      retryRun = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.retryOfRunId, runId))
+        .then((rows) => rows[0] ?? null);
+    }
+    expect(retryRun?.status).toBe("cancelled");
+    expect(retryRun?.error).toContain("issue checkout moved to a newer run");
+
+    const retryWakeup = retryRun?.wakeupRequestId
+      ? await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, retryRun.wakeupRequestId))
+        .then((rows) => rows[0] ?? null)
+      : null;
+    expect(retryWakeup?.status).toBe("cancelled");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.checkoutRunId).toBe(otherRunId);
+    expect(issue?.executionRunId).toBeNull();
+
+    await heartbeat.resumeQueuedRuns();
+    const obsoleteRetry = retryRun
+      ? await heartbeat.getRun(retryRun.id)
+      : null;
+    expect(obsoleteRetry?.status).toBe("cancelled");
+    const issueAfterResume = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issueAfterResume?.checkoutRunId).toBe(otherRunId);
+    expect(issueAfterResume?.executionRunId).toBeNull();
+  });
+
+  it("cancels a transient retry when checkout moved before retry transfer", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      runStatus: "queued",
+    });
+    const otherRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: otherRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "queued",
+      contextSnapshot: { issueId },
+      updatedAt: new Date("2026-03-19T00:01:00.000Z"),
+    });
+    mockServerAdapterExecute.mockImplementationOnce(async () => {
+      await db
+        .update(issues)
+        .set({ checkoutRunId: otherRunId })
+        .where(eq(issues.id, issueId));
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorMessage: "temporary upstream failure",
+        errorFamily: "transient_upstream",
+        errorCode: "codex_transient_upstream",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+
+    let retryRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId))
+      .then((rows) => rows[0] ?? null);
+    const retryDeadline = Date.now() + 3_000;
+    while (!retryRun && Date.now() < retryDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      retryRun = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.retryOfRunId, runId))
+        .then((rows) => rows[0] ?? null);
+    }
+    expect(retryRun?.status).toBe("cancelled");
+    expect(retryRun?.error).toContain("issue checkout moved to a newer run");
+
+    const retryWakeup = retryRun?.wakeupRequestId
+      ? await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, retryRun.wakeupRequestId))
+        .then((rows) => rows[0] ?? null)
+      : null;
+    expect(retryWakeup?.status).toBe("cancelled");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.checkoutRunId).toBe(otherRunId);
+    expect(issue?.executionRunId).toBeNull();
   });
 
   it("does not queue process-loss retry for a cancelled issue", async () => {
@@ -527,7 +745,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.executionRunId).toBeNull();
   });
 
-  it("treats hermes_local as a sessioned local adapter for process-loss retry", async () => {
+  it("cancels a hermes_local process-loss retry for a paused agent instead of leaving it queued", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       adapterType: "hermes_local",
       processPid: 999_999_999,
@@ -548,7 +766,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const retryRun = runs.find((row) => row.id !== runId);
     expect(failedRun?.status).toBe("failed");
     expect(failedRun?.errorCode).toBe("process_lost");
-    expect(retryRun?.status).toBe("queued");
+    expect(retryRun?.status).toBe("cancelled");
+    expect(retryRun?.error).toContain("agent is not invokable");
     expect(retryRun?.retryOfRunId).toBe(runId);
     expect(retryRun?.processLossRetryCount).toBe(1);
 
@@ -558,7 +777,54 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
-    expect(issue?.checkoutRunId).toBe(runId);
+    expect(issue?.checkoutRunId).toBe(retryRun?.id ?? null);
+  });
+
+  it("keeps a hermes_local process-loss retry queued for an idle invokable agent", async () => {
+    const { agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      agentPausedAt: null,
+      adapterType: "hermes_local",
+      processPid: 999_999_999,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+
+    const failedRun = runs.find((row) => row.id === runId);
+    const retryRun = runs.find((row) => row.id !== runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_lost");
+    expect(retryRun?.status).toBe("queued");
+    expect(retryRun?.errorCode).toBeNull();
+    expect(retryRun?.retryOfRunId).toBe(runId);
+    expect(retryRun?.processLossRetryCount).toBe(1);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
+    expect(issue?.checkoutRunId).toBe(retryRun?.id ?? null);
+
+    const retryWakeup = retryRun?.wakeupRequestId
+      ? await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, retryRun.wakeupRequestId))
+        .then((rows) => rows[0] ?? null)
+      : null;
+    expect(retryWakeup?.status).toBe("queued");
+    expect(retryWakeup?.error).toBeNull();
   });
 
   it.skipIf(process.platform === "win32")("reaps orphaned descendant process groups when the parent pid is already gone", async () => {
@@ -590,7 +856,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(failedRun?.error).toContain("descendant process group");
 
     const retryRun = runs.find((row) => row.id !== runId);
-    expect(retryRun?.status).toBe("queued");
+    expect(retryRun?.status).toBe("cancelled");
+    expect(retryRun?.error).toContain("agent is not invokable");
 
     const issue = await db
       .select()
@@ -598,6 +865,60 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
+  });
+
+  it.skipIf(process.platform === "win32")("keeps a descendant process-group retry queued for an idle invokable agent", async () => {
+    const orphan = await spawnOrphanedProcessGroup();
+    cleanupPids.add(orphan.descendantPid);
+    expect(isPidAlive(orphan.descendantPid)).toBe(true);
+
+    const { agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      agentPausedAt: null,
+      processPid: orphan.processPid,
+      processGroupId: orphan.processGroupId,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    expect(await waitForPidExit(orphan.descendantPid, 2_000)).toBe(true);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+
+    const failedRun = runs.find((row) => row.id === runId);
+    const retryRun = runs.find((row) => row.id !== runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_lost");
+    expect(failedRun?.error).toContain("descendant process group");
+    expect(retryRun?.status).toBe("queued");
+    expect(retryRun?.errorCode).toBeNull();
+    expect(retryRun?.retryOfRunId).toBe(runId);
+    expect(retryRun?.processLossRetryCount).toBe(1);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
+    expect(issue?.checkoutRunId).toBe(retryRun?.id ?? null);
+
+    const retryWakeup = retryRun?.wakeupRequestId
+      ? await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, retryRun.wakeupRequestId))
+        .then((rows) => rows[0] ?? null)
+      : null;
+    expect(retryWakeup?.status).toBe("queued");
+    expect(retryWakeup?.error).toBeNull();
   });
 
   it("does not keep the checkout lock after the first process-loss retry was already used", async () => {
@@ -642,6 +963,103 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const run = await heartbeat.getRun(runId);
     expect(run?.errorCode).toBeNull();
     expect(run?.error).toBeNull();
+  });
+
+  it("preserves a different checkout owner when cancelling a run releases execution", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      processPid: null,
+    });
+    const checkoutRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: checkoutRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "queued",
+      contextSnapshot: { issueId },
+      updatedAt: new Date("2026-03-19T00:01:00.000Z"),
+    });
+    await db
+      .update(issues)
+      .set({ checkoutRunId })
+      .where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.cancelRun(runId);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.checkoutRunId).toBe(checkoutRunId);
+  });
+
+  it("clears stale queued execution lock without clobbering another checkout owner at claim time", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      runStatus: "queued",
+    });
+    const checkoutRunId = randomUUID();
+    const deferredWakeId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: checkoutRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "queued",
+      contextSnapshot: { issueId },
+      updatedAt: new Date("2026-03-19T00:01:00.000Z"),
+    });
+    await db
+      .update(issues)
+      .set({
+        executionRunId: runId,
+        checkoutRunId,
+      })
+      .where(eq(issues.id, issueId));
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      payload: { issueId },
+      status: "deferred_issue_execution",
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+
+    const staleRun = await heartbeat.getRun(runId);
+    expect(staleRun?.status).toBe("cancelled");
+    expect(staleRun?.error).toContain("issue checkout moved to another run");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.checkoutRunId).toBe(checkoutRunId);
+
+    const deferredWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeId))
+      .then((rows) => rows[0] ?? null);
+    expect(deferredWake?.status).toBe("deferred_issue_execution");
+    expect(deferredWake?.runId).toBeNull();
+
+    const promotedRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.wakeupRequestId, deferredWakeId));
+    expect(promotedRuns).toHaveLength(0);
   });
 
   it("tracks the first heartbeat with the agent role instead of adapter type", async () => {
@@ -1001,6 +1419,136 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeup?.status).toBe("queued");
   });
 
+  it("cancels a queued run for an idle agent with pausedAt set", async () => {
+    const { runId, wakeupRequestId } = await seedRunFixture({
+      agentStatus: "idle",
+      agentPausedAt: new Date("2026-03-19T00:10:00.000Z"),
+      runStatus: "queued",
+    });
+    await db.update(heartbeatRuns).set({ startedAt: null }).where(eq(heartbeatRuns.id, runId));
+    await db
+      .update(agentWakeupRequests)
+      .set({ status: "queued", claimedAt: null })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("cancelled");
+    expect(run?.startedAt).toBeNull();
+    expect(run?.error).toContain("agent is not invokable");
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("cancelled");
+    expect(wakeup?.claimedAt).toBeNull();
+    expect(wakeup?.error).toContain("agent is not invokable");
+  });
+
+  it("does not requeue stranded assigned work for an agent with pausedAt set", async () => {
+    const { issueId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      retryReason: "assignment_recovery",
+      agentPausedAt: new Date("2026-03-19T00:10:00.000Z"),
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.assignmentDispatched).toBe(0);
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.issueIds).toEqual([]);
+
+    const runs = await db.select().from(heartbeatRuns);
+    expect(runs).toHaveLength(1);
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("todo");
+  });
+
+  it("skips timer wakeups for an idle agent with pausedAt set", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "TimerPausedAt",
+      role: "engineer",
+      status: "idle",
+      pausedAt: new Date("2026-03-19T00:10:00.000Z"),
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          enabled: true,
+          intervalSec: 1,
+        },
+      },
+      permissions: {},
+      lastHeartbeatAt: new Date("2026-03-19T00:00:00.000Z"),
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.tickTimers(new Date("2026-03-19T00:01:00.000Z"));
+
+    expect(result).toEqual({ checked: 0, enqueued: 0, skipped: 0 });
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(0);
+  });
+
+  it("does not promote deferred issue wakes for an agent with pausedAt set", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "running",
+      runStatus: "running",
+    });
+    const deferredWakeId = randomUUID();
+    await db
+      .update(agents)
+      .set({ status: "idle", pausedAt: new Date("2026-03-19T00:10:00.000Z") })
+      .where(eq(agents.id, agentId));
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      payload: { issueId },
+      status: "deferred_issue_execution",
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.cancelRun(runId);
+
+    const deferredWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeId))
+      .then((rows) => rows[0] ?? null);
+    expect(deferredWake?.status).toBe("failed");
+    expect(deferredWake?.runId).toBeNull();
+    expect(deferredWake?.error).toContain("agent is not invokable");
+
+    const promotedRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.wakeupRequestId, deferredWakeId));
+    expect(promotedRuns).toHaveLength(0);
+  });
+
   it("blocks assigned todo work after the one automatic dispatch recovery was already used", async () => {
     const { issueId } = await seedStrandedIssueFixture({
       status: "todo",
@@ -1160,6 +1708,63 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("retried continuation");
+  });
+
+  it("blocks stranded in-progress work when a failed continuation retry is followed by a failed process-loss retry", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+    const processLossRunId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        createdAt: new Date("2026-03-19T00:05:00.000Z"),
+        updatedAt: new Date("2026-03-19T00:05:00.000Z"),
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    await db.insert(heartbeatRuns).values({
+      id: processLossRunId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "failed",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "process_lost_retry",
+        retryReason: "process_lost",
+        retryOfRunId: runId,
+      },
+      retryOfRunId: runId,
+      processLossRetryCount: 1,
+      startedAt: new Date("2026-03-19T00:06:00.000Z"),
+      finishedAt: new Date("2026-03-19T00:07:00.000Z"),
+      createdAt: new Date("2026-03-19T00:06:00.000Z"),
+      updatedAt: new Date("2026-03-19T00:07:00.000Z"),
+      errorCode: "process_lost",
+      error: "process-loss retry also failed",
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("process-loss retry also failed");
+    expect(comments[0]?.body).toContain(processLossRunId);
+    expect(comments[0]?.body).toContain(runId);
   });
 
   it("does not reconcile user-assigned work through the agent stranded-work recovery path", async () => {

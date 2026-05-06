@@ -1,4 +1,5 @@
 export type { Company } from "./company.js";
+export type { ProviderRateLimitBlock } from "./provider-rate-limit.js";
 export type {
   FeedbackVote,
   FeedbackDataSharingPreference,

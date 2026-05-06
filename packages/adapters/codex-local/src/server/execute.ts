@@ -31,6 +31,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   extractCodexRetryNotBefore,
+  extractCodexRateLimitBlock,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
   parseCodexJsonl,
@@ -654,6 +655,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stderr: attempt.proc.stderr,
         errorMessage: fallbackErrorMessage,
       });
+    const rateLimitBlock =
+      (attempt.proc.exitCode ?? 0) === 0
+        ? null
+        : extractCodexRateLimitBlock({
+          stdout: attempt.proc.stdout,
+          stderr: attempt.proc.stderr,
+          errorMessage: fallbackErrorMessage,
+        });
 
     return {
       exitCode: attempt.proc.exitCode,
@@ -666,11 +675,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       errorCode:
         (attempt.proc.exitCode ?? 0) === 0
           ? null
-          : transientUpstream
+          : rateLimitBlock
+            ? "provider_rate_limit"
+            : transientUpstream
             ? "codex_transient_upstream"
             : null,
       errorFamily: transientUpstream ? "transient_upstream" : null,
       retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
+      rateLimitBlock,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
@@ -686,6 +698,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
         ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
         ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
+        ...(rateLimitBlock ? { rateLimitBlock } : {}),
       },
       summary: attempt.parsed.summary,
       clearSession: Boolean(clearSessionOnMissingSession && !resolvedSessionId),

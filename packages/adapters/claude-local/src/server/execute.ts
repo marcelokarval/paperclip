@@ -35,6 +35,7 @@ import {
   describeClaudeFailure,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
+  extractClaudeRateLimitBlock,
   isClaudeMaxTurnsResult,
   isClaudeTransientUpstreamError,
   isClaudeUnknownSessionError,
@@ -639,6 +640,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stderr: proc.stderr,
         errorMessage,
       });
+    const rateLimitBlock =
+      (proc.exitCode ?? 0) === 0
+        ? null
+        : extractClaudeRateLimitBlock({
+          parsed,
+          stdout: proc.stdout,
+          stderr: proc.stderr,
+          errorMessage,
+        });
 
     return {
       exitCode: proc.exitCode,
@@ -647,11 +657,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       errorMessage,
       errorCode: loginMeta.requiresLogin
         ? "claude_auth_required"
+        : rateLimitBlock
+          ? "provider_rate_limit"
         : transientUpstream
           ? "claude_transient_upstream"
           : null,
       errorFamily: transientUpstream ? "transient_upstream" : null,
       retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
+      rateLimitBlock,
       errorMeta,
       usage,
       sessionId: resolvedSessionId,
@@ -667,6 +680,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
         ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
         ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
+        ...(rateLimitBlock ? { rateLimitBlock } : {}),
       },
       summary: parsedStream.summary || asString(parsed.result, ""),
       clearSession: clearSessionForMaxTurns || Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),

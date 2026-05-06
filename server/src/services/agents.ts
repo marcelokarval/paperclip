@@ -56,6 +56,11 @@ interface UpdateAgentOptions {
   recordRevision?: RevisionMetadata;
 }
 
+interface CreateAgentIdempotencyLookup {
+  key: string;
+  requestHash: string;
+}
+
 interface AgentShortnameRow {
   id: string;
   name: string;
@@ -68,6 +73,16 @@ interface AgentShortnameCollisionOptions {
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function getAgentIdempotencyMetadata(value: unknown): CreateAgentIdempotencyLookup | null {
+  if (!isPlainRecord(value)) return null;
+  const idempotency = value.paperclipIdempotency;
+  if (!isPlainRecord(idempotency)) return null;
+  const key = typeof idempotency.key === "string" ? idempotency.key : null;
+  const requestHash = typeof idempotency.requestHash === "string" ? idempotency.requestHash : null;
+  if (!key || !requestHash) return null;
+  return { key, requestHash };
 }
 
 function jsonEqual(left: unknown, right: unknown): boolean {
@@ -246,6 +261,55 @@ export function agentService(db: Db) {
     }));
   }
 
+  async function findCompatibleCreateInDb(
+    dbOrTx: Pick<Db, "select">,
+    companyId: string,
+    idempotency: CreateAgentIdempotencyLookup | null | undefined,
+  ) {
+    if (!idempotency?.key || !idempotency.requestHash) return null;
+
+    const rows = await dbOrTx
+      .select()
+      .from(agents)
+      .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")))
+      .orderBy(desc(agents.createdAt));
+
+    const match = rows.find((row) => {
+      const existing = getAgentIdempotencyMetadata(row.metadata);
+      return existing?.key === idempotency.key && existing.requestHash === idempotency.requestHash;
+    });
+    if (!match) return null;
+
+    const [hydrated] = await hydrateAgentSpend([match]);
+    return normalizeAgentRow(hydrated);
+  }
+
+  async function createInDb(
+    dbOrTx: Pick<Db, "select" | "insert">,
+    companyId: string,
+    data: Omit<typeof agents.$inferInsert, "companyId">,
+  ) {
+    if (data.reportsTo) {
+      await ensureManager(companyId, data.reportsTo);
+    }
+
+    const existingAgents = await dbOrTx
+      .select({ id: agents.id, name: agents.name, status: agents.status })
+      .from(agents)
+      .where(eq(agents.companyId, companyId));
+    const uniqueName = deduplicateAgentName(data.name, existingAgents);
+
+    const role = data.role ?? "general";
+    const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);
+    const created = await dbOrTx
+      .insert(agents)
+      .values({ ...data, name: uniqueName, companyId, role, permissions: normalizedPermissions })
+      .returning()
+      .then((rows) => rows[0]);
+
+    return normalizeAgentRow(created);
+  }
+
   async function getById(id: string) {
     const row = await db
       .select()
@@ -389,26 +453,38 @@ export function agentService(db: Db) {
 
     getById,
 
+    findCompatibleCreate: async (
+      companyId: string,
+      idempotency: CreateAgentIdempotencyLookup | null | undefined,
+    ) => findCompatibleCreateInDb(db, companyId, idempotency),
+
     create: async (companyId: string, data: Omit<typeof agents.$inferInsert, "companyId">) => {
-      if (data.reportsTo) {
-        await ensureManager(companyId, data.reportsTo);
+      return createInDb(db, companyId, data);
+    },
+
+    createIdempotent: async (
+      companyId: string,
+      data: Omit<typeof agents.$inferInsert, "companyId">,
+      idempotency: CreateAgentIdempotencyLookup | null | undefined,
+    ) => {
+      if (!idempotency?.key || !idempotency.requestHash) {
+        return { agent: await createInDb(db, companyId, data), reused: false };
       }
 
-      const existingAgents = await db
-        .select({ id: agents.id, name: agents.name, status: agents.status })
-        .from(agents)
-        .where(eq(agents.companyId, companyId));
-      const uniqueName = deduplicateAgentName(data.name, existingAgents);
+      return db.transaction(async (tx) => {
+        await tx.execute(sql`
+          select pg_advisory_xact_lock(
+            hashtext(${`agent-create:${companyId}`}),
+            hashtext(${`${idempotency.key}:${idempotency.requestHash}`})
+          )
+        `);
 
-      const role = data.role ?? "general";
-      const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);
-      const created = await db
-        .insert(agents)
-        .values({ ...data, name: uniqueName, companyId, role, permissions: normalizedPermissions })
-        .returning()
-        .then((rows) => rows[0]);
+        const existing = await findCompatibleCreateInDb(tx, companyId, idempotency);
+        if (existing) return { agent: existing, reused: true };
 
-      return normalizeAgentRow(created);
+        const created = await createInDb(tx, companyId, data);
+        return { agent: created, reused: false };
+      });
     },
 
     update: updateAgent,

@@ -7,6 +7,7 @@ import type {
   CostByProviderModel,
   CostWindowSpendRow,
   FinanceEvent,
+  ProviderRateLimitBlock,
   QuotaWindow,
 } from "@paperclipai/shared";
 import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, DollarSign, ReceiptText } from "lucide-react";
@@ -337,6 +338,23 @@ export function Costs() {
     staleTime: 60_000,
   });
 
+  const { data: providerRateLimitData } = useQuery({
+    queryKey: queryKeys.providerRateLimits(companyId),
+    queryFn: () => costsApi.providerRateLimits(companyId),
+    enabled: !!selectedCompanyId && mainTab === "providers",
+    refetchInterval: 30_000,
+    staleTime: 10_000,
+  });
+
+  const releaseProviderRateLimit = useMutation({
+    mutationFn: (blockId: string) => costsApi.releaseProviderRateLimit(companyId, blockId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.providerRateLimits(companyId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+    },
+  });
+
   const byProvider = useMemo(() => {
     const map = new Map<string, CostByProviderModel[]>();
     for (const row of providerData ?? []) {
@@ -411,6 +429,17 @@ export function Costs() {
     return map;
   }, [quotaData]);
 
+  const activeRateLimitsByProvider = useMemo(() => {
+    const map = new Map<string, ProviderRateLimitBlock[]>();
+    for (const block of providerRateLimitData ?? []) {
+      if (block.releasedAt) continue;
+      const rows = map.get(block.provider) ?? [];
+      rows.push(block);
+      map.set(block.provider, rows);
+    }
+    return map;
+  }, [providerRateLimitData]);
+
   const deficitNotchByProvider = useMemo(() => {
     const map = new Map<string, boolean>();
     if (preset !== "mtd") return map;
@@ -434,7 +463,12 @@ export function Costs() {
     return map;
   }, [preset, spendData, byProvider]);
 
-  const providers = useMemo(() => Array.from(byProvider.keys()), [byProvider]);
+  const providers = useMemo(() => {
+    const providerKeys = new Set<string>();
+    for (const provider of byProvider.keys()) providerKeys.add(provider);
+    for (const provider of activeRateLimitsByProvider.keys()) providerKeys.add(provider);
+    return Array.from(providerKeys);
+  }, [byProvider, activeRateLimitsByProvider]);
   const billers = useMemo(() => Array.from(byBiller.keys()), [byBiller]);
 
   const effectiveProvider =
@@ -450,7 +484,7 @@ export function Costs() {
   }, [effectiveBiller, activeBiller]);
 
   const providerTabItems = useMemo(() => {
-    const providerKeys = Array.from(byProvider.keys());
+    const providerKeys = providers;
     const allTokens = providerKeys.reduce(
       (sum, provider) => sum + (byProvider.get(provider)?.reduce((acc, row) => acc + row.inputTokens + row.cachedInputTokens + row.outputTokens, 0) ?? 0),
       0,
@@ -479,7 +513,7 @@ export function Costs() {
         label: <ProviderTabLabel provider={provider} rows={byProvider.get(provider) ?? []} />,
       })),
     ];
-  }, [byProvider]);
+  }, [byProvider, providers]);
 
   const billerTabItems = useMemo(() => {
     const billerKeys = Array.from(byBiller.keys());
@@ -975,6 +1009,9 @@ export function Costs() {
                           quotaError={quotaErrorsByProvider.get(provider) ?? null}
                           quotaSource={quotaSourcesByProvider.get(provider) ?? null}
                           quotaLoading={quotaLoading}
+                          activeBlocks={activeRateLimitsByProvider.get(provider) ?? []}
+                          onReleaseBlock={(blockId) => releaseProviderRateLimit.mutate(blockId)}
+                          releasePending={releaseProviderRateLimit.isPending}
                         />
                       ))}
                     </div>
@@ -995,6 +1032,9 @@ export function Costs() {
                       quotaError={quotaErrorsByProvider.get(provider) ?? null}
                       quotaSource={quotaSourcesByProvider.get(provider) ?? null}
                       quotaLoading={quotaLoading}
+                      activeBlocks={activeRateLimitsByProvider.get(provider) ?? []}
+                      onReleaseBlock={(blockId) => releaseProviderRateLimit.mutate(blockId)}
+                      releasePending={releaseProviderRateLimit.isPending}
                     />
                   </TabsContent>
                 ))}

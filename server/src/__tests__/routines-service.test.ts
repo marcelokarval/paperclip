@@ -66,6 +66,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   });
 
   async function seedFixture(opts?: {
+    cronSearchLimitMinutes?: number;
     wakeup?: (
       agentId: string,
       wakeupOpts: {
@@ -123,6 +124,9 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     });
 
     const svc = routineService(db, {
+      ...(opts?.cronSearchLimitMinutes !== undefined
+        ? { cronSearchLimitMinutes: opts.cronSearchLimitMinutes }
+        : {}),
       heartbeat: {
         wakeup: async (wakeupAgentId, wakeupOpts) => {
           wakeups.push({ agentId: wakeupAgentId, opts: wakeupOpts });
@@ -654,6 +658,108 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .where(eq(issues.originId, routine.id));
 
     expect(routineIssues).toHaveLength(1);
+  });
+
+  it("continues ticking valid schedule triggers when an earlier trigger is corrupted", async () => {
+    const { routine, svc } = await seedFixture();
+    const badDueAt = new Date("2026-01-01T00:00:00.000Z");
+    const validDueAt = new Date("2026-01-01T00:01:00.000Z");
+    const now = new Date("2026-01-01T00:02:00.000Z");
+
+    const { trigger: badTrigger } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "schedule",
+        label: "corrupted",
+        cronExpression: "* * * * *",
+        timezone: "UTC",
+      },
+      {},
+    );
+    const { trigger: validTrigger } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "schedule",
+        label: "valid",
+        cronExpression: "* * * * *",
+        timezone: "UTC",
+      },
+      {},
+    );
+
+    await db
+      .update(routineTriggers)
+      .set({ timezone: "Not/A_Zone", nextRunAt: badDueAt })
+      .where(eq(routineTriggers.id, badTrigger.id));
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: validDueAt })
+      .where(eq(routineTriggers.id, validTrigger.id));
+
+    const result = await svc.tickScheduledTriggers(now);
+
+    expect(result).toEqual({ triggered: 1, failed: 1 });
+
+    const runs = await db
+      .select({ triggerId: routineRuns.triggerId, status: routineRuns.status })
+      .from(routineRuns);
+    expect(runs).toEqual([{ triggerId: validTrigger.id, status: "issue_created" }]);
+
+    const triggerRows = await db
+      .select({
+        id: routineTriggers.id,
+        nextRunAt: routineTriggers.nextRunAt,
+        lastResult: routineTriggers.lastResult,
+      })
+      .from(routineTriggers);
+    const badRow = triggerRows.find((trigger) => trigger.id === badTrigger.id);
+    const validRow = triggerRows.find((trigger) => trigger.id === validTrigger.id);
+
+    expect(badRow?.nextRunAt?.toISOString()).toBe(badDueAt.toISOString());
+    expect(badRow?.lastResult).toBeNull();
+    expect(validRow?.nextRunAt?.getTime()).toBeGreaterThan(validDueAt.getTime());
+    expect(validRow?.lastResult).toContain("Created execution issue");
+  });
+
+  it("treats schedule triggers with no future cron tick as failed without claiming them", async () => {
+    const { routine, svc } = await seedFixture({ cronSearchLimitMinutes: 1 });
+    const dueAt = new Date("2026-01-01T00:00:00.000Z");
+    const now = new Date("2026-01-01T00:02:00.000Z");
+
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "schedule",
+        label: "impossible schedule",
+        cronExpression: "* * * * *",
+        timezone: "UTC",
+      },
+      {},
+    );
+
+    await db
+      .update(routineTriggers)
+      .set({ cronExpression: "0 0 31 2 *", nextRunAt: dueAt })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    const result = await svc.tickScheduledTriggers(now);
+
+    expect(result).toEqual({ triggered: 0, failed: 1 });
+
+    const runs = await db.select({ id: routineRuns.id }).from(routineRuns);
+    expect(runs).toHaveLength(0);
+
+    const triggerRow = await db
+      .select({
+        nextRunAt: routineTriggers.nextRunAt,
+        lastResult: routineTriggers.lastResult,
+      })
+      .from(routineTriggers)
+      .where(eq(routineTriggers.id, trigger.id))
+      .then((rows) => rows[0]);
+
+    expect(triggerRow?.nextRunAt?.toISOString()).toBe(dueAt.toISOString());
+    expect(triggerRow?.lastResult).toBeNull();
   });
 
   it("fails the run and cleans up the execution issue when wakeup queueing fails", async () => {

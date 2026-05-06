@@ -1,10 +1,11 @@
 import { asString, asNumber, parseObject, parseJson } from "@paperclipai/adapter-utils/server-utils";
+import type { AdapterProviderRateLimitBlock } from "@paperclipai/adapter-utils";
 
 const CODEX_TRANSIENT_UPSTREAM_RE =
-  /(?:we(?:'|’)re\s+currently\s+experiencing\s+high\s+demand|temporary\s+errors|rate[-\s]?limit(?:ed)?|too\s+many\s+requests|\b429\b|server\s+overloaded|service\s+unavailable|try\s+again\s+later)/i;
+  /(?:we(?:'|’)re\s+currently\s+experiencing\s+high\s+demand|temporary\s+errors|rate[-\s]?limit(?:ed)?|too\s+many\s+requests|\b429\b|server\s+overloaded|service\s+unavailable)/i;
 const CODEX_REMOTE_COMPACTION_RE = /remote\s+compact\s+task/i;
-const CODEX_USAGE_LIMIT_RE =
-  /you(?:'|’)ve hit your usage limit for .+\.\s+switch to another model now,\s+or try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
+const CODEX_USAGE_LIMIT_RETRY_RE =
+  /you(?:'|’)ve hit your usage limit(?:\s+for\s+[^.!\n]+)?\.[^\n]*?\btry again\s+(at|in)\s+([^.!\n]+)(?:[.!]|\n|$)/i;
 
 export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;
@@ -229,15 +230,39 @@ function parseLocalClockTime(clockText: string, now: Date): Date | null {
   return retryAt;
 }
 
+function parseRelativeDuration(durationText: string, now: Date): Date | null {
+  const normalized = durationText.trim();
+  const unitRe = /(\d+)\s*(day|days|hour|hours|minute|minutes)\b/gi;
+  let totalMs = 0;
+  let matched = false;
+
+  for (const match of normalized.matchAll(unitRe)) {
+    const value = Number.parseInt(match[1] ?? "", 10);
+    if (!Number.isInteger(value) || value < 0) return null;
+    matched = true;
+    const unit = (match[2] ?? "").toLowerCase();
+    if (unit.startsWith("day")) totalMs += value * 24 * 60 * 60 * 1000;
+    if (unit.startsWith("hour")) totalMs += value * 60 * 60 * 1000;
+    if (unit.startsWith("minute")) totalMs += value * 60 * 1000;
+  }
+
+  if (!matched || totalMs <= 0) return null;
+  return new Date(now.getTime() + totalMs);
+}
+
 export function extractCodexRetryNotBefore(input: {
   stdout?: string | null;
   stderr?: string | null;
   errorMessage?: string | null;
 }, now = new Date()): Date | null {
   const haystack = buildCodexErrorHaystack(input);
-  const usageLimitMatch = haystack.match(CODEX_USAGE_LIMIT_RE);
+  const usageLimitMatch = haystack.match(CODEX_USAGE_LIMIT_RETRY_RE);
   if (!usageLimitMatch) return null;
-  return parseLocalClockTime(usageLimitMatch[1] ?? "", now);
+  const retryKind = (usageLimitMatch[1] ?? "").toLowerCase();
+  const retryText = usageLimitMatch[2] ?? "";
+  return retryKind === "in"
+    ? parseRelativeDuration(retryText, now)
+    : parseLocalClockTime(retryText, now);
 }
 
 export function isCodexTransientUpstreamError(input: {
@@ -247,6 +272,25 @@ export function isCodexTransientUpstreamError(input: {
 }): boolean {
   const haystack = buildCodexErrorHaystack(input);
 
+  if (extractCodexRateLimitBlock(input) != null) return false;
   if (extractCodexRetryNotBefore(input) != null) return true;
   return CODEX_TRANSIENT_UPSTREAM_RE.test(haystack) || CODEX_REMOTE_COMPACTION_RE.test(haystack);
+}
+
+export function extractCodexRateLimitBlock(input: {
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}, now = new Date()): AdapterProviderRateLimitBlock | null {
+  const resetsAt = extractCodexRetryNotBefore(input, now);
+  if (!resetsAt) return null;
+  const haystack = buildCodexErrorHaystack(input);
+  if (!/you(?:'|’)ve hit your usage limit/i.test(haystack)) return null;
+  return {
+    provider: "openai",
+    adapterType: "codex_local",
+    limitKind: "usage_limit",
+    modelFamily: null,
+    resetsAt: resetsAt.toISOString(),
+  };
 }

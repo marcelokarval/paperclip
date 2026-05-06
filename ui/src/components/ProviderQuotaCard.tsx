@@ -1,8 +1,9 @@
 import { useMemo } from "react";
-import type { CostByProviderModel, CostWindowSpendRow, QuotaWindow } from "@paperclipai/shared";
+import type { CostByProviderModel, CostWindowSpendRow, ProviderRateLimitBlock, QuotaWindow } from "@paperclipai/shared";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { QuotaBar } from "./QuotaBar";
+import { Button } from "@/components/ui/button";
 import { ClaudeSubscriptionPanel } from "./ClaudeSubscriptionPanel";
 import { CodexSubscriptionPanel } from "./CodexSubscriptionPanel";
 import {
@@ -33,6 +34,9 @@ interface ProviderQuotaCardProps {
   quotaError?: string | null;
   quotaSource?: string | null;
   quotaLoading?: boolean;
+  activeBlocks?: ProviderRateLimitBlock[];
+  onReleaseBlock?: (blockId: string) => void;
+  releasePending?: boolean;
 }
 
 export function ProviderQuotaCard({
@@ -47,6 +51,9 @@ export function ProviderQuotaCard({
   quotaError = null,
   quotaSource = null,
   quotaLoading = false,
+  activeBlocks = [],
+  onReleaseBlock,
+  releasePending = false,
 }: ProviderQuotaCardProps) {
   // single-pass aggregation over rows — memoized so the 8 derived values are not
   // recomputed on every parent render tick (providers tab polls every 30s, and each
@@ -159,6 +166,37 @@ export function ProviderQuotaCard({
       </CardHeader>
 
       <CardContent className="px-4 pb-4 pt-3 space-y-4">
+        {activeBlocks.length > 0 ? (
+          <div className="space-y-2">
+            {activeBlocks.map((activeBlock) => (
+              <div key={activeBlock.id} className="border border-red-500/40 bg-red-500/10 px-3 py-3 text-xs">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="font-semibold text-red-500">Provider hard limit active</p>
+                    <p className="mt-1 text-muted-foreground">
+                      {activeBlock.limitKind.replace(/_/g, " ")}
+                      {activeBlock.modelFamily ? ` for ${activeBlock.modelFamily}` : ""}
+                      {" · resets "}
+                      {new Date(activeBlock.resetsAt).toLocaleString()}
+                    </p>
+                  </div>
+                  {onReleaseBlock ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={releasePending}
+                      onClick={() => onReleaseBlock(activeBlock.id)}
+                    >
+                      Release
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
         {hasBudget && (
           <div className="space-y-3">
             <QuotaBar

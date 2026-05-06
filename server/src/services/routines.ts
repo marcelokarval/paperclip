@@ -47,6 +47,7 @@ const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blo
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
+const DEFAULT_CRON_SEARCH_LIMIT_MINUTES = 366 * 24 * 60 * 5;
 const WEEKDAY_INDEX: Record<string, number> = {
   Sun: 0,
   Mon: 1,
@@ -112,7 +113,12 @@ function matchesCronMinute(expression: string, timeZone: string, date: Date) {
   );
 }
 
-function nextCronTickInTimeZone(expression: string, timeZone: string, after: Date) {
+function nextCronTickInTimeZone(
+  expression: string,
+  timeZone: string,
+  after: Date,
+  searchLimitMinutes = DEFAULT_CRON_SEARCH_LIMIT_MINUTES,
+) {
   const trimmed = expression.trim();
   assertTimeZone(timeZone);
   const error = validateCron(trimmed);
@@ -122,8 +128,7 @@ function nextCronTickInTimeZone(expression: string, timeZone: string, after: Dat
 
   const cursor = floorToMinute(after);
   cursor.setUTCMinutes(cursor.getUTCMinutes() + 1);
-  const limit = 366 * 24 * 60 * 5;
-  for (let i = 0; i < limit; i += 1) {
+  for (let i = 0; i < searchLimitMinutes; i += 1) {
     if (matchesCronMinute(trimmed, timeZone, cursor)) {
       return new Date(cursor.getTime());
     }
@@ -309,7 +314,10 @@ function mergeRoutineRunPayload(
   };
 }
 
-export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeupDeps } = {}) {
+export function routineService(
+  db: Db,
+  deps: { heartbeat?: IssueAssignmentWakeupDeps; cronSearchLimitMinutes?: number } = {},
+) {
   const issueSvc = issueService(db);
   const secretsSvc = secretService(db);
   const heartbeat = deps.heartbeat ?? heartbeatService(db);
@@ -1473,50 +1481,81 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         .orderBy(asc(routineTriggers.nextRunAt), asc(routineTriggers.createdAt));
 
       let triggered = 0;
+      let failed = 0;
       for (const row of due) {
-        if (!row.trigger.nextRunAt || !row.trigger.cronExpression || !row.trigger.timezone) continue;
+        try {
+          if (!row.trigger.nextRunAt || !row.trigger.cronExpression || !row.trigger.timezone) continue;
 
-        let runCount = 1;
-        let claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
+          let runCount = 1;
+          let claimedNextRunAt = nextCronTickInTimeZone(
+            row.trigger.cronExpression,
+            row.trigger.timezone,
+            now,
+            deps.cronSearchLimitMinutes,
+          );
 
-        if (row.routine.catchUpPolicy === "enqueue_missed_with_cap") {
-          let cursor: Date | null = row.trigger.nextRunAt;
-          runCount = 0;
-          while (cursor && cursor <= now && runCount < MAX_CATCH_UP_RUNS) {
-            runCount += 1;
-            claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, cursor);
-            cursor = claimedNextRunAt;
+          if (row.routine.catchUpPolicy === "enqueue_missed_with_cap") {
+            let cursor: Date | null = row.trigger.nextRunAt;
+            runCount = 0;
+            while (cursor && cursor <= now && runCount < MAX_CATCH_UP_RUNS) {
+              runCount += 1;
+              claimedNextRunAt = nextCronTickInTimeZone(
+                row.trigger.cronExpression,
+                row.trigger.timezone,
+                cursor,
+                deps.cronSearchLimitMinutes,
+              );
+              cursor = claimedNextRunAt;
+            }
           }
-        }
+          if (!claimedNextRunAt) {
+            throw new Error(`Unable to compute next schedule tick for trigger ${row.trigger.id}`);
+          }
 
-        const claimed = await db
-          .update(routineTriggers)
-          .set({
-            nextRunAt: claimedNextRunAt,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(routineTriggers.id, row.trigger.id),
-              eq(routineTriggers.enabled, true),
-              eq(routineTriggers.nextRunAt, row.trigger.nextRunAt),
-            ),
-          )
-          .returning({ id: routineTriggers.id })
-          .then((rows) => rows[0] ?? null);
-        if (!claimed) continue;
+          const claimed = await db
+            .update(routineTriggers)
+            .set({
+              nextRunAt: claimedNextRunAt,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(routineTriggers.id, row.trigger.id),
+                eq(routineTriggers.enabled, true),
+                eq(routineTriggers.nextRunAt, row.trigger.nextRunAt),
+              ),
+            )
+            .returning({ id: routineTriggers.id })
+            .then((rows) => rows[0] ?? null);
+          if (!claimed) continue;
 
-        for (let i = 0; i < runCount; i += 1) {
-          await dispatchRoutineRun({
-            routine: row.routine,
-            trigger: row.trigger,
-            source: "schedule",
-          });
-          triggered += 1;
+          for (let i = 0; i < runCount; i += 1) {
+            const run = await dispatchRoutineRun({
+              routine: row.routine,
+              trigger: row.trigger,
+              source: "schedule",
+            });
+            if (run.status === "failed") {
+              failed += 1;
+            } else {
+              triggered += 1;
+            }
+          }
+        } catch (err) {
+          failed += 1;
+          logger.warn(
+            {
+              err,
+              routineId: row.routine.id,
+              triggerId: row.trigger.id,
+              companyId: row.trigger.companyId,
+            },
+            "routine scheduler trigger failed",
+          );
         }
       }
 
-      return { triggered };
+      return { triggered, failed };
     },
 
     syncRunStatusForIssue: async (issueId: string) => {

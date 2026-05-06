@@ -46,6 +46,9 @@ async function ensureParentDir(target: string): Promise<void> {
 }
 
 async function ensureSymlink(target: string, source: string): Promise<void> {
+  const sourceStats = await fs.lstat(source).catch(() => null);
+  if (!sourceStats || sourceStats.isDirectory()) return;
+
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
     await ensureParentDir(target);
@@ -54,6 +57,9 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
   }
 
   if (!existing.isSymbolicLink()) {
+    if (existing.isDirectory()) return;
+    await fs.unlink(target);
+    await fs.symlink(source, target);
     return;
   }
 
@@ -68,10 +74,59 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
 }
 
 async function ensureCopiedFile(target: string, source: string): Promise<void> {
+  const sourceStats = await fs.lstat(source).catch(() => null);
+  if (!sourceStats || sourceStats.isDirectory()) return;
+
   const existing = await fs.lstat(target).catch(() => null);
   if (existing) return;
   await ensureParentDir(target);
   await fs.copyFile(source, target);
+}
+
+async function removeApiKeyAuthJsonIfPresent(target: string): Promise<void> {
+  const existing = await fs.lstat(target).catch(() => null);
+  if (!existing || existing.isDirectory() || existing.isSymbolicLink()) return;
+
+  const raw = await fs.readFile(target, "utf8").catch(() => null);
+  if (!raw) return;
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      typeof (parsed as Record<string, unknown>).OPENAI_API_KEY === "string"
+    ) {
+      await fs.rm(target, { force: true });
+    }
+  } catch {
+    return;
+  }
+}
+
+export async function writeApiKeyAuthJson(home: string, apiKey: string): Promise<void> {
+  const normalizedApiKey = nonEmpty(apiKey);
+  if (!normalizedApiKey) return;
+
+  await fs.mkdir(home, { recursive: true });
+  const target = path.join(home, "auth.json");
+  const existing = await fs.lstat(target).catch(() => null);
+  if (existing?.isDirectory()) {
+    throw new Error(`Cannot write Codex API-key auth.json because ${target} is a directory`);
+  }
+
+  const temp = path.join(
+    home,
+    `.auth.json.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`,
+  );
+  try {
+    await fs.writeFile(temp, JSON.stringify({ OPENAI_API_KEY: normalizedApiKey }), { mode: 0o600 });
+    await fs.chmod(temp, 0o600).catch(() => {});
+    await fs.rename(temp, target);
+  } catch (err) {
+    await fs.rm(temp, { force: true }).catch(() => {});
+    throw err;
+  }
 }
 
 async function removeManagedCodexHomeContamination(
@@ -113,27 +168,44 @@ export async function prepareManagedCodexHome(
   env: NodeJS.ProcessEnv,
   onLog: AdapterExecutionContext["onLog"],
   companyId?: string,
+  options: { apiKey?: string | null } = {},
 ): Promise<string> {
   const targetHome = resolveManagedCodexHomeDir(env, companyId);
+  const apiKey = nonEmpty(options.apiKey ?? undefined) ?? nonEmpty(env.OPENAI_API_KEY);
 
   const sourceHome = resolveSharedCodexHomeDir(env);
-  if (path.resolve(sourceHome) === path.resolve(targetHome)) return targetHome;
+  const seedFromShared = path.resolve(sourceHome) !== path.resolve(targetHome);
 
   await fs.mkdir(targetHome, { recursive: true });
 
-  for (const name of SYMLINKED_SHARED_FILES) {
-    const source = path.join(sourceHome, name);
-    if (!(await pathExists(source))) continue;
-    await ensureSymlink(path.join(targetHome, name), source);
-  }
+  if (seedFromShared) {
+    if (!apiKey) {
+      const targetAuth = path.join(targetHome, "auth.json");
+      await removeApiKeyAuthJsonIfPresent(targetAuth);
 
-  for (const name of COPIED_SHARED_FILES) {
-    const source = path.join(sourceHome, name);
-    if (!(await pathExists(source))) continue;
-    await ensureCopiedFile(path.join(targetHome, name), source);
+      for (const name of SYMLINKED_SHARED_FILES) {
+        const source = path.join(sourceHome, name);
+        if (!(await pathExists(source))) continue;
+        await ensureSymlink(path.join(targetHome, name), source);
+      }
+    }
+
+    for (const name of COPIED_SHARED_FILES) {
+      const source = path.join(sourceHome, name);
+      if (!(await pathExists(source))) continue;
+      await ensureCopiedFile(path.join(targetHome, name), source);
+    }
   }
 
   await removeManagedCodexHomeContamination(targetHome, onLog);
+
+  if (apiKey) {
+    await writeApiKeyAuthJson(targetHome, apiKey);
+    await onLog(
+      "stdout",
+      `[paperclip] Wrote API-key auth.json into Codex home "${targetHome}" from configured OPENAI_API_KEY.\n`,
+    );
+  }
 
   await onLog(
     "stdout",
@@ -157,7 +229,11 @@ export async function prepareEffectiveCodexHome(
     return configuredCodexHome;
   }
 
-  const preparedManagedCodexHome = await prepareManagedCodexHome(env, onLog, companyId);
+  const apiKey =
+    typeof adapterEnvConfig.OPENAI_API_KEY === "string" && adapterEnvConfig.OPENAI_API_KEY.trim().length > 0
+      ? adapterEnvConfig.OPENAI_API_KEY.trim()
+      : nonEmpty(env.OPENAI_API_KEY);
+  const preparedManagedCodexHome = await prepareManagedCodexHome(env, onLog, companyId, { apiKey });
   const effectiveCodexHome = preparedManagedCodexHome || resolveManagedCodexHomeDir(env, companyId);
   await fs.mkdir(effectiveCodexHome, { recursive: true });
   return effectiveCodexHome;

@@ -2447,6 +2447,7 @@ export function issueRoutes(
   });
 
   router.delete("/issues/:id", async (req, res) => {
+    assertBoard(req);
     const id = req.params.id as string;
     const existing = await svc.getById(id);
     if (!existing) {

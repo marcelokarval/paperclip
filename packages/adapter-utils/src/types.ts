@@ -30,6 +30,14 @@ export interface UsageSummary {
   cachedInputTokens?: number;
 }
 
+export interface AdapterProviderRateLimitBlock {
+  provider: string;
+  adapterType: string;
+  limitKind: string;
+  modelFamily?: string | null;
+  resetsAt: string;
+}
+
 export type AdapterBillingType =
   | "api"
   | "subscription"
@@ -69,6 +77,7 @@ export interface AdapterExecutionResult {
   errorCode?: string | null;
   errorFamily?: "transient_upstream" | null;
   retryNotBefore?: string | null;
+  rateLimitBlock?: AdapterProviderRateLimitBlock | null;
   errorMeta?: Record<string, unknown>;
   usage?: UsageSummary;
   /**
