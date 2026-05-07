@@ -597,6 +597,8 @@ export {
   hiringBriefCanonicalReferenceSchema,
   hiringBriefPreviewSchema,
   createIssueSchema,
+  createIssueInputSchema,
+  resolveCreateIssueStatusDefault,
   createIssueLabelSchema,
   updateIssueLabelSchema,
   issueHitlRequestSchema,

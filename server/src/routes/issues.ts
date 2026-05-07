@@ -15,6 +15,7 @@ import {
   updateIssueLabelSchema,
   checkoutIssueSchema,
   createIssueSchema,
+  resolveCreateIssueStatusDefault,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,
@@ -87,6 +88,44 @@ const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
+
+function applyCreateIssueStatusDefault(req: Request, res: Response, next: () => void) {
+  if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+    next();
+    return;
+  }
+
+  const resolution = resolveCreateIssueStatusDefault(req.body as Record<string, unknown>);
+  res.locals.createIssueStatusDefault = resolution;
+  if (resolution.defaulted) {
+    req.body = {
+      ...req.body,
+      status: resolution.status,
+    };
+  }
+  next();
+}
+
+function buildCreateIssueActivityStatusDetails(
+  issue: { assigneeAgentId: string | null; status: string },
+  res: Response,
+) {
+  const statusDefault = res.locals.createIssueStatusDefault as
+    | ReturnType<typeof resolveCreateIssueStatusDefault>
+    | undefined;
+  const assignmentWakeSkipped = !issue.assigneeAgentId || issue.status === "backlog";
+  return {
+    status: issue.status,
+    statusDefaulted: statusDefault?.defaulted ?? false,
+    statusDefaultReason: statusDefault?.reason ?? "explicit",
+    assignmentWakeSkipped,
+    assignmentWakeSkipReason: assignmentWakeSkipped
+      ? issue.assigneeAgentId
+        ? "assigned_backlog"
+        : "no_agent_assignee"
+      : null,
+  };
+}
 
 async function shouldSkipDuplicateBaselineReviewRequestComment(
   svc: ReturnType<typeof issueService>,
@@ -226,6 +265,27 @@ function summarizeExecutionParticipants(
 
 function isClosedIssueStatus(status: string | null | undefined): status is "done" | "cancelled" {
   return status === "done" || status === "cancelled";
+}
+
+const ACTIVE_REVIEW_APPROVAL_STATUSES = new Set(["pending", "revision_requested"]);
+
+const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
+  "invalid_issue_disposition: Agent-authored updates that move an issue to in_review must include a real review path. " +
+  "This request would leave the issue in_review without anyone or anything owning the next action. " +
+  "Keep working instead of moving to review, create a request_confirmation or ask_user_questions interaction, " +
+  "link or request a pending approval, assign a human reviewer with assigneeUserId, set a typed executionState.currentParticipant through an execution policy, " +
+  "or keep working until one of those review paths exists. After creating one of those review paths, retry the status update.";
+
+const REVIEW_PATH_INTERACTION_KINDS = new Set(["request_confirmation", "ask_user_questions"]);
+
+function hasExecutionParticipant(value: unknown) {
+  const state = parseIssueExecutionState(value);
+  if (!state || state.status !== "pending") return false;
+  const participant = state.currentParticipant;
+  if (!participant) return false;
+  if (participant.type === "agent") return Boolean(participant.agentId);
+  if (participant.type === "user") return Boolean(participant.userId);
+  return false;
 }
 
 function queueResolvedInteractionContinuationWakeup(input: {
@@ -715,6 +775,52 @@ export function issueRoutes(
       const payload = approval.payload as Record<string, unknown> | null;
       return payload?.source === "issue_deferred_hitl" || payload?.source === "issue_hitl_request";
     }) ?? null;
+  }
+
+  async function assertAgentInReviewReviewPath(input: {
+    existing: {
+      id: string;
+      companyId: string;
+      status: string;
+      assigneeUserId?: string | null;
+      executionState?: unknown;
+    };
+    updateFields: Record<string, unknown>;
+    actorType: string;
+  }) {
+    const nextStatus = typeof input.updateFields.status === "string"
+      ? input.updateFields.status
+      : input.existing.status;
+    if (input.actorType !== "agent" || input.existing.status === "in_review" || nextStatus !== "in_review") return;
+
+    const nextAssigneeUserId = input.updateFields.assigneeUserId === undefined
+      ? input.existing.assigneeUserId
+      : input.updateFields.assigneeUserId;
+    if (typeof nextAssigneeUserId === "string" && nextAssigneeUserId.trim().length > 0) return;
+
+    const nextExecutionState = input.updateFields.executionState === undefined
+      ? input.existing.executionState
+      : input.updateFields.executionState;
+    if (hasExecutionParticipant(nextExecutionState)) return;
+
+    const interactions = await issueThreadInteractionService(db).listForIssue(input.existing);
+    if (interactions.some((interaction) =>
+      interaction.status === "pending" && REVIEW_PATH_INTERACTION_KINDS.has(String(interaction.kind))
+    )) return;
+
+    const approvals = await issueApprovalsSvc.listApprovalsForIssue(input.existing.id);
+    if (approvals.some((approval) => ACTIVE_REVIEW_APPROVAL_STATUSES.has(String(approval.status)))) return;
+
+    throw unprocessable(INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE, {
+      code: "invalid_issue_disposition",
+      missing: "review_path",
+      validReviewPaths: [
+        "pending_issue_thread_interaction",
+        "linked_pending_approval",
+        "human_assignee_user_id",
+        "typed_execution_state_current_participant",
+      ],
+    });
   }
 
   function requireAgentRunId(req: Request, res: Response) {
@@ -1737,7 +1843,7 @@ export function issueRoutes(
     res.json({ ok: true });
   });
 
-  router.post("/companies/:companyId/issues", validate(createIssueSchema), async (req, res) => {
+  router.post("/companies/:companyId/issues", applyCreateIssueStatusDefault, validate(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     if (
@@ -1769,6 +1875,7 @@ export function issueRoutes(
       details: {
         title: issue.title,
         identifier: issue.identifier,
+        ...buildCreateIssueActivityStatusDetails(issue, res),
         ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
       },
     });
@@ -1962,6 +2069,11 @@ export function issueRoutes(
       nextStatus: updateFields.status,
       commentBody,
       workProductsSvc,
+    });
+    await assertAgentInReviewReviewPath({
+      existing,
+      updateFields,
+      actorType: req.actor.type,
     });
 
     let issue;

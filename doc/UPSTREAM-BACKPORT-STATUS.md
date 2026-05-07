@@ -1,6 +1,6 @@
 # Upstream Backport Status
 
-Last updated: 2026-05-06
+Last updated: 2026-05-07
 
 This fork uses selective upstream backports. Do not infer that upstream
 `master` was merged wholesale.
@@ -9,12 +9,35 @@ This fork uses selective upstream backports. Do not infer that upstream
 
 - Last upstream PR reviewed before this selective backport window: `#3679`
 - Latest upstream PR reviewed before the current deep-scan batch: `#5285`
-- Latest upstream PR reviewed by the current deep-scan batch: `#5356`
-- Latest upstream PR selectively integrated in this local fork: `#5323`
+- Latest upstream PR reviewed by the current deep-scan batch: `#5428`
+- Latest upstream PR selectively integrated in this local fork: `#5428`
 - Latest upstream issue explicitly addressed in this local fork: `#5299`
 - Previous execution plan: `doc/plans/2026-05-05-recovery-loop-and-upstream-sync-plan.md`
-- Current execution batch source: `.tmp/upstream-incremental-scan-2026-05-06.md`
-- Current execution batch plan: `doc/plans/2026-05-05-upstream-p0-execution-plan.md`
+- Current execution batch source: `.tmp/upstream-control-plane-backports-tasks-2026-05-07.md`
+- Current execution batch plan: `doc/plans/2026-05-07-upstream-control-plane-backports-plan.md`
+
+## Current Incremental Scan - Started 2026-05-07
+
+The 2026-05-07 upstream scan reviewed upstream `master` through `#5428`.
+This batch prioritizes selective local backports for review-path safety and
+liveness semantics before any UI polish.
+
+| Task | Upstream signal | Local batch status | Local result |
+| --- | --- | --- | --- |
+| UP-20260507-00 | `#5324` / `#5325` / `#5326` SSH/sandbox bridge family | deferred | documented as future SSH/sandbox requirement; no current local runtime layer or callsite |
+| UP-20260507-01 | `#5292` control-plane review safety | integrated | agent-authored `in_review` transitions require a real next-owner review/HITL path; task suggestions and monitor-only payloads do not qualify |
+| UP-20260507-03 | `#5428` assigned backlog liveness | integrated | assigned issue creation with omitted status defaults to `todo`; explicit assigned `backlog` remains parked and logged as such |
+| UP-20260507-05 | `#5289` / `#5356` recovery notices | deferred | full structured system notices require schema/API/UI timeline presentation fields absent from this fork |
+| UP-20260507-06 | `#5426` / `#5427` retry-now and operator QoL | deferred | scheduled retry-now depends on scheduled heartbeat retry schema absent locally; UI polish remains optional follow-up |
+
+Proof for this batch:
+
+- `pnpm exec vitest run packages/shared/src/validators/issue.test.ts server/src/__tests__/issue-assigned-backlog-contract-routes.test.ts server/src/__tests__/issue-execution-policy-routes.test.ts`
+- `pnpm --filter @paperclipai/mcp-server test -- src/tools.test.ts`
+- `pnpm -r typecheck`
+- `COREPACK_HOME=/tmp/paperclip-corepack pnpm test`
+- `pnpm build`
+- Browser proof recorded in `.tmp/browser-proof-2026-05-07-control-plane-backports.md`.
 
 ## Current Incremental Scan - Started 2026-05-06
 

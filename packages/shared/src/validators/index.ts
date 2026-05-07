@@ -199,6 +199,8 @@ export {
 
 export {
   createIssueSchema,
+  createIssueInputSchema,
+  resolveCreateIssueStatusDefault,
   createIssueLabelSchema,
   updateIssueLabelSchema,
   updateIssueSchema,

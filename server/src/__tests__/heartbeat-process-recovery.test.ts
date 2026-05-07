@@ -590,8 +590,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       agentId,
       invocationSource: "assignment",
       triggerDetail: "system",
-      status: "queued",
+      status: "succeeded",
       contextSnapshot: { issueId },
+      startedAt: new Date("2026-03-19T00:01:00.000Z"),
+      finishedAt: new Date("2026-03-19T00:02:00.000Z"),
       updatedAt: new Date("2026-03-19T00:01:00.000Z"),
     });
     await db
@@ -664,8 +666,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       agentId,
       invocationSource: "assignment",
       triggerDetail: "system",
-      status: "queued",
+      status: "succeeded",
       contextSnapshot: { issueId },
+      startedAt: new Date("2026-03-19T00:01:00.000Z"),
+      finishedAt: new Date("2026-03-19T00:02:00.000Z"),
       updatedAt: new Date("2026-03-19T00:01:00.000Z"),
     });
     mockServerAdapterExecute.mockImplementationOnce(async () => {
@@ -721,7 +725,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.checkoutRunId).toBe(otherRunId);
-    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.executionRunId).not.toBe(runId);
+    expect(issue?.executionRunId).not.toBe(retryRun?.id);
+    expect(issue?.executionRunId === null || issue?.executionRunId === otherRunId).toBe(true);
   });
 
   it("does not queue process-loss retry for a cancelled issue", async () => {

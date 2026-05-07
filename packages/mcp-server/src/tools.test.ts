@@ -133,6 +133,63 @@ describe("paperclip MCP tools", () => {
     });
   });
 
+  it("creates issues without forcing a status in the MCP payload", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ id: "issue-1", status: "todo" }, 201),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipCreateIssue");
+    await tool.execute({
+      title: "Assigned MCP work",
+      assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/issues",
+    );
+    expect(JSON.parse(String(init.body))).toEqual(expect.objectContaining({
+      title: "Assigned MCP work",
+      assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+    }));
+    expect(JSON.parse(String(init.body))).not.toHaveProperty("status");
+  });
+
+  it("lets MCP callers explicitly park created issues in backlog", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ id: "issue-1", status: "backlog" }, 201),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipCreateIssue");
+    await tool.execute({
+      title: "Parked MCP work",
+      assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+      status: "backlog",
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual(expect.objectContaining({
+      title: "Parked MCP work",
+      assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+      status: "backlog",
+    }));
+  });
+
+  it("rejects null issue status in the MCP create issue schema", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+
+    const tool = getTool("paperclipCreateIssue");
+    const response = await tool.execute({
+      title: "Invalid MCP work",
+      assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+      status: null,
+    });
+
+    expect(response.content[0]?.text).toContain("received null");
+  });
+
   it("rejects invalid generic request paths", async () => {
     vi.stubGlobal("fetch", vi.fn());
 

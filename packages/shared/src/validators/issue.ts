@@ -128,7 +128,37 @@ export const issueExecutionStateSchema = z.object({
   lastDecisionOutcome: z.enum(ISSUE_EXECUTION_DECISION_OUTCOMES).nullable(),
 });
 
-export const createIssueSchema = z.object({
+type IssueCreateStatusDefaultInput = {
+  status?: unknown;
+  assigneeAgentId?: unknown;
+  assigneeUserId?: unknown;
+};
+
+export function resolveCreateIssueStatusDefault(input: IssueCreateStatusDefaultInput): {
+  status: (typeof ISSUE_STATUSES)[number];
+  defaulted: boolean;
+  reason: "explicit" | "assigned_omitted_status" | "unassigned_omitted_status";
+} {
+  if (input.status !== undefined) {
+    return {
+      status: input.status as (typeof ISSUE_STATUSES)[number],
+      defaulted: false,
+      reason: "explicit",
+    };
+  }
+
+  const hasAssignee =
+    (typeof input.assigneeAgentId === "string" && input.assigneeAgentId.length > 0) ||
+    (typeof input.assigneeUserId === "string" && input.assigneeUserId.length > 0);
+
+  return {
+    status: hasAssignee ? "todo" : "backlog",
+    defaulted: true,
+    reason: hasAssignee ? "assigned_omitted_status" : "unassigned_omitted_status",
+  };
+}
+
+const createIssueBaseSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
   projectWorkspaceId: z.string().uuid().optional().nullable(),
   goalId: z.string().uuid().optional().nullable(),
@@ -137,7 +167,7 @@ export const createIssueSchema = z.object({
   inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
   title: z.string().min(1),
   description: humanTextSchema.optional().nullable(),
-  status: z.enum(ISSUE_STATUSES).optional().default("backlog"),
+  status: z.enum(ISSUE_STATUSES),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
   assigneeAgentId: z.string().uuid().optional().nullable(),
   assigneeUserId: z.string().optional().nullable(),
@@ -149,6 +179,14 @@ export const createIssueSchema = z.object({
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
+});
+
+export const createIssueInputSchema = createIssueBaseSchema.extend({
+  status: createIssueBaseSchema.shape.status.optional(),
+});
+
+export const createIssueSchema = createIssueBaseSchema.extend({
+  status: createIssueBaseSchema.shape.status.optional().default("backlog"),
 });
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;
@@ -178,7 +216,7 @@ export const issueHitlRequestSchema = z.object({
 
 export type IssueHitlRequest = z.infer<typeof issueHitlRequestSchema>;
 
-export const updateIssueSchema = createIssueSchema.partial().extend({
+export const updateIssueSchema = createIssueBaseSchema.partial().extend({
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),
   comment: humanTextSchema.pipe(z.string().min(1)).optional(),
   hitlRequest: issueHitlRequestSchema.optional(),
