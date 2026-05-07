@@ -351,6 +351,42 @@ describe("IssuesList", () => {
     });
   });
 
+  it("exposes unique stable ids and shared names on search inputs across instances", async () => {
+    const { root } = renderWithQueryClient(
+      <>
+        <IssuesList
+          issues={[createIssue()]}
+          agents={[]}
+          projects={[]}
+          viewStateKey="paperclip:test-issues-one"
+          onUpdateIssue={() => undefined}
+        />
+        <IssuesList
+          issues={[createIssue({ id: "issue-2", identifier: "PAP-2", issueNumber: 2 })]}
+          agents={[]}
+          projects={[]}
+          viewStateKey="paperclip:test-issues-two"
+          onUpdateIssue={() => undefined}
+        />
+      </>,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const inputs = Array.from(
+        container.querySelectorAll<HTMLInputElement>('input[aria-label="Search issues"]'),
+      );
+      expect(inputs).toHaveLength(2);
+      expect(inputs.every((input) => input.id.length > 0)).toBe(true);
+      expect(inputs.every((input) => input.name === "issues-search")).toBe(true);
+      expect(new Set(inputs.map((input) => input.id)).size).toBe(inputs.length);
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("uses context-scoped persisted column visibility", async () => {
     localStorage.setItem("paperclip:test-issues:company-1:issue-columns", JSON.stringify(["id", "assignee"]));
 

@@ -10,6 +10,57 @@ worktree_config_path="$paperclip_dir/config.json"
 worktree_env_path="$paperclip_dir/.env"
 worktree_name="${PAPERCLIP_WORKSPACE_BRANCH:-$(basename "$worktree_cwd")}"
 
+if [[ -z "${COREPACK_HOME+x}" ]]; then
+  corepack_tmp_root="${TMPDIR:-/tmp}"
+  resolve_physical_path() {
+    local target="$1"
+    if [[ -d "$target" ]]; then
+      (
+        cd -P "$target"
+        pwd
+      )
+      return
+    fi
+
+    local target_dir
+    local target_base
+    target_dir="$(dirname "$target")"
+    target_base="$(basename "$target")"
+    (
+      cd -P "$target_dir"
+      printf '%s/%s\n' "$(pwd)" "$target_base"
+    )
+  }
+
+  hash_corepack_path() {
+    local value="$1"
+    local digest=""
+
+    if command -v sha256sum >/dev/null 2>&1; then
+      digest="$(printf '%s' "$value" | sha256sum)"
+      digest="${digest%% *}"
+    elif command -v shasum >/dev/null 2>&1; then
+      digest="$(printf '%s' "$value" | shasum -a 256)"
+      digest="${digest%% *}"
+    elif command -v openssl >/dev/null 2>&1; then
+      digest="$(printf '%s' "$value" | openssl dgst -sha256 -r)"
+      digest="${digest%% *}"
+    elif command -v node >/dev/null 2>&1; then
+      digest="$(node -e 'process.stdout.write(require("node:crypto").createHash("sha256").update(process.argv[1]).digest("hex"))' "$value")"
+    elif command -v cksum >/dev/null 2>&1; then
+      digest="$(printf '%s' "$value" | cksum)"
+      digest="${digest%% *}"
+    else
+      digest="${value//[^A-Za-z0-9._-]/-}"
+    fi
+
+    printf '%s\n' "${digest:0:16}"
+  }
+
+  worktree_corepack_hash="$(hash_corepack_path "$(resolve_physical_path "$worktree_cwd")")"
+  export COREPACK_HOME="$corepack_tmp_root/paperclip-corepack/worktrees/$worktree_corepack_hash"
+fi
+
 if [[ ! -d "$base_cwd" ]]; then
   echo "Base workspace does not exist: $base_cwd" >&2
   exit 1
@@ -411,6 +462,7 @@ if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; t
 
       if (
         cd "$worktree_cwd"
+        [[ -n "${COREPACK_HOME:-}" ]] && mkdir -p "$COREPACK_HOME"
         pnpm install "$@"
       ) >"$stdout_path" 2>"$stderr_path"; then
         cat "$stdout_path"

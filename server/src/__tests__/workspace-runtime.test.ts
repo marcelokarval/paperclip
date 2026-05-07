@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -55,6 +55,7 @@ const ORIGINAL_PAPERCLIP_HOME = process.env.PAPERCLIP_HOME;
 const ORIGINAL_PAPERCLIP_INSTANCE_ID = process.env.PAPERCLIP_INSTANCE_ID;
 const ORIGINAL_PAPERCLIP_WORKTREES_DIR = process.env.PAPERCLIP_WORKTREES_DIR;
 const ORIGINAL_DATABASE_URL = process.env.DATABASE_URL;
+const ORIGINAL_COREPACK_HOME = process.env.COREPACK_HOME;
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -106,6 +107,11 @@ function buildWorkspace(cwd: string): RealizedExecutionWorkspace {
     warnings: [],
     created: false,
   };
+}
+
+function expectedDefaultCorepackHome(worktreePath: string) {
+  const digest = createHash("sha256").update(path.resolve(worktreePath)).digest("hex").slice(0, 16);
+  return path.join(os.tmpdir(), "paperclip-corepack", "worktrees", digest);
 }
 
 function createWorkspaceOperationRecorderDouble() {
@@ -187,6 +193,8 @@ afterEach(async () => {
   else process.env.PAPERCLIP_WORKTREES_DIR = ORIGINAL_PAPERCLIP_WORKTREES_DIR;
   if (ORIGINAL_DATABASE_URL === undefined) delete process.env.DATABASE_URL;
   else process.env.DATABASE_URL = ORIGINAL_DATABASE_URL;
+  if (ORIGINAL_COREPACK_HOME === undefined) delete process.env.COREPACK_HOME;
+  else process.env.COREPACK_HOME = ORIGINAL_COREPACK_HOME;
   await Promise.all(Array.from(tempDirs).map((dir) => fs.rm(dir, { recursive: true, force: true })));
   tempDirs.clear();
   await resetRuntimeServicesForTests();
@@ -1355,10 +1363,12 @@ describe("realizeExecutionWorkspace", () => {
           "  exit 1",
           "fi",
           "if [ \"$1\" = \"install\" ] && [ \"$2\" = \"--frozen-lockfile\" ]; then",
+          "  printf '%s\\n' \"${COREPACK_HOME-}\" > \"$PWD/corepack-home.txt\"",
           "  echo \"ERR_PNPM_OUTDATED_LOCKFILE\" >&2",
           "  exit 1",
           "fi",
           "if [ \"$1\" = \"install\" ] && [ \"$2\" = \"--no-frozen-lockfile\" ]; then",
+          "  printf '%s\\n' \"${COREPACK_HOME-}\" > \"$PWD/corepack-home-retry.txt\"",
           "  mkdir -p \"$PWD/node_modules\"",
           "  : > \"$PWD/node_modules/.retry-success\"",
           "  exit 0",
@@ -1370,10 +1380,12 @@ describe("realizeExecutionWorkspace", () => {
       );
       await fs.chmod(fakePnpmPath, 0o755);
 
+      const scriptEnv = { ...process.env };
+      delete scriptEnv.COREPACK_HOME;
       const result = await execFileAsync(scriptPath, [], {
         cwd: worktreeRoot,
         env: {
-          ...process.env,
+          ...scriptEnv,
           PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
           PAPERCLIP_WORKTREES_DIR: isolatedWorktreeHome,
           PAPERCLIP_WORKSPACE_BASE_CWD: baseRoot,
@@ -1382,6 +1394,13 @@ describe("realizeExecutionWorkspace", () => {
       });
 
       expect(result.stderr).toContain("retrying install without --frozen-lockfile");
+      const expectedScriptCorepackHome = expectedDefaultCorepackHome(worktreeRoot);
+      await expect(fs.readFile(path.join(worktreeRoot, "corepack-home.txt"), "utf8")).resolves.toBe(
+        `${expectedScriptCorepackHome}\n`,
+      );
+      await expect(fs.readFile(path.join(worktreeRoot, "corepack-home-retry.txt"), "utf8")).resolves.toBe(
+        `${expectedScriptCorepackHome}\n`,
+      );
       await expect(fs.readFile(path.join(worktreeRoot, "node_modules", ".retry-success"), "utf8")).resolves.toBe("");
       await expect(fs.readFile(path.join(worktreeRoot, ".paperclip", "config.json"), "utf8")).resolves.toContain(
         "\"database\"",
@@ -1559,6 +1578,91 @@ describe("realizeExecutionWorkspace", () => {
       created: true,
     });
     expect(operations[1]?.command).toBe("bash ./scripts/provision.sh");
+  });
+
+  it("defaults COREPACK_HOME for provision commands without overriding user values", async () => {
+    const repoRoot = await createTempRepo();
+    const envCaptureScript = [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      "printf '%s\\n' \"${COREPACK_HOME-}\" > .corepack-home",
+    ].join("\n");
+
+    await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
+    await fs.writeFile(path.join(repoRoot, "scripts", "capture-corepack-home.sh"), envCaptureScript, "utf8");
+    await runGit(repoRoot, ["add", "scripts/capture-corepack-home.sh"]);
+    await runGit(repoRoot, ["commit", "-m", "Add corepack env capture script"]);
+
+    const originalCorepackHome = process.env.COREPACK_HOME;
+    try {
+      delete process.env.COREPACK_HOME;
+      const defaulted = await realizeExecutionWorkspace({
+        base: {
+          baseCwd: repoRoot,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: "HEAD",
+        },
+        config: {
+          workspaceStrategy: {
+            type: "git_worktree",
+            branchTemplate: "{{issue.identifier}}-{{slug}}",
+            provisionCommand: "bash ./scripts/capture-corepack-home.sh",
+          },
+        },
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-553",
+          title: "Default Corepack home",
+        },
+        agent: {
+          id: "agent-1",
+          name: "Codex Coder",
+          companyId: "company-1",
+        },
+      });
+      await expect(fs.readFile(path.join(defaulted.cwd, ".corepack-home"), "utf8")).resolves.toBe(
+        `${expectedDefaultCorepackHome(defaulted.cwd)}\n`,
+      );
+
+      const userCorepackHome = await makeTempDir("paperclip-user-corepack-");
+      process.env.COREPACK_HOME = userCorepackHome;
+      const preserved = await realizeExecutionWorkspace({
+        base: {
+          baseCwd: repoRoot,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: "HEAD",
+        },
+        config: {
+          workspaceStrategy: {
+            type: "git_worktree",
+            branchTemplate: "{{issue.identifier}}-{{slug}}",
+            provisionCommand: "bash ./scripts/capture-corepack-home.sh",
+          },
+        },
+        issue: {
+          id: "issue-2",
+          identifier: "PAP-554",
+          title: "Preserve Corepack home",
+        },
+        agent: {
+          id: "agent-1",
+          name: "Codex Coder",
+          companyId: "company-1",
+        },
+      });
+      await expect(fs.readFile(path.join(preserved.cwd, ".corepack-home"), "utf8")).resolves.toBe(
+        `${userCorepackHome}\n`,
+      );
+    } finally {
+      if (originalCorepackHome === undefined) delete process.env.COREPACK_HOME;
+      else process.env.COREPACK_HOME = originalCorepackHome;
+    }
   });
 
   it("truncates oversized provision command output before storing it in memory", async () => {

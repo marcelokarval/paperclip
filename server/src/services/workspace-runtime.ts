@@ -3,6 +3,7 @@ import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "
 import fs from "node:fs/promises";
 import net from "node:net";
 import { createHash, randomUUID } from "node:crypto";
+import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AdapterRuntimeServiceReport } from "@paperclipai/adapter-utils";
@@ -802,7 +803,15 @@ function buildWorkspaceCommandEnv(input: {
   env.PAPERCLIP_ISSUE_ID = input.issue?.id ?? "";
   env.PAPERCLIP_ISSUE_IDENTIFIER = input.issue?.identifier ?? "";
   env.PAPERCLIP_ISSUE_TITLE = input.issue?.title ?? "";
+  if (env.COREPACK_HOME === undefined) {
+    env.COREPACK_HOME = resolveWorkspaceCorepackHome(input.worktreePath);
+  }
   return env;
+}
+
+function resolveWorkspaceCorepackHome(worktreePath: string) {
+  const digest = createHash("sha256").update(path.resolve(worktreePath)).digest("hex").slice(0, 16);
+  return path.join(os.tmpdir(), "paperclip-corepack", "worktrees", digest);
 }
 
 function quoteShellArg(value: string) {
