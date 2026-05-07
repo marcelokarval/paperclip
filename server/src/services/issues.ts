@@ -1272,6 +1272,16 @@ export function issueService(db: Db) {
     return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
   }
 
+  async function resolveIssueCommentRunId(runId: string | null | undefined, companyId: string) {
+    if (!runId) return null;
+    const run = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+    return run?.id ?? null;
+  }
+
   async function clearExecutionRunIfTerminal(issueId: string) {
     const now = new Date();
     return db.transaction(async (tx) => {
@@ -2577,6 +2587,7 @@ export function issueService(db: Db) {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
       };
       const redactedBody = redactCurrentUserText(normalizedCommentBody, currentUserRedactionOptions);
+      const createdByRunId = await resolveIssueCommentRunId(actor.runId, issue.companyId);
       const [comment] = await db
         .insert(issueComments)
         .values({
@@ -2584,7 +2595,7 @@ export function issueService(db: Db) {
           issueId,
           authorAgentId: actor.agentId ?? null,
           authorUserId: actor.userId ?? null,
-          createdByRunId: actor.runId ?? null,
+          createdByRunId,
           body: redactedBody,
         })
         .returning();

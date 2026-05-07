@@ -361,6 +361,185 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(secondPage.map((comment) => comment.body)).toEqual(["Comment 3", "Comment 2"]);
   });
 
+  it("drops unknown run attribution when adding an issue comment", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const unknownRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Comment with unknown run",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const comment = await svc.addComment(issueId, "Unknown run should not fail", {
+      agentId,
+      runId: unknownRunId,
+    });
+
+    expect(comment.createdByRunId).toBeNull();
+    const persisted = await db
+      .select({ createdByRunId: issueComments.createdByRunId })
+      .from(issueComments)
+      .where(eq(issueComments.id, comment.id))
+      .then((rows) => rows[0] ?? null);
+    expect(persisted?.createdByRunId).toBeNull();
+  });
+
+  it("drops run attribution from another company when adding an issue comment", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const agentId = randomUUID();
+    const otherAgentId = randomUUID();
+    const issueId = randomUUID();
+    const otherCompanyRunId = randomUUID();
+
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: otherCompanyId,
+        name: "Other Company",
+        issuePrefix: `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+    await db.insert(agents).values([
+      {
+        id: agentId,
+        companyId,
+        name: "CodexCoder",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: otherAgentId,
+        companyId: otherCompanyId,
+        name: "OtherCodex",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(heartbeatRuns).values({
+      id: otherCompanyRunId,
+      companyId: otherCompanyId,
+      agentId: otherAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      startedAt: new Date("2026-05-07T12:00:00.000Z"),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Comment with cross-company run",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const comment = await svc.addComment(issueId, "Cross-company run should be dropped", {
+      agentId,
+      runId: otherCompanyRunId,
+    });
+
+    expect(comment.createdByRunId).toBeNull();
+    const persisted = await db
+      .select({ createdByRunId: issueComments.createdByRunId })
+      .from(issueComments)
+      .where(eq(issueComments.id, comment.id))
+      .then((rows) => rows[0] ?? null);
+    expect(persisted?.createdByRunId).toBeNull();
+    await expect(
+      db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, otherCompanyRunId)),
+    ).resolves.toEqual([{ id: otherCompanyRunId }]);
+  });
+
+  it("preserves same-company run attribution when adding an issue comment", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      startedAt: new Date("2026-05-07T12:00:00.000Z"),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Comment with valid run",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const comment = await svc.addComment(issueId, "Valid run should persist", {
+      agentId,
+      runId,
+    });
+
+    expect(comment.createdByRunId).toBe(runId);
+    const persisted = await db
+      .select({ createdByRunId: issueComments.createdByRunId })
+      .from(issueComments)
+      .where(eq(issueComments.id, comment.id))
+      .then((rows) => rows[0] ?? null);
+    expect(persisted?.createdByRunId).toBe(runId);
+  });
+
   it("combines participation filtering with search", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

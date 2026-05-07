@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -34,6 +34,35 @@ if (capturePath) {
 console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session-1", model: "claude-sonnet" }));
 console.log(JSON.stringify({ type: "assistant", session_id: "claude-session-1", message: { content: [{ type: "text", text: "hello" }] } }));
 console.log(JSON.stringify({ type: "result", session_id: "claude-session-1", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
+async function writeFailingClaudeCommand(
+  commandPath: string,
+  options: { resultEvent: Record<string, unknown>; exitCode?: number },
+): Promise<void> {
+  const script = `#!/usr/bin/env node
+console.log(${JSON.stringify(JSON.stringify(options.resultEvent))});
+process.exit(${options.exitCode ?? 1});
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
+async function writeTextFailingClaudeCommand(
+  commandPath: string,
+  options: { stdout?: string; stderr?: string; exitCode?: number },
+): Promise<void> {
+  const script = `#!/usr/bin/env node
+if (${JSON.stringify(options.stdout ?? "")}) {
+  process.stdout.write(${JSON.stringify(options.stdout ?? "")});
+}
+if (${JSON.stringify(options.stderr ?? "")}) {
+  process.stderr.write(${JSON.stringify(options.stderr ?? "")});
+}
+process.exit(${options.exitCode ?? 1});
 `;
   await fs.writeFile(commandPath, script, "utf8");
   await fs.chmod(commandPath, 0o755);
@@ -75,14 +104,18 @@ const resumed = process.argv.includes("--resume");
 const shouldFailResume = resumed && statePath && !fs.existsSync(statePath);
 if (shouldFailResume) {
   fs.writeFileSync(statePath, "retried", "utf8");
-  console.log(JSON.stringify({
+  const event = {
     type: "result",
     subtype: "error",
     session_id: "claude-session-1",
     result: "No conversation found with session id claude-session-1",
     errors: ["No conversation found with session id claude-session-1"],
-  }));
-  process.exit(1);
+  };
+  if (process.env.PAPERCLIP_TEST_FIRST_FAILURE_IS_ERROR === "1") {
+    event.is_error = true;
+  }
+  console.log(JSON.stringify(event));
+  process.exit(Number(process.env.PAPERCLIP_TEST_FIRST_FAILURE_EXIT_CODE ?? "1"));
 }
 console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session-2", model: "claude-sonnet" }));
 console.log(JSON.stringify({ type: "assistant", session_id: "claude-session-2", message: { content: [{ type: "text", text: "hello" }] } }));
@@ -313,6 +346,46 @@ describe("claude execute", () => {
       expect(metaEvents[0]?.commandNotes).toHaveLength(0);
       expect(metaEvents[1]?.commandNotes.some((note) => note.includes("--append-system-prompt-file"))).toBe(true);
       expect(result.sessionId).toBe("claude-session-2");
+      expect(result.clearSession).toBe(false);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("retries a parsed unknown session error with exit 0 and succeeds fresh", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-resume-exit-zero-"));
+    const { workspace, commandPath, capturePath, statePath, restore } = await setupExecuteEnv(root, {
+      commandWriter: writeRetryThenSucceedClaudeCommand,
+    });
+    try {
+      const result = await execute({
+        runId: "run-resume-exit-zero-fallback",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: "claude-session-1", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+            PAPERCLIP_TEST_STATE_PATH: statePath,
+            PAPERCLIP_TEST_FIRST_FAILURE_EXIT_CODE: "0",
+            PAPERCLIP_TEST_FIRST_FAILURE_IS_ERROR: "1",
+          },
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+      });
+      const captured = JSON.parse(await fs.readFile(capturePath, "utf-8")) as Array<{ argv: string[] }>;
+
+      expect(captured).toHaveLength(2);
+      expect(captured[0]?.argv).toContain("--resume");
+      expect(captured[1]?.argv).not.toContain("--resume");
+      expect(result.exitCode).toBe(0);
+      expect(result.sessionId).toBe("claude-session-2");
+      expect(result.summary).toBe("hello");
       expect(result.clearSession).toBe(false);
     } finally {
       restore();
@@ -646,4 +719,129 @@ describe("claude execute", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   }, 15_000);
+
+  it("clears the Claude session for parsed usage rate-limit failures", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-rate-limit-clear-"));
+    const { workspace, commandPath, restore } = await setupExecuteEnv(root, {
+      commandWriter: (commandPath) =>
+        writeFailingClaudeCommand(commandPath, {
+          resultEvent: {
+            type: "result",
+            subtype: "error",
+            session_id: "claude-session-rate-limited",
+            is_error: true,
+            result: "You're out of extra usage · resets 4pm (America/Chicago)",
+            errors: [{ type: "rate_limit_error", message: "You're out of extra usage" }],
+          },
+        }),
+    });
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 3, 22, 10, 15, 0));
+
+    try {
+      const result = await execute({
+        runId: "run-rate-limit-clear",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: "claude-session-rate-limited", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("provider_rate_limit");
+      expect(result.rateLimitBlock).toMatchObject({
+        provider: "anthropic",
+        adapterType: "claude_local",
+      });
+      expect(typeof result.retryNotBefore).toBe("string");
+      expect(result.resultJson?.transientRetryNotBefore).toBe(result.retryNotBefore);
+      expect(result.clearSession).toBe(true);
+    } finally {
+      vi.useRealTimers();
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("clears the Claude session for unparsed transient upstream output", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-unparsed-transient-"));
+    const { workspace, commandPath, restore } = await setupExecuteEnv(root, {
+      commandWriter: (commandPath) =>
+        writeTextFailingClaudeCommand(commandPath, {
+          stderr: "Anthropic API error: 503 service unavailable, try again later\n",
+        }),
+    });
+
+    try {
+      const result = await execute({
+        runId: "run-unparsed-transient-clear",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: "claude-session-503", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("claude_transient_upstream");
+      expect(result.errorFamily).toBe("transient_upstream");
+      expect(result.resultJson).toMatchObject({ errorFamily: "transient_upstream" });
+      expect(result.clearSession).toBe(true);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not clear the Claude session for non-transient parsed failures", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-non-transient-"));
+    const { workspace, commandPath, restore } = await setupExecuteEnv(root, {
+      commandWriter: (commandPath) =>
+        writeFailingClaudeCommand(commandPath, {
+          resultEvent: {
+            type: "result",
+            subtype: "error",
+            session_id: "claude-session-validation",
+            is_error: true,
+            result: "Invalid model name requested.",
+            errors: [{ type: "invalid_request_error", message: "Invalid model name requested." }],
+          },
+        }),
+    });
+
+    try {
+      const result = await execute({
+        runId: "run-non-transient-keep-session",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: "claude-session-validation", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBeNull();
+      expect(result.errorFamily).toBeNull();
+      expect(result.clearSession).toBe(false);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });

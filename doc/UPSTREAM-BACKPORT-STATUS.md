@@ -10,11 +10,36 @@ This fork uses selective upstream backports. Do not infer that upstream
 - Last upstream PR reviewed before this selective backport window: `#3679`
 - Latest upstream PR reviewed before the current deep-scan batch: `#5285`
 - Latest upstream PR reviewed by the current deep-scan batch: `#5428`
-- Latest upstream PR selectively integrated in this local fork: `#5428`
-- Latest upstream issue explicitly addressed in this local fork: `#5299`
+- Latest upstream PR selectively integrated in this local fork: `#5438`
+- Latest upstream issue explicitly addressed in this local fork: `#5454`
 - Previous execution plan: `doc/plans/2026-05-05-recovery-loop-and-upstream-sync-plan.md`
 - Current execution batch source: `.tmp/upstream-control-plane-backports-tasks-2026-05-07.md`
 - Current execution batch plan: `doc/plans/2026-05-07-upstream-control-plane-backports-plan.md`
+- Current liveness backport batch 2 source: `.tmp/upstream-liveness-backport-batch-2-tasks-2026-05-07.md`
+- Current liveness backport batch 2 plan: `doc/plans/2026-05-07-upstream-liveness-backport-batch-2.md`
+
+## Current Liveness Backport Batch 2 - Started 2026-05-07
+
+The second 2026-05-07 upstream scan refreshed upstream `master` to `12cb7b40`
+and reviewed the newly active liveness/runtime window. This fork still uses
+selective backports; upstream `master` was not merged wholesale.
+
+| Task | Upstream signal | Local batch status | Local result |
+| --- | --- | --- | --- |
+| UB2-01 | `#5438` Claude transient upstream session clearing | integrated | `claude_local` clears saved sessions after parsed/unparsed transient upstream failures and rate-limit blocks while preserving non-transient failures; parsed missing-session failures with exit `0` now retry fresh |
+| UB2-02 | `#5454` stale `x-paperclip-run-id` FK failure on comment creation | integrated | issue comment creation resolves run attribution at the service boundary, preserving same-company heartbeat runs and dropping unknown or cross-company run ids instead of FK-failing |
+| UB2-03 | `#5439` plugin migration `CREATE INDEX` validator | not applicable | local fork does not contain the upstream plugin database migration validator subsystem |
+| UB2-04 | `#5423` `/live-runs` wrong service receiver | already absent | local fork diverged before the broken `buildRunOutputSilence` receiver path |
+| UB2-05 | `#5442` stale-lock recovery | deferred | local has partial recovery; full conservative PID/PGID/token hardening remains a larger follow-up |
+| UB2-06 | `#5444` remote workspace sync/restore hardening | deferred | merged upstream and high value, but broader adapter-utils/runtime slice requires a separate batch |
+| UB2-07 | `#5451` dashboard orphan-candidate warning | deferred | useful operator detection layer, but UI/API surface change is separate from this no-browser backend batch |
+| UB2-08 | `#5450` Codex OAuth refresh serialization | deferred | high value for shared OAuth Codex fleets; open upstream PR should be rechecked before local integration |
+
+Proof for this batch:
+
+- `pnpm exec vitest run server/src/__tests__/claude-local-execute.test.ts server/src/__tests__/issue-comment-reopen-routes.test.ts server/src/__tests__/issues-service.test.ts`
+- `pnpm --filter @paperclipai/adapter-claude-local typecheck`
+- `pnpm --filter @paperclipai/server typecheck`
 
 ## Current Incremental Scan - Started 2026-05-07
 

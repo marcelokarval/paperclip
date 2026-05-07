@@ -469,17 +469,16 @@ describe("issue comment reopen routes", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
-  it("drops stale run attribution on POST comments instead of failing the comment", async () => {
+  it("drops stale agent run attribution on POST comments instead of failing the comment", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
     mockHeartbeatService.getRun.mockResolvedValue(null);
 
     const res = await request(
       await installActor(createApp(), {
-        type: "board",
-        userId: "local-board",
-        companyIds: ["company-1"],
-        source: "session",
-        isInstanceAdmin: false,
+        type: "agent",
+        agentId: "22222222-2222-4222-8222-222222222222",
+        companyId: "company-1",
+        source: "agent_key",
         runId: "99999999-9999-4999-8999-999999999999",
       }),
     )

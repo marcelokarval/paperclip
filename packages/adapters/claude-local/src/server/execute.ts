@@ -579,18 +579,60 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     if (!parsed) {
+      const fallbackErrorMessage = parseFallbackErrorMessage(proc);
+      const failed = (proc.exitCode ?? 0) !== 0;
+      const rateLimitBlock = failed
+        ? extractClaudeRateLimitBlock({
+          parsed: null,
+          stdout: proc.stdout,
+          stderr: proc.stderr,
+          errorMessage: fallbackErrorMessage,
+        })
+        : null;
+      const transientUpstream =
+        failed &&
+        !loginMeta.requiresLogin &&
+        !rateLimitBlock &&
+        isClaudeTransientUpstreamError({
+          parsed: null,
+          stdout: proc.stdout,
+          stderr: proc.stderr,
+          errorMessage: fallbackErrorMessage,
+        });
+      const transientRetryNotBefore =
+        transientUpstream || rateLimitBlock
+          ? extractClaudeRetryNotBefore({
+            parsed: null,
+            stdout: proc.stdout,
+            stderr: proc.stderr,
+            errorMessage: fallbackErrorMessage,
+          })
+          : null;
       return {
         exitCode: proc.exitCode,
         signal: proc.signal,
         timedOut: false,
-        errorMessage: parseFallbackErrorMessage(proc),
-        errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
+        errorMessage: fallbackErrorMessage,
+        errorCode: loginMeta.requiresLogin
+          ? "claude_auth_required"
+          : rateLimitBlock
+            ? "provider_rate_limit"
+            : transientUpstream
+              ? "claude_transient_upstream"
+              : null,
+        errorFamily: transientUpstream ? "transient_upstream" : null,
+        retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
+        rateLimitBlock,
         errorMeta,
         resultJson: {
           stdout: proc.stdout,
           stderr: proc.stderr,
+          ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
+          ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
+          ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
+          ...(rateLimitBlock ? { rateLimitBlock } : {}),
         },
-        clearSession: Boolean(opts.clearSessionOnMissingSession),
+        clearSession: transientUpstream || Boolean(rateLimitBlock) || Boolean(opts.clearSessionOnMissingSession),
       };
     }
 
@@ -619,12 +661,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       } as Record<string, unknown>)
       : null;
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
+    const parsedIsError = asBoolean(parsed.is_error, false);
+    const failed = (proc.exitCode ?? 0) !== 0 || parsedIsError;
     const errorMessage =
-      (proc.exitCode ?? 0) === 0
-        ? null
-        : describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`;
+      failed
+        ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
+        : null;
     const transientRetryNotBefore =
-      (proc.exitCode ?? 0) === 0
+      !failed
         ? null
         : extractClaudeRetryNotBefore({
           parsed,
@@ -633,7 +677,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           errorMessage,
         });
     const transientUpstream =
-      (proc.exitCode ?? 0) !== 0 &&
+      failed &&
+      !loginMeta.requiresLogin &&
+      !clearSessionForMaxTurns &&
       isClaudeTransientUpstreamError({
         parsed,
         stdout: proc.stdout,
@@ -641,7 +687,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorMessage,
       });
     const rateLimitBlock =
-      (proc.exitCode ?? 0) === 0
+      !failed
         ? null
         : extractClaudeRateLimitBlock({
           parsed,
@@ -683,15 +729,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(rateLimitBlock ? { rateLimitBlock } : {}),
       },
       summary: parsedStream.summary || asString(parsed.result, ""),
-      clearSession: clearSessionForMaxTurns || Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),
+      clearSession:
+        clearSessionForMaxTurns ||
+        transientUpstream ||
+        Boolean(rateLimitBlock) ||
+        Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),
     };
   };
 
   const initial = await runAttempt(sessionId ?? null);
+  const initialFailed = (initial.proc.exitCode ?? 0) !== 0 || asBoolean(initial.parsed?.is_error, false);
   if (
     sessionId &&
     !initial.proc.timedOut &&
-    (initial.proc.exitCode ?? 0) !== 0 &&
+    initialFailed &&
     isClaudeUnknownSessionError(initial.parsed, initial.proc.stdout, initial.proc.stderr)
   ) {
     await onLog(
