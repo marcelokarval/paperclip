@@ -25,6 +25,25 @@ Paperclip is the command, communication, and control plane for a company of AI a
 - **Align to goals** — agents see how their work serves the bigger mission
 - **Store company knowledge** — a shared brain for the organization
 
+## Local Fork Direction: Fast Agent Operating Context
+
+This fork is beginning to move beyond upstream parity in one explicit direction:
+Paperclip should act as an agent operating-context compiler, not only as a
+heavyweight heartbeat control plane.
+
+Agents should still be born with rich identity, peer awareness, skills, tools,
+project context, routing rules, and governance. Routine actions should not need
+to reload the whole company operating context to act correctly. Simple email,
+support, property, and operational tasks should execute through compact runtime
+packets with clear tool limits and fast validation, while strategic,
+self-improving, high-risk, and ambiguous work can continue through the full
+governed heartbeat path.
+
+Current planning/spec documents for this fork direction:
+
+- `doc/plans/2026-05-07-fast-agent-operating-context-prd.md`
+- `doc/spec/fast-agent-execution-kernel.md`
+
 ## Architecture
 
 Two layers:
