@@ -37,6 +37,8 @@ When proposing a change, include:
 - Scope: CEO only, specific hire, all future agents, or product workflow.
 - Whether HITL approval is required.
 - Verification method after the change.
+- Source issue, source approval, and source learning activity when the proposal comes from org learning.
+- Target instruction surfaces and whether the proposal is intended for CEO-only, a specific role, all future agents, or a project.
 
 ## Rules
 
@@ -45,3 +47,4 @@ When proposing a change, include:
 - Do not move project-specific facts into global CEO policy.
 - Prefer small explicit changes over broad rewrites.
 - If the board approves, update the managed instruction bundle and record the rationale in memory.
+- Instruction patch proposals are non-mutating review artifacts. Do not describe them as applied until the actual instruction edit is approved and completed.

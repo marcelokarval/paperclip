@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { HttpError } from "../errors.ts";
 import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.ts";
 
 const mockIssueService = vi.hoisted(() => ({
@@ -19,6 +20,7 @@ const mockIssueService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockActivityService = vi.hoisted(() => ({
   forIssue: vi.fn(),
+  list: vi.fn(),
 }));
 const mockIssueApprovalService = vi.hoisted(() => ({
   listApprovalsForIssue: vi.fn(),
@@ -26,6 +28,22 @@ const mockIssueApprovalService = vi.hoisted(() => ({
 }));
 const mockApprovalService = vi.hoisted(() => ({
   create: vi.fn(),
+  getById: vi.fn(),
+}));
+const mockAgentService = vi.hoisted(() => ({
+  getById: vi.fn(async () => null),
+  resolveByReference: vi.fn(async (_companyId: string, raw: string) => ({
+    ambiguous: false,
+    agent: { id: raw },
+  })),
+  update: vi.fn(),
+}));
+const mockAgentInstructionsService = vi.hoisted(() => ({
+  readFile: vi.fn(),
+  writeFile: vi.fn(),
+}));
+const mockSecretService = vi.hoisted(() => ({
+  normalizeAdapterConfigForPersistence: vi.fn(async (_companyId: string, adapterConfig: Record<string, unknown>) => adapterConfig),
 }));
 
 vi.mock("../services/index.js", () => ({
@@ -33,13 +51,8 @@ vi.mock("../services/index.js", () => ({
     canUser: vi.fn(async () => false),
     hasPermission: vi.fn(async () => false),
   }),
-  agentService: () => ({
-    getById: vi.fn(async () => null),
-    resolveByReference: vi.fn(async (_companyId: string, raw: string) => ({
-      ambiguous: false,
-      agent: { id: raw },
-    })),
-  }),
+  agentService: () => mockAgentService,
+  agentInstructionsService: () => mockAgentInstructionsService,
   documentService: () => ({}),
   executionWorkspaceService: () => ({}),
   feedbackService: () => ({
@@ -73,6 +86,7 @@ vi.mock("../services/index.js", () => ({
   routineService: () => ({
     syncRunStatusForIssue: vi.fn(async () => undefined),
   }),
+  secretService: () => mockSecretService,
   workProductService: () => ({}),
 }));
 
@@ -135,6 +149,7 @@ describe("issue activity event routes", () => {
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockActivityService.forIssue.mockResolvedValue([]);
+    mockActivityService.list.mockResolvedValue([]);
     mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
     mockIssueApprovalService.link.mockResolvedValue(undefined);
     mockApprovalService.create.mockResolvedValue({
@@ -150,6 +165,31 @@ describe("issue activity event routes", () => {
       decidedAt: null,
       createdAt: new Date(),
       updatedAt: new Date(),
+    });
+    mockApprovalService.getById.mockResolvedValue(null);
+    mockAgentService.getById.mockResolvedValue(null);
+    mockAgentService.resolveByReference.mockImplementation(async (_companyId: string, raw: string) => ({
+      ambiguous: false,
+      agent: { id: raw },
+    }));
+    mockAgentService.update.mockResolvedValue(null);
+    mockAgentInstructionsService.readFile.mockResolvedValue({
+      path: "AGENTS.md",
+      content: "# Existing instructions\n",
+      size: 24,
+      updatedAt: new Date(),
+      isEntryFile: true,
+    });
+    mockAgentInstructionsService.writeFile.mockResolvedValue({
+      file: {
+        path: "AGENTS.md",
+        content: "# Existing instructions\n\n<!-- paperclip-org-learning-patch:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa -->\nNew routing guidance.\n<!-- /paperclip-org-learning-patch:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa -->\n",
+        size: 180,
+        updatedAt: new Date(),
+        isEntryFile: true,
+      },
+      bundle: {},
+      adapterConfig: { instructionsBundleMode: "managed" },
     });
   });
 
@@ -779,5 +819,525 @@ describe("issue activity event routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
+  it("creates an idempotent instruction patch proposal for an org-learning apply issue", async () => {
+    const sourceIssue = makeIssue();
+    const applyIssue = {
+      ...makeIssue(),
+      id: "33333333-3333-4333-8333-333333333333",
+      identifier: "PAP-581",
+      title: "Apply approved org-learning from PAP-580",
+      parentId: sourceIssue.id,
+      originKind: "org_learning_apply",
+      originId: "org-learning-apply:11111111-1111-4111-8111-111111111111:eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    };
+    mockIssueService.getById
+      .mockResolvedValueOnce(applyIssue)
+      .mockResolvedValueOnce(sourceIssue);
+    mockActivityService.forIssue
+      .mockResolvedValueOnce([
+        {
+          id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+          companyId: "company-1",
+          actorType: "user",
+          actorId: "local-board",
+          agentId: null,
+          runId: null,
+          action: "issue.org_learning_apply_approved",
+          entityType: "issue",
+          entityId: sourceIssue.id,
+          details: {
+            approvalId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            learningActivityEventId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            suggestedInstructionSurfaces: ["LESSONS_LEDGER.md", "ROUTING_TABLE.md"],
+            signals: ["blocked_status"],
+            nextActionOnApproval: "Update routing defaults.",
+            proposedComment: "Require explicit routing owner before execution.",
+          },
+          createdAt: new Date("2026-05-07T00:02:00.000Z"),
+        },
+      ])
+      .mockResolvedValueOnce([]);
+
+    const res = await request(await createApp())
+      .post("/api/issues/33333333-3333-4333-8333-333333333333/instruction-patch-proposal")
+      .send({});
+
+    expect(res.status).toBe(201);
+    expect(res.body.proposal).toEqual(expect.objectContaining({
+      proposalId: "instruction-patch-proposal:33333333-3333-4333-8333-333333333333:eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      targetSurfaces: ["LESSONS_LEDGER.md", "ROUTING_TABLE.md"],
+      summary: "Update routing defaults.",
+      requiresHitlBeforeMutation: true,
+    }));
+    expect(res.body.proposal.proposalText).toContain("Do not mutate instruction files");
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.instruction_patch_proposal_created",
+        entityId: applyIssue.id,
+        details: expect.objectContaining({
+          sourceIssueId: sourceIssue.id,
+          approvalId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+          learningActivityEventId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          requiresHitlBeforeMutation: true,
+        }),
+      }),
+    );
+  });
+
+  it("returns an existing instruction patch proposal for the same apply issue", async () => {
+    const sourceIssue = makeIssue();
+    const applyIssue = {
+      ...makeIssue(),
+      id: "33333333-3333-4333-8333-333333333333",
+      identifier: "PAP-581",
+      title: "Apply approved org-learning from PAP-580",
+      originKind: "org_learning_apply",
+      originId: "org-learning-apply:11111111-1111-4111-8111-111111111111:eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    };
+    mockIssueService.getById
+      .mockResolvedValueOnce(applyIssue)
+      .mockResolvedValueOnce(sourceIssue);
+    mockActivityService.forIssue
+      .mockResolvedValueOnce([
+        {
+          id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+          companyId: "company-1",
+          actorType: "user",
+          actorId: "local-board",
+          agentId: null,
+          runId: null,
+          action: "issue.org_learning_apply_approved",
+          entityType: "issue",
+          entityId: sourceIssue.id,
+          details: {
+            approvalId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            learningActivityEventId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          },
+          createdAt: new Date("2026-05-07T00:02:00.000Z"),
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+          companyId: "company-1",
+          actorType: "user",
+          actorId: "local-board",
+          agentId: null,
+          runId: null,
+          action: "issue.instruction_patch_proposal_created",
+          entityType: "issue",
+          entityId: applyIssue.id,
+          details: {
+            proposalId: "instruction-patch-proposal:33333333-3333-4333-8333-333333333333:eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            summary: "Existing proposal",
+            proposalText: "Existing proposal text",
+            targetSurfaces: ["LESSONS_LEDGER.md"],
+            sourceLinks: [],
+            requiresHitlBeforeMutation: true,
+          },
+          createdAt: new Date("2026-05-07T00:03:00.000Z"),
+        },
+      ]);
+
+    const res = await request(await createApp())
+      .post("/api/issues/33333333-3333-4333-8333-333333333333/instruction-patch-proposal")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.skipped).toBe("duplicate_instruction_patch_proposal");
+    expect(res.body.proposal.summary).toBe("Existing proposal");
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "issue.instruction_patch_proposal_created" }),
+    );
+  });
+
+  it("rejects instruction patch proposals for non-apply issues and agent callers", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue());
+    const nonApply = await request(await createApp())
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/instruction-patch-proposal")
+      .send({});
+    expect(nonApply.status).toBe(422);
+
+    const agent = await request(await createApp({
+      type: "agent",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      companyId: "company-1",
+      runId: null,
+    }))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/instruction-patch-proposal")
+      .send({});
+    expect(agent.status).toBe(403);
+  });
+
+  it("creates a HITL approval request from an instruction patch proposal", async () => {
+    const applyIssue = {
+      ...makeIssue(),
+      id: "33333333-3333-4333-8333-333333333333",
+      identifier: "PAP-581",
+      title: "Apply approved org-learning from PAP-580",
+      originKind: "org_learning_apply",
+    };
+    const targetAgent = {
+      id: "22222222-2222-4222-8222-222222222222",
+      companyId: "company-1",
+      name: "CTO",
+      role: "cto",
+      adapterConfig: {},
+    };
+    mockIssueService.getById.mockResolvedValue(applyIssue);
+    mockAgentService.getById.mockResolvedValue(targetAgent);
+    mockActivityService.forIssue.mockResolvedValue([
+      {
+        id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        companyId: "company-1",
+        actorType: "user",
+        actorId: "local-board",
+        agentId: null,
+        runId: null,
+        action: "issue.instruction_patch_proposal_created",
+        entityType: "issue",
+        entityId: applyIssue.id,
+        details: {
+          proposalId: "instruction-patch-proposal:33333333-3333-4333-8333-333333333333",
+          summary: "Update routing defaults",
+          proposalText: "New routing guidance.",
+          targetSurfaces: ["AGENTS.md", "ROUTING_TABLE.md"],
+          requiresHitlBeforeMutation: true,
+        },
+        createdAt: new Date("2026-05-07T00:03:00.000Z"),
+      },
+    ]);
+    mockApprovalService.create.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      requestedByAgentId: null,
+      requestedByUserId: "local-board",
+      payload: {},
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const res = await request(await createApp())
+      .post("/api/issues/33333333-3333-4333-8333-333333333333/instruction-patch-approval")
+      .send({
+        proposalActivityEventId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        targetAgentId: targetAgent.id,
+        targetSurface: "AGENTS.md",
+        patchText: "New routing guidance.",
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockApprovalService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        type: "request_board_approval",
+        status: "pending",
+        payload: expect.objectContaining({
+          source: "instruction_patch_proposal",
+          issueId: applyIssue.id,
+          proposalActivityEventId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+          targetAgentId: targetAgent.id,
+          targetSurface: "AGENTS.md",
+          patchText: "New routing guidance.",
+        }),
+      }),
+    );
+    expect(mockIssueApprovalService.link).toHaveBeenCalledWith(applyIssue.id, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", {
+      agentId: null,
+      userId: "local-board",
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.instruction_patch_approval_requested",
+        entityId: applyIssue.id,
+        details: expect.objectContaining({
+          approvalId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          targetAgentId: targetAgent.id,
+          targetSurface: "AGENTS.md",
+        }),
+      }),
+    );
+  });
+
+  it("refuses to apply an instruction patch while its approval is pending", async () => {
+    const applyIssue = {
+      ...makeIssue(),
+      id: "33333333-3333-4333-8333-333333333333",
+      originKind: "org_learning_apply",
+    };
+    mockIssueService.getById.mockResolvedValue(applyIssue);
+    mockApprovalService.getById.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      requestedByAgentId: null,
+      requestedByUserId: "local-board",
+      payload: {
+        source: "instruction_patch_proposal",
+        issueId: applyIssue.id,
+        targetAgentId: "22222222-2222-4222-8222-222222222222",
+        targetSurface: "AGENTS.md",
+        patchText: "New routing guidance.",
+      },
+    });
+    mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([
+      { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+    ]);
+
+    const res = await request(await createApp())
+      .post("/api/issues/33333333-3333-4333-8333-333333333333/apply-approved-instruction-patch")
+      .send({ approvalId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" });
+
+    expect(res.status).toBe(422);
+    expect(mockAgentInstructionsService.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("applies an approved instruction patch through the instruction service", async () => {
+    const applyIssue = {
+      ...makeIssue(),
+      id: "33333333-3333-4333-8333-333333333333",
+      originKind: "org_learning_apply",
+    };
+    const approval = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "approved",
+      requestedByAgentId: null,
+      requestedByUserId: "local-board",
+      payload: {
+        source: "instruction_patch_proposal",
+        issueId: applyIssue.id,
+        proposalActivityEventId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        targetAgentId: "22222222-2222-4222-8222-222222222222",
+        targetSurface: "AGENTS.md",
+        patchText: "New routing guidance.",
+      },
+    };
+    const targetAgent = {
+      id: "22222222-2222-4222-8222-222222222222",
+      companyId: "company-1",
+      name: "CTO",
+      role: "cto",
+      adapterConfig: {},
+    };
+    mockIssueService.getById.mockResolvedValue(applyIssue);
+    mockApprovalService.getById.mockResolvedValue(approval);
+    mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([approval]);
+    mockAgentService.getById.mockResolvedValue(targetAgent);
+    mockActivityService.forIssue.mockResolvedValue([]);
+
+    const res = await request(await createApp())
+      .post("/api/issues/33333333-3333-4333-8333-333333333333/apply-approved-instruction-patch")
+      .send({ approvalId: approval.id });
+
+    expect(res.status).toBe(200);
+    expect(res.body.applied).toBe(true);
+    expect(res.body.skipped).toBe(false);
+    expect(mockAgentInstructionsService.writeFile).toHaveBeenCalledWith(
+      targetAgent,
+      "AGENTS.md",
+      expect.stringContaining("<!-- paperclip-org-learning-patch:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa -->"),
+      expect.anything(),
+    );
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      targetAgent.id,
+      { adapterConfig: { instructionsBundleMode: "managed" } },
+      expect.objectContaining({
+        recordRevision: expect.objectContaining({
+          createdByUserId: "local-board",
+          source: "instruction_patch_approved_apply",
+        }),
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.instruction_patch_applied",
+        entityId: applyIssue.id,
+        details: expect.objectContaining({
+          approvalId: approval.id,
+          targetAgentId: targetAgent.id,
+          targetSurface: "AGENTS.md",
+        }),
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "agent.instructions_file_updated",
+        entityType: "agent",
+        entityId: targetAgent.id,
+      }),
+    );
+  });
+
+  it("creates a missing instruction surface when applying an approved patch", async () => {
+    const applyIssue = {
+      ...makeIssue(),
+      id: "33333333-3333-4333-8333-333333333333",
+      originKind: "org_learning_apply",
+    };
+    const approval = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "approved",
+      requestedByAgentId: null,
+      requestedByUserId: "local-board",
+      payload: {
+        source: "instruction_patch_proposal",
+        issueId: applyIssue.id,
+        targetAgentId: "22222222-2222-4222-8222-222222222222",
+        targetSurface: "COMMUNICATION_PROTOCOL.md",
+        patchText: "New communication guidance.",
+      },
+    };
+    const targetAgent = {
+      id: "22222222-2222-4222-8222-222222222222",
+      companyId: "company-1",
+      name: "CTO",
+      role: "cto",
+      adapterConfig: {},
+    };
+    mockIssueService.getById.mockResolvedValue(applyIssue);
+    mockApprovalService.getById.mockResolvedValue(approval);
+    mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([approval]);
+    mockAgentService.getById.mockResolvedValue(targetAgent);
+    mockActivityService.forIssue.mockResolvedValue([]);
+    mockAgentInstructionsService.readFile.mockRejectedValueOnce(new HttpError(404, "Instructions file not found"));
+
+    const res = await request(await createApp())
+      .post("/api/issues/33333333-3333-4333-8333-333333333333/apply-approved-instruction-patch")
+      .send({ approvalId: approval.id });
+
+    expect(res.status).toBe(200);
+    expect(mockAgentInstructionsService.writeFile).toHaveBeenCalledWith(
+      targetAgent,
+      "COMMUNICATION_PROTOCOL.md",
+      expect.stringContaining("New communication guidance."),
+      expect.anything(),
+    );
+  });
+
+  it("skips an approved instruction patch that was already applied", async () => {
+    const applyIssue = {
+      ...makeIssue(),
+      id: "33333333-3333-4333-8333-333333333333",
+      originKind: "org_learning_apply",
+    };
+    const approval = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "approved",
+      requestedByAgentId: null,
+      requestedByUserId: "local-board",
+      payload: {
+        source: "instruction_patch_proposal",
+        issueId: applyIssue.id,
+        targetAgentId: "22222222-2222-4222-8222-222222222222",
+        targetSurface: "AGENTS.md",
+        patchText: "New routing guidance.",
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(applyIssue);
+    mockApprovalService.getById.mockResolvedValue(approval);
+    mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([approval]);
+    mockActivityService.forIssue.mockResolvedValue([
+      {
+        id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        action: "issue.instruction_patch_applied",
+        details: { approvalId: approval.id },
+      },
+    ]);
+
+    const res = await request(await createApp())
+      .post("/api/issues/33333333-3333-4333-8333-333333333333/apply-approved-instruction-patch")
+      .send({ approvalId: approval.id });
+
+    expect(res.status).toBe(200);
+    expect(res.body.skipped).toBe(true);
+    expect(mockAgentInstructionsService.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("returns company org intelligence aggregate counts and evidence", async () => {
+    mockActivityService.list.mockResolvedValue([
+      {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyId: "company-1",
+        actorType: "agent",
+        actorId: "22222222-2222-4222-8222-222222222222",
+        agentId: "22222222-2222-4222-8222-222222222222",
+        runId: null,
+        action: "issue.routing_decision_recorded",
+        entityType: "issue",
+        entityId: "11111111-1111-4111-8111-111111111111",
+        details: { rationale: "Route to CTO." },
+        createdAt: new Date("2026-05-07T00:01:00.000Z"),
+      },
+      {
+        id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        companyId: "company-1",
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: null,
+        action: "issue.learning_recorded",
+        entityType: "issue",
+        entityId: "11111111-1111-4111-8111-111111111111",
+        details: { lessonProposal: { proposed_change: "Improve routing." } },
+        createdAt: new Date("2026-05-07T00:02:00.000Z"),
+      },
+      {
+        id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        companyId: "company-1",
+        actorType: "user",
+        actorId: "local-board",
+        agentId: null,
+        runId: null,
+        action: "issue.instruction_patch_proposal_created",
+        entityType: "issue",
+        entityId: "33333333-3333-4333-8333-333333333333",
+        details: { summary: "Patch proposal", applyIssueId: "33333333-3333-4333-8333-333333333333" },
+        createdAt: new Date("2026-05-07T00:03:00.000Z"),
+      },
+    ]);
+    mockIssueService.list.mockResolvedValue([
+      {
+        ...makeIssue(),
+        id: "33333333-3333-4333-8333-333333333333",
+        identifier: "PAP-581",
+        title: "Apply approved org-learning from PAP-580",
+        originKind: "org_learning_apply",
+      },
+    ]);
+
+    const res = await request(await createApp())
+      .get("/api/companies/company-1/org-intelligence");
+
+    expect(res.status).toBe(200);
+    expect(res.body.counts).toEqual({
+      routingDecisions: 1,
+      learningRecords: 1,
+      learningApprovals: 0,
+      patchProposals: 1,
+      openApplyIssues: 1,
+    });
+    expect(res.body.recentEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "patch_proposal", summary: "Patch proposal" }),
+      expect.objectContaining({ kind: "open_apply_issue", issueIdentifier: "PAP-581" }),
+    ]));
   });
 });

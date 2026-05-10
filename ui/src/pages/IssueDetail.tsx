@@ -911,13 +911,192 @@ function ChipList({ values, empty }: { values: string[]; empty: string }) {
   );
 }
 
-function IssueDetailOrgIntelligenceTab({ issueId, agentMap }: { issueId: string; agentMap: Map<string, Agent> }) {
+type InstructionPatchProposalRecord = Extract<IssueOrgIntelligenceRecord, { kind: "instruction_patch_proposal" }>;
+
+function readPayloadString(payload: unknown, key: string): string | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const value = (payload as Record<string, unknown>)[key];
+  return typeof value === "string" ? value : null;
+}
+
+function findInstructionPatchApprovalForRecord(
+  approvals: Approval[] | undefined,
+  record: InstructionPatchProposalRecord,
+  form: { targetAgentId: string; targetSurface: string; patchText: string },
+) {
+  return (approvals ?? []).find((approval) => {
+    const payload = approval.payload;
+    return (
+      readPayloadString(payload, "source") === "instruction_patch_proposal" &&
+      readPayloadString(payload, "proposalActivityEventId") === record.id &&
+      readPayloadString(payload, "targetAgentId") === form.targetAgentId &&
+      readPayloadString(payload, "targetSurface") === form.targetSurface &&
+      readPayloadString(payload, "patchText") === form.patchText
+    );
+  }) ?? null;
+}
+
+function InstructionPatchProposalCard({
+  record,
+  agents,
+  approvals,
+  appliedApprovalIds,
+  onRequestApproval,
+  onApplyApprovedPatch,
+  requesting,
+  applyingApprovalId,
+}: {
+  record: InstructionPatchProposalRecord;
+  agents: Agent[];
+  approvals: Approval[] | undefined;
+  appliedApprovalIds: Set<string>;
+  onRequestApproval: (input: {
+    proposalActivityEventId: string;
+    targetAgentId: string;
+    targetSurface: string;
+    patchText: string;
+  }) => void;
+  onApplyApprovedPatch: (approvalId: string) => void;
+  requesting: boolean;
+  applyingApprovalId: string | null;
+}) {
+  const [targetAgentId, setTargetAgentId] = useState(() => agents[0]?.id ?? "");
+  const [targetSurface, setTargetSurface] = useState(() => record.targetSurfaces[0] ?? "");
+  const [patchText, setPatchText] = useState(() => record.proposalText ?? "");
+  const matchingApproval = findInstructionPatchApprovalForRecord(approvals, record, {
+    targetAgentId,
+    targetSurface,
+    patchText,
+  });
+  const approved = matchingApproval?.status === "approved";
+  const applied = matchingApproval ? appliedApprovalIds.has(matchingApproval.id) : false;
+
+  return (
+    <div className="rounded-lg border border-sky-200 bg-sky-50/40 p-3 dark:border-sky-900/60 dark:bg-sky-950/20">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <div className="text-sm font-medium text-sky-950 dark:text-sky-100">
+            {record.summary ?? "Instruction patch proposal"}
+          </div>
+          <div className="text-xs text-muted-foreground">
+            {record.proposalId ? `Proposal ${record.proposalId}` : "Proposal recorded"}
+          </div>
+        </div>
+        <span className="text-xs text-muted-foreground">{relativeTime(record.createdAt)}</span>
+      </div>
+      <div className="mt-3">
+        <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Target surfaces</div>
+        <ChipList values={record.targetSurfaces} empty="No target surface recorded" />
+      </div>
+      <div className="mt-3 grid gap-3 md:grid-cols-2">
+        <label className="space-y-1 text-xs">
+          <span className="font-medium text-foreground">Target agent</span>
+          <select
+            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+            value={targetAgentId}
+            onChange={(event) => setTargetAgentId(event.target.value)}
+          >
+            {agents.length === 0 ? <option value="">No agents available</option> : null}
+            {agents.map((agent) => (
+              <option key={agent.id} value={agent.id}>{agent.name}</option>
+            ))}
+          </select>
+        </label>
+        <label className="space-y-1 text-xs">
+          <span className="font-medium text-foreground">Instruction surface</span>
+          <select
+            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+            value={targetSurface}
+            onChange={(event) => setTargetSurface(event.target.value)}
+          >
+            {record.targetSurfaces.map((surface) => (
+              <option key={surface} value={surface}>{surface}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <label className="mt-3 block space-y-1 text-xs">
+        <span className="font-medium text-foreground">Patch text</span>
+        <textarea
+          className="min-h-32 w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-xs leading-5"
+          value={patchText}
+          onChange={(event) => setPatchText(event.target.value)}
+        />
+      </label>
+      <p className="mt-3 text-xs text-muted-foreground">
+        Approval is required before mutation. Request HITL approval first; applying the patch writes a marked block to the selected instruction file only after approval.
+      </p>
+      <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+        {matchingApproval ? (
+          <Button variant="ghost" size="sm" asChild>
+            <Link to={`/approvals/${matchingApproval.id}`}>
+              Approval {matchingApproval.status}
+            </Link>
+          </Button>
+        ) : null}
+        {!matchingApproval ? (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onRequestApproval({
+              proposalActivityEventId: record.id,
+              targetAgentId,
+              targetSurface,
+              patchText,
+            })}
+            disabled={requesting || !targetAgentId || !targetSurface || !patchText.trim()}
+          >
+            {requesting ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
+            Request HITL patch approval
+          </Button>
+        ) : null}
+        {matchingApproval && !approved && !applied ? (
+          <span className="text-xs text-muted-foreground">Awaiting approval before mutation.</span>
+        ) : null}
+        {approved && !applied && matchingApproval ? (
+          <Button
+            size="sm"
+            onClick={() => onApplyApprovedPatch(matchingApproval.id)}
+            disabled={applyingApprovalId === matchingApproval.id}
+          >
+            {applyingApprovalId === matchingApproval.id ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
+            Apply approved patch
+          </Button>
+        ) : null}
+        {applied ? (
+          <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-100">
+            Patch applied
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function IssueDetailOrgIntelligenceTab({
+  issue,
+  agentMap,
+}: {
+  issue: Issue;
+  agentMap: Map<string, Agent>;
+}) {
+  const issueId = issue.id;
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const { data: records, isLoading } = useQuery({
     queryKey: queryKeys.issues.orgIntelligence(issueId),
     queryFn: () => issuesApi.listOrgIntelligence(issueId),
     placeholderData: keepPreviousDataForSameQueryTail<IssueOrgIntelligenceRecord[]>(issueId),
+  });
+  const { data: linkedApprovals } = useQuery({
+    queryKey: queryKeys.issues.approvals(issueId),
+    queryFn: () => issuesApi.listApprovals(issueId),
+    placeholderData: keepPreviousDataForSameQueryTail<Approval[]>(issueId),
+  });
+  const { data: activity } = useQuery({
+    queryKey: queryKeys.issues.activity(issueId),
+    queryFn: () => activityApi.forIssue(issueId),
+    placeholderData: keepPreviousDataForSameQueryTail<ActivityEvent[]>(issueId),
   });
   const createLearningApproval = useMutation({
     mutationFn: (activityEventId: string) => issuesApi.createOrgLearningApproval(issueId, activityEventId),
@@ -976,6 +1155,76 @@ function IssueDetailOrgIntelligenceTab({ issueId, agentMap }: { issueId: string;
       });
     },
   });
+  const createInstructionPatchProposal = useMutation({
+    mutationFn: () => issuesApi.createInstructionPatchProposal(issueId),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.orgIntelligence(issueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.orgIntelligence(issue.companyId) });
+      pushToast({
+        title: result.skipped ? "Patch proposal already exists" : "Patch proposal created",
+        body: "The proposal is recorded for review and does not mutate instruction files.",
+        tone: result.skipped ? "info" : "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Unable to create patch proposal",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+  const createInstructionPatchApproval = useMutation({
+    mutationFn: (input: {
+      proposalActivityEventId: string;
+      targetAgentId: string;
+      targetSurface: string;
+      patchText: string;
+    }) => issuesApi.createInstructionPatchApproval(issueId, input),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.approvals(issueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.orgIntelligence(issueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.detail(result.hitlApproval.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(issue.companyId) });
+      pushToast({
+        title: result.skipped ? "Patch approval already exists" : "Patch approval requested",
+        body: "Approval is required before the instruction file can be mutated.",
+        tone: result.skipped ? "info" : "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Unable to request patch approval",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+  const applyApprovedInstructionPatch = useMutation({
+    mutationFn: (approvalId: string) => issuesApi.applyApprovedInstructionPatch(issueId, approvalId),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.orgIntelligence(issueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.approvals(issueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.detail(result.approvalId) });
+      pushToast({
+        title: result.skipped ? "Patch already applied" : "Patch applied",
+        body: result.skipped
+          ? "This approval already has an applied patch activity."
+          : "The selected instruction file was updated with an approval marker block.",
+        tone: result.skipped ? "info" : "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Unable to apply approved patch",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
 
   if (isLoading && records === undefined) {
     return <IssueSectionSkeleton titleWidth="w-32" rows={3} />;
@@ -984,17 +1233,55 @@ function IssueDetailOrgIntelligenceTab({ issueId, agentMap }: { issueId: string;
   const routingRecords = (records ?? []).filter((record) => record.kind === "routing");
   const learningRecords = (records ?? []).filter((record) => record.kind === "learning");
   const learningApplyApprovedRecords = (records ?? []).filter((record) => record.kind === "learning_apply_approved");
+  const instructionPatchProposalRecords = (records ?? []).filter((record) => record.kind === "instruction_patch_proposal");
+  const isOrgLearningApplyIssue = issue.originKind === "org_learning_apply";
+  const agents = Array.from(agentMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+  const appliedInstructionPatchApprovalIds = new Set(
+    (activity ?? [])
+      .filter((event) => event.action === "issue.instruction_patch_applied")
+      .map((event) => readPayloadString(event.details, "approvalId"))
+      .filter((approvalId): approvalId is string => Boolean(approvalId)),
+  );
 
   if ((records ?? []).length === 0) {
-    return (
-      <div className="rounded-lg border border-border p-4 text-sm text-muted-foreground">
-        No routing or org-learning records have been captured for this issue yet.
-      </div>
-    );
+    if (!isOrgLearningApplyIssue) {
+      return (
+        <div className="rounded-lg border border-border p-4 text-sm text-muted-foreground">
+          No routing or org-learning records have been captured for this issue yet.
+        </div>
+      );
+    }
   }
 
   return (
     <div className="space-y-4">
+      {isOrgLearningApplyIssue && (
+        <section className="rounded-lg border border-amber-200 bg-amber-50/50 p-3 dark:border-amber-900/60 dark:bg-amber-950/20">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-amber-950 dark:text-amber-100">
+                Org-learning apply issue
+              </h3>
+              <p className="mt-1 max-w-2xl text-xs text-muted-foreground">
+                Generate a reviewable instruction patch proposal for this apply issue. This action records a proposal
+                only; it does not mutate AGENTS.md, routing tables, lessons ledgers, or any managed instruction file.
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => createInstructionPatchProposal.mutate()}
+              disabled={createInstructionPatchProposal.isPending}
+            >
+              {createInstructionPatchProposal.isPending ? (
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+              ) : null}
+              Generate patch proposal
+            </Button>
+          </div>
+        </section>
+      )}
+
       <div className="rounded-lg border border-border bg-muted/20 p-3">
         <div className="text-sm font-medium">Recorded intelligence</div>
         <p className="mt-1 text-xs text-muted-foreground">
@@ -1151,6 +1438,31 @@ function IssueDetailOrgIntelligenceTab({ issueId, agentMap }: { issueId: string;
                 )}
               </div>
             </div>
+          ))}
+        </section>
+      )}
+
+      {instructionPatchProposalRecords.length > 0 && (
+        <section className="space-y-2">
+          <h3 className="text-sm font-semibold">Instruction patch proposals</h3>
+          <p className="text-xs text-muted-foreground">
+            Proposal records are review artifacts. They require HITL before any instruction file mutation.
+          </p>
+          {instructionPatchProposalRecords.map((record) => (
+            <InstructionPatchProposalCard
+              key={record.id}
+              record={record}
+              agents={agents}
+              approvals={linkedApprovals}
+              appliedApprovalIds={appliedInstructionPatchApprovalIds}
+              onRequestApproval={(input) => createInstructionPatchApproval.mutate(input)}
+              onApplyApprovedPatch={(approvalId) => applyApprovedInstructionPatch.mutate(approvalId)}
+              requesting={
+                createInstructionPatchApproval.isPending &&
+                createInstructionPatchApproval.variables?.proposalActivityEventId === record.id
+              }
+              applyingApprovalId={applyApprovedInstructionPatch.isPending ? applyApprovedInstructionPatch.variables ?? null : null}
+            />
           ))}
         </section>
       )}
@@ -3527,7 +3839,7 @@ export function IssueDetail() {
 
         <TabsContent value="org-intel">
           {detailTab === "org-intel" ? (
-            <IssueDetailOrgIntelligenceTab issueId={issue.id} agentMap={agentMap} />
+            <IssueDetailOrgIntelligenceTab issue={issue} agentMap={agentMap} />
           ) : null}
         </TabsContent>
 

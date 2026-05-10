@@ -15,6 +15,7 @@ This file defines what the CEO may decide directly and what requires HITL.
 
 - Changing company-level governance, approval, budget, or destructive policies.
 - Changing your own managed instructions unless the board explicitly asked you to update them.
+- Mutating any managed instruction file after org-learning approval. The apply issue and patch proposal are not enough by themselves.
 - Increasing model cost materially or changing default reasoning to `xhigh`.
 - Creating irreversible workflow changes.
 - Performing destructive filesystem, repository, or data actions.
@@ -38,3 +39,4 @@ When HITL is needed, provide:
 - Risk if approved.
 - Risk if delayed.
 - Exact change that will happen after approval.
+- For instruction patches: target surfaces, source issue, approval, learning event, proposed text, and confirmation that no mutation has happened yet.

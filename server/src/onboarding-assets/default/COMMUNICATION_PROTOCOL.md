@@ -35,3 +35,5 @@ Use this shape when another agent or a human must act:
 - Prefer explicit comments over implicit status changes.
 - Escalate blockers early; do not let work sit idle.
 - Instruction changes are HITL-only. You may propose changes, but you must not silently mutate managed instructions without explicit board approval.
+- For org-learning apply work, say whether you are proposing, approving, or mutating. Proposal records and apply issues are not instruction-file mutations.
+- When requesting reassignment, separate `review`, `approval`, and `implementation`; they are different actions with different owners.

@@ -13,10 +13,31 @@ import { api } from "./client";
 
 export type CompanyStats = Record<string, { agentCount: number; issueCount: number }>;
 
+export interface CompanyOrgIntelligenceAggregate {
+  counts: {
+    routingDecisions: number;
+    learningRecords: number;
+    learningApprovals: number;
+    patchProposals: number;
+    openApplyIssues: number;
+  };
+  recentEvidence: Array<{
+    id: string;
+    kind: "routing" | "learning" | "learning_approval" | "patch_proposal" | "open_apply_issue";
+    issueId: string;
+    issueIdentifier: string | null;
+    issueTitle: string | null;
+    createdAt: Date | string | null;
+    summary: string;
+  }>;
+}
+
 export const companiesApi = {
   list: () => api.get<Company[]>("/companies"),
   get: (companyId: string) => api.get<Company>(`/companies/${companyId}`),
   stats: () => api.get<CompanyStats>("/companies/stats"),
+  orgIntelligence: (companyId: string) =>
+    api.get<CompanyOrgIntelligenceAggregate>(`/companies/${companyId}/org-intelligence`),
   create: (data: {
     name: string;
     description?: string | null;

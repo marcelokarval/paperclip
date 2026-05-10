@@ -37,3 +37,9 @@ Use this shape in an issue comment or review note:
 - Do not treat a lesson proposal as approval.
 - Instruction mutation requires explicit human approval or a task that directly authorizes the instruction edit.
 - If approved, record the rationale and cite the source issue so future agents can audit why the instruction changed.
+
+## Org-Learning Apply Protocol
+
+- Approved learning should become an `org_learning_apply` issue when it needs durable instruction work.
+- The apply issue must produce an instruction patch proposal that lists target surfaces, intended change summary, source issue, approval, learning activity, and `requires_hitl_before_mutation`.
+- The proposal is a review artifact only. It does not edit managed instructions, and it must not be described as an applied policy change.

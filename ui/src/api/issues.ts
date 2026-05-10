@@ -80,7 +80,43 @@ export type IssueOrgIntelligenceRecord =
         identifier: string | null;
         title: string | null;
       } | null;
+    }
+  | {
+      id: string;
+      kind: "instruction_patch_proposal";
+      createdAt: Date;
+      actorType: string;
+      actorId: string;
+      agentId: string | null;
+      runId: string | null;
+      proposalId: string | null;
+      summary: string | null;
+      proposalText: string | null;
+      targetSurfaces: string[];
+      sourceLinks: Record<string, unknown>[];
+      requiresHitlBeforeMutation: true;
     };
+
+export interface InstructionPatchProposal {
+  proposalId: string;
+  sourceLinks: Array<{
+    type: "source_issue" | "apply_issue" | "approval" | "learning_activity" | "apply_approval_activity";
+    id: string;
+    label: string;
+    path?: string;
+  }>;
+  targetSurfaces: string[];
+  summary: string;
+  proposalText: string;
+  requiresHitlBeforeMutation: true;
+}
+
+export interface InstructionPatchApprovalRequest {
+  proposalActivityEventId?: string;
+  targetAgentId: string;
+  targetSurface: string;
+  patchText: string;
+}
 
 export type IssueAddCommentResponse =
   | IssueComment
@@ -156,6 +192,21 @@ export const issuesApi = {
     api.post<{ issue: Issue; skipped?: "duplicate_org_learning_apply_issue" }>(
       `/issues/${id}/org-learning-apply-issue`,
       { activityEventId, ...(options?.suppressAssignmentWakeup ? { suppressAssignmentWakeup: true } : {}) },
+    ),
+  createInstructionPatchProposal: (id: string) =>
+    api.post<{ proposal: InstructionPatchProposal; skipped?: "duplicate_instruction_patch_proposal" }>(
+      `/issues/${id}/instruction-patch-proposal`,
+      {},
+    ),
+  createInstructionPatchApproval: (id: string, data: InstructionPatchApprovalRequest) =>
+    api.post<{ hitlApproval: Approval; skipped?: "duplicate_instruction_patch_approval" }>(
+      `/issues/${id}/instruction-patch-approval`,
+      data,
+    ),
+  applyApprovedInstructionPatch: (id: string, approvalId: string) =>
+    api.post<{ applied: boolean; skipped: boolean; approvalId: string; file?: Record<string, unknown> }>(
+      `/issues/${id}/apply-approved-instruction-patch`,
+      { approvalId },
     ),
   costSummary: (id: string) => api.get<IssueCostSummary>(`/issues/${id}/cost-summary`),
   markRead: (id: string) => api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, {}),

@@ -33,3 +33,5 @@ Use this shape when asking a human or report to act:
 - You may identify stale, contradictory, or missing instructions.
 - You may propose exact instruction changes with evidence and scope.
 - You must not silently mutate managed instructions unless the board explicitly approves or the task directly authorizes the instruction edit.
+- For org-learning apply issues, require an instruction patch proposal before mutation. State plainly that the proposal is not an applied instruction change.
+- Keep reassignment, review, approval, and implementation separate in comments so reports and the board know which action is needed next.

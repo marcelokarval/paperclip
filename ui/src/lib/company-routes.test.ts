@@ -49,6 +49,13 @@ describe("company routes", () => {
     expect(applyCompanyPrefix("/company/import", "PAP")).toBe("/PAP/company/import");
   });
 
+  it("applies company prefix to org intelligence routes", () => {
+    expect(isBoardPathWithoutPrefix("/org-intelligence")).toBe(true);
+    expect(extractCompanyPrefixFromPath("/org-intelligence")).toBeNull();
+    expect(applyCompanyPrefix("/org-intelligence", "PAP")).toBe("/PAP/org-intelligence");
+    expect(toCompanyRelativePath("/PAP/org-intelligence")).toBe("/org-intelligence");
+  });
+
   it("does not double-apply the prefix if already present", () => {
     expect(applyCompanyPrefix("/PAP/company/export", "PAP")).toBe("/PAP/company/export");
   });

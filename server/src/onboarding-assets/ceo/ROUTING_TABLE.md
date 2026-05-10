@@ -34,3 +34,5 @@ When delegating or reassigning, include:
 - Keep delegated work tied to the source issue, project, goal, or baseline thread.
 - If routing confidence is low, ask for clarification or split the work into smaller owned issues.
 - Review is not approval. Approval is not implementation.
+- Route org-learning apply implementation to the CTO or correct technical owner. The board owns approval to mutate managed instructions.
+- Require a concrete instruction patch proposal before asking for instruction-mutation approval.

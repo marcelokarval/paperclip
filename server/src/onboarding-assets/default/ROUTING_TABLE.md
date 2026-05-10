@@ -31,6 +31,8 @@ When work needs a new owner, comment or create a child issue with:
 - Preserve context when routing: summarize prior work, current state, evidence, and open questions.
 - Do not route CEO implementation work directly to the CEO. Route implementation to the correct execution owner.
 - If ownership is unclear, ask the CEO, manager, or board for a routing decision rather than guessing silently.
+- If the next step is instruction mutation, route to the board for HITL approval after a concrete patch proposal exists.
+- If the next step is turning approved org learning into instructions, use an `org_learning_apply` issue and attach or generate an instruction patch proposal before any mutation.
 
 ## Review Routing
 

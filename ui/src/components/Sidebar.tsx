@@ -9,6 +9,7 @@ import {
   ShieldCheck,
   SquarePen,
   Network,
+  BrainCircuit,
   Boxes,
   Repeat,
   Settings,
@@ -109,6 +110,7 @@ export function Sidebar() {
 
         <SidebarSection label="Company">
           <SidebarNavItem to="/org" label="Org" icon={Network} />
+          <SidebarNavItem to="/org-intelligence" label="Org Intelligence" icon={BrainCircuit} />
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
           <SidebarNavItem to="/activity" label="Activity" icon={History} />

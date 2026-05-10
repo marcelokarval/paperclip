@@ -1,0 +1,15 @@
+{
+  "steps": [
+    { "action": "clickRole", "role": "tab", "name": "Org Intel", "exact": true },
+    { "action": "waitForText", "text": "Org-learning apply issue" },
+    { "action": "waitForText", "text": "does not mutate" },
+    { "action": "clickRole", "role": "button", "name": "Generate patch proposal" },
+    { "action": "waitForText", "text": "Instruction patch proposals" },
+    { "action": "waitForText", "text": "Target agent" },
+    { "action": "waitForText", "text": "Instruction surface", "exact": true },
+    { "action": "waitForText", "text": "Patch text", "exact": true },
+    { "action": "waitForText", "text": "Approval is required before mutation.", "exact": false },
+    { "action": "waitForText", "text": "Request HITL patch approval", "exact": true },
+    { "action": "screenshot", "name": "org-learning-apply-proposal" }
+  ]
+}

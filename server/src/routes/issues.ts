@@ -44,6 +44,7 @@ import type { StorageService } from "../storage/types.js";
 import { validate } from "../middleware/validate.js";
 import {
   accessService,
+  agentInstructionsService,
   agentService,
   executionWorkspaceService,
   feedbackService,
@@ -58,6 +59,7 @@ import {
   logActivity,
   projectService,
   routineService,
+  secretService,
   workProductService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
@@ -86,7 +88,13 @@ import {
   buildIssueRoutingDecisionActivityDetails,
   hasRoutingDecisionTrigger,
 } from "../services/issue-routing-decisions.js";
-import { buildIssueOrgIntelligenceRecords } from "../services/issue-org-intelligence.js";
+import {
+  buildCompanyOrgIntelligenceAggregate,
+  buildInstructionPatchProposal,
+  buildIssueOrgIntelligenceRecords,
+  findInstructionPatchProposal,
+  parseOrgLearningApplyOrigin,
+} from "../services/issue-org-intelligence.js";
 import {
   hasRepositoryBaselineReviewRequestForFingerprint,
   isRepositoryBaselineReviewRequestComment,
@@ -104,6 +112,16 @@ const createOrgLearningApprovalSchema = z.object({
 const createOrgLearningApplyIssueSchema = z.object({
   activityEventId: z.string().uuid(),
   suppressAssignmentWakeup: z.boolean().optional(),
+});
+const createInstructionPatchProposalSchema = z.object({});
+const createInstructionPatchApprovalSchema = z.object({
+  proposalActivityEventId: z.string().uuid().optional(),
+  targetAgentId: z.string().uuid(),
+  targetSurface: z.string().trim().min(1),
+  patchText: z.string().trim().min(1),
+});
+const applyApprovedInstructionPatchSchema = z.object({
+  approvalId: z.string().uuid(),
 });
 
 function applyCreateIssueStatusDefault(req: Request, res: Response, next: () => void) {
@@ -620,6 +638,8 @@ export function issueRoutes(
   const feedback = feedbackService(db);
   const instanceSettings = instanceSettingsService(db);
   const agentsSvc = agentService(db);
+  const instructionsSvc = agentInstructionsService();
+  const secretsSvc = secretService(db);
   const projectsSvc = projectService(db);
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
@@ -630,6 +650,7 @@ export function issueRoutes(
   const documentsSvc = documentService(db);
   const routinesSvc = routineService(db);
   const feedbackExportService = opts?.feedbackExportService;
+  const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
@@ -821,6 +842,82 @@ export function issueRoutes(
         payload.learningActivityEventId === learningActivityEventId
       );
     }) ?? null;
+  }
+
+  async function findExistingInstructionPatchApproval(input: {
+    issueId: string;
+    proposalActivityEventId: string;
+    targetAgentId: string;
+    targetSurface: string;
+    patchText: string;
+  }) {
+    const existingApprovals = await issueApprovalsSvc.listApprovalsForIssue(input.issueId);
+    return existingApprovals.find((approval) => {
+      if (approval.type !== "request_board_approval") return false;
+      if (approval.status !== "pending" && approval.status !== "revision_requested" && approval.status !== "approved") {
+        return false;
+      }
+      const payload = approval.payload as Record<string, unknown> | null;
+      return (
+        payload?.source === "instruction_patch_proposal" &&
+        payload.issueId === input.issueId &&
+        payload.proposalActivityEventId === input.proposalActivityEventId &&
+        payload.targetAgentId === input.targetAgentId &&
+        payload.targetSurface === input.targetSurface &&
+        payload.patchText === input.patchText
+      );
+    }) ?? null;
+  }
+
+  function readInstructionPatchApprovalPayload(payload: unknown) {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+    const record = payload as Record<string, unknown>;
+    const source = record.source;
+    const issueId = record.issueId;
+    const proposalActivityEventId = record.proposalActivityEventId;
+    const targetAgentId = record.targetAgentId;
+    const targetSurface = record.targetSurface;
+    const patchText = record.patchText;
+    if (
+      source !== "instruction_patch_proposal" ||
+      typeof issueId !== "string" ||
+      typeof targetAgentId !== "string" ||
+      typeof targetSurface !== "string" ||
+      typeof patchText !== "string"
+    ) {
+      return null;
+    }
+    return {
+      source,
+      issueId,
+      proposalActivityEventId: typeof proposalActivityEventId === "string" ? proposalActivityEventId : null,
+      targetAgentId,
+      targetSurface,
+      patchText,
+    };
+  }
+
+  function buildInstructionPatchMarkerBlock(approvalId: string, patchText: string) {
+    const trimmedPatch = patchText.trim();
+    return [
+      `<!-- paperclip-org-learning-patch:${approvalId} -->`,
+      trimmedPatch,
+      `<!-- /paperclip-org-learning-patch:${approvalId} -->`,
+    ].join("\n");
+  }
+
+  function hasInstructionPatchMarker(content: string, approvalId: string) {
+    return content.includes(`<!-- paperclip-org-learning-patch:${approvalId} -->`);
+  }
+
+  function instructionPatchAlreadyApplied(events: Awaited<ReturnType<typeof activitySvc.forIssue>>, approvalId: string) {
+    return events.some((event) => {
+      if (event.action !== "issue.instruction_patch_applied") return false;
+      const details = event.details && typeof event.details === "object" && !Array.isArray(event.details)
+        ? event.details as Record<string, unknown>
+        : null;
+      return details?.approvalId === approvalId;
+    });
   }
 
   function readStringArray(value: unknown): string[] {
@@ -1260,6 +1357,24 @@ export function issueRoutes(
       limit,
     });
     res.json(result);
+  });
+
+  router.get("/companies/:companyId/org-intelligence", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const [activity, openApplyIssues] = await Promise.all([
+      activitySvc.list({ companyId, entityType: "issue" }),
+      svc.list(companyId, {
+        originKind: "org_learning_apply",
+        status: "backlog,todo,in_progress,in_review,blocked",
+        limit: 100,
+      }),
+    ]);
+    res.json(buildCompanyOrgIntelligenceAggregate({
+      activity,
+      openApplyIssues,
+      recentLimit: 20,
+    }));
   });
 
   router.get("/companies/:companyId/labels", async (req, res) => {
@@ -2212,6 +2327,315 @@ export function issueRoutes(
     }
 
     res.status(201).json({ issue: followUpIssue });
+  });
+
+  router.post("/issues/:id/instruction-patch-proposal", validate(createInstructionPatchProposalSchema), async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const applyIssue = await svc.getById(id);
+    if (!applyIssue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, applyIssue.companyId);
+    if (applyIssue.originKind !== "org_learning_apply") {
+      res.status(422).json({ error: "Instruction patch proposals require an org_learning_apply issue" });
+      return;
+    }
+
+    const origin = parseOrgLearningApplyOrigin(applyIssue.originId);
+    if (!origin) {
+      res.status(422).json({ error: "Org-learning apply issue is missing source approval and learning links" });
+      return;
+    }
+
+    const sourceIssue = await svc.getById(origin.sourceIssueId);
+    if (!sourceIssue || sourceIssue.companyId !== applyIssue.companyId) {
+      res.status(404).json({ error: "Source issue not found for org-learning apply issue" });
+      return;
+    }
+
+    const sourceActivity = await activitySvc.forIssue(sourceIssue.id);
+    const applyApprovedEvent = sourceActivity.find((event) => {
+      if (event.action !== "issue.org_learning_apply_approved") return false;
+      const details = event.details && typeof event.details === "object" && !Array.isArray(event.details)
+        ? event.details as Record<string, unknown>
+        : null;
+      return (
+        details?.approvalId === origin.approvalId &&
+        details.learningActivityEventId === origin.learningActivityEventId
+      );
+    });
+    if (!applyApprovedEvent) {
+      res.status(404).json({ error: "Approved org-learning apply record not found for source issue" });
+      return;
+    }
+
+    const proposal = buildInstructionPatchProposal({
+      applyIssue,
+      sourceIssue,
+      applyApprovedEvent,
+    });
+    const applyActivity = await activitySvc.forIssue(applyIssue.id);
+    const existingProposal = findInstructionPatchProposal(applyActivity, proposal.proposalId);
+    if (existingProposal) {
+      res.status(200).json({ proposal: existingProposal, skipped: "duplicate_instruction_patch_proposal" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: applyIssue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.instruction_patch_proposal_created",
+      entityType: "issue",
+      entityId: applyIssue.id,
+      details: {
+        ...proposal,
+        sourceIssueId: sourceIssue.id,
+        sourceIssueIdentifier: sourceIssue.identifier,
+        sourceIssueTitle: sourceIssue.title,
+        applyIssueId: applyIssue.id,
+        applyIssueIdentifier: applyIssue.identifier,
+        applyIssueTitle: applyIssue.title,
+        approvalId: origin.approvalId,
+        learningActivityEventId: origin.learningActivityEventId,
+        applyActivityEventId: applyApprovedEvent.id,
+      },
+    });
+
+    res.status(201).json({ proposal });
+  });
+
+  router.post("/issues/:id/instruction-patch-approval", validate(createInstructionPatchApprovalSchema), async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const applyIssue = await svc.getById(id);
+    if (!applyIssue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, applyIssue.companyId);
+    if (applyIssue.originKind !== "org_learning_apply") {
+      res.status(422).json({ error: "Instruction patch approvals require an org_learning_apply issue" });
+      return;
+    }
+
+    const applyActivity = await activitySvc.forIssue(applyIssue.id);
+    const proposalEvent = req.body.proposalActivityEventId
+      ? applyActivity.find((event) => event.id === req.body.proposalActivityEventId)
+      : applyActivity.find((event) => event.action === "issue.instruction_patch_proposal_created");
+    if (!proposalEvent || proposalEvent.action !== "issue.instruction_patch_proposal_created") {
+      res.status(404).json({ error: "Instruction patch proposal activity not found" });
+      return;
+    }
+    const proposalDetails = proposalEvent.details && typeof proposalEvent.details === "object" && !Array.isArray(proposalEvent.details)
+      ? proposalEvent.details as Record<string, unknown>
+      : null;
+    const proposalId = typeof proposalDetails?.proposalId === "string" ? proposalDetails.proposalId : "";
+    const proposal = proposalId ? findInstructionPatchProposal(applyActivity, proposalId) : null;
+    if (!proposal) {
+      res.status(422).json({ error: "Instruction patch proposal payload is invalid" });
+      return;
+    }
+    if (!proposal.targetSurfaces.includes(req.body.targetSurface)) {
+      res.status(422).json({ error: "Target surface is not included in the instruction patch proposal" });
+      return;
+    }
+
+    const targetAgent = await agentsSvc.getById(req.body.targetAgentId);
+    if (!targetAgent || targetAgent.companyId !== applyIssue.companyId) {
+      res.status(404).json({ error: "Target agent not found for this company" });
+      return;
+    }
+
+    const existingApproval = await findExistingInstructionPatchApproval({
+      issueId: applyIssue.id,
+      proposalActivityEventId: proposalEvent.id,
+      targetAgentId: targetAgent.id,
+      targetSurface: req.body.targetSurface,
+      patchText: req.body.patchText,
+    });
+    if (existingApproval) {
+      res.status(200).json({ hitlApproval: existingApproval, skipped: "duplicate_instruction_patch_approval" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const hitlApproval = await approvalsSvc.create(applyIssue.companyId, {
+      type: "request_board_approval",
+      requestedByAgentId: actor.actorType === "agent" ? actor.actorId : null,
+      requestedByUserId: actor.actorType === "user" ? actor.actorId : null,
+      status: "pending",
+      payload: {
+        source: "instruction_patch_proposal",
+        issueId: applyIssue.id,
+        issueIdentifier: applyIssue.identifier,
+        issueTitle: applyIssue.title,
+        proposalId: proposal.proposalId,
+        proposalActivityEventId: proposalEvent.id,
+        targetAgentId: targetAgent.id,
+        targetAgentName: targetAgent.name,
+        targetSurface: req.body.targetSurface,
+        patchText: req.body.patchText,
+        sourceLinks: proposal.sourceLinks,
+        summary: proposal.summary,
+      },
+    });
+    await issueApprovalsSvc.link(applyIssue.id, hitlApproval.id, {
+      agentId: actor.agentId,
+      userId: actor.actorType === "user" ? actor.actorId : null,
+    });
+    await logActivity(db, {
+      companyId: applyIssue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.instruction_patch_approval_requested",
+      entityType: "issue",
+      entityId: applyIssue.id,
+      details: {
+        approvalId: hitlApproval.id,
+        proposalId: proposal.proposalId,
+        proposalActivityEventId: proposalEvent.id,
+        targetAgentId: targetAgent.id,
+        targetAgentName: targetAgent.name,
+        targetSurface: req.body.targetSurface,
+        patchText: req.body.patchText,
+      },
+    });
+
+    res.status(201).json({ hitlApproval });
+  });
+
+  router.post("/issues/:id/apply-approved-instruction-patch", validate(applyApprovedInstructionPatchSchema), async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const applyIssue = await svc.getById(id);
+    if (!applyIssue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, applyIssue.companyId);
+    if (applyIssue.originKind !== "org_learning_apply") {
+      res.status(422).json({ error: "Instruction patch application requires an org_learning_apply issue" });
+      return;
+    }
+
+    const approval = await approvalsSvc.getById(req.body.approvalId);
+    if (!approval) {
+      res.status(404).json({ error: "Approval not found" });
+      return;
+    }
+    if (approval.companyId !== applyIssue.companyId) {
+      res.status(422).json({ error: "Approval and issue must belong to the same company" });
+      return;
+    }
+    if (approval.status !== "approved") {
+      res.status(422).json({ error: "Instruction patch approval must be approved before application" });
+      return;
+    }
+
+    const payload = readInstructionPatchApprovalPayload(approval.payload);
+    if (!payload || payload.issueId !== applyIssue.id) {
+      res.status(422).json({ error: "Approval is not an instruction patch approval for this issue" });
+      return;
+    }
+
+    const linkedApprovals = await issueApprovalsSvc.listApprovalsForIssue(applyIssue.id);
+    if (!linkedApprovals.some((linkedApproval) => linkedApproval.id === approval.id)) {
+      res.status(422).json({ error: "Approval is not linked to this issue" });
+      return;
+    }
+
+    const applyActivity = await activitySvc.forIssue(applyIssue.id);
+    if (instructionPatchAlreadyApplied(applyActivity, approval.id)) {
+      res.status(200).json({ applied: false, skipped: true, approvalId: approval.id });
+      return;
+    }
+
+    const targetAgent = await agentsSvc.getById(payload.targetAgentId);
+    if (!targetAgent || targetAgent.companyId !== applyIssue.companyId) {
+      res.status(404).json({ error: "Target agent not found for this company" });
+      return;
+    }
+
+    let currentContent = "";
+    try {
+      const currentFile = await instructionsSvc.readFile(targetAgent, payload.targetSurface);
+      currentContent = typeof currentFile.content === "string" ? currentFile.content : "";
+    } catch (err) {
+      const status = err && typeof err === "object" ? (err as { status?: unknown }).status : null;
+      if (status !== 404) throw err;
+    }
+    const markerBlock = buildInstructionPatchMarkerBlock(approval.id, payload.patchText);
+    const nextContent = hasInstructionPatchMarker(currentContent, approval.id)
+      ? currentContent
+      : `${currentContent.replace(/\s*$/, "")}\n\n${markerBlock}\n`;
+
+    const actor = getActorInfo(req);
+    const writeResult = await instructionsSvc.writeFile(targetAgent, payload.targetSurface, nextContent, {
+      clearLegacyPromptTemplate: false,
+    });
+    const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
+      targetAgent.companyId,
+      writeResult.adapterConfig,
+      { strictMode: strictSecretsMode },
+    );
+    await agentsSvc.update(
+      targetAgent.id,
+      { adapterConfig: normalizedAdapterConfig },
+      {
+        recordRevision: {
+          createdByAgentId: actor.agentId,
+          createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+          source: "instruction_patch_approved_apply",
+        },
+      },
+    );
+
+    await logActivity(db, {
+      companyId: applyIssue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.instruction_patch_applied",
+      entityType: "issue",
+      entityId: applyIssue.id,
+      details: {
+        approvalId: approval.id,
+        proposalActivityEventId: payload.proposalActivityEventId,
+        targetAgentId: targetAgent.id,
+        targetAgentName: targetAgent.name,
+        targetSurface: payload.targetSurface,
+        fileSize: writeResult.file.size,
+        markerPresentBeforeWrite: hasInstructionPatchMarker(currentContent, approval.id),
+      },
+    });
+    await logActivity(db, {
+      companyId: targetAgent.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "agent.instructions_file_updated",
+      entityType: "agent",
+      entityId: targetAgent.id,
+      details: {
+        source: "instruction_patch_approved_apply",
+        issueId: applyIssue.id,
+        approvalId: approval.id,
+        path: writeResult.file.path,
+        size: writeResult.file.size,
+      },
+    });
+
+    res.json({ applied: true, skipped: false, approvalId: approval.id, file: writeResult.file });
   });
 
   router.delete("/issues/:id/approvals/:approvalId", async (req, res) => {

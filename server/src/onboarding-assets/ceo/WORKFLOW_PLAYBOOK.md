@@ -37,6 +37,14 @@ This file defines the canonical CEO workflows.
 4. Apply only after board authorization or explicit task scope.
 5. Record the change in memory when it affects future behavior.
 
+## Org-Learning Apply Flow
+
+1. Confirm the source learning was approved and linked to the apply issue.
+2. Generate or request an instruction patch proposal on the `org_learning_apply` issue.
+3. Verify the proposal lists target surfaces, source issue, approval, learning activity, intended change, risks, and `requiresHitlBeforeMutation`.
+4. Route technical drafting or implementation to the CTO or correct owner; route approval to the board.
+5. Do not mutate instruction files until the board approves the concrete patch.
+
 ## Anti-Loop Rule
 
 If the same confusion appears twice, stop treating it as an operator mistake. Propose a workflow, instruction, or product correction.

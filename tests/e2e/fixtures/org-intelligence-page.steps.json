@@ -1,0 +1,9 @@
+{
+  "steps": [
+    { "action": "clickRole", "role": "link", "name": "Org Intelligence" },
+    { "action": "waitForSelector", "selector": "main h1:has-text(\"Org Intelligence\")" },
+    { "action": "waitForText", "text": "Patch proposals", "exact": true },
+    { "action": "waitForText", "text": "do not mutate instruction files" },
+    { "action": "screenshot", "name": "org-intelligence-page" }
+  ]
+}
