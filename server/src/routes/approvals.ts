@@ -36,6 +36,37 @@ const approveAndCloseIssueSchema = resolveApprovalSchema.extend({
   issueId: z.string().min(1),
 });
 
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+}
+
+function buildOrgLearningApplyApprovedDetails(approval: {
+  id: string;
+  payload: Record<string, unknown>;
+}) {
+  if (approval.payload.source !== "org_learning_proposal") return null;
+
+  return {
+    approvalId: approval.id,
+    learningActivityEventId:
+      typeof approval.payload.learningActivityEventId === "string"
+        ? approval.payload.learningActivityEventId
+        : null,
+    suggestedInstructionSurfaces: asStringArray(approval.payload.suggestedInstructionSurfaces),
+    signals: asStringArray(approval.payload.signals),
+    nextActionOnApproval:
+      typeof approval.payload.nextActionOnApproval === "string"
+        ? approval.payload.nextActionOnApproval
+        : null,
+    proposedComment:
+      typeof approval.payload.proposedComment === "string"
+        ? approval.payload.proposedComment
+        : null,
+  };
+}
+
 export function approvalRoutes(db: Db) {
   const router = Router();
   const svc = approvalService(db);
@@ -59,6 +90,7 @@ export function approvalRoutes(db: Db) {
     const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
     const linkedIssueIds = linkedIssues.map((issue) => issue.id);
     const primaryIssueId = linkedIssueIds[0] ?? null;
+    const orgLearningApplyDetails = buildOrgLearningApplyApprovedDetails(approval);
 
     await logActivity(db, {
       companyId: approval.companyId,
@@ -73,6 +105,18 @@ export function approvalRoutes(db: Db) {
         linkedIssueIds,
       },
     });
+
+    if (orgLearningApplyDetails) {
+      await Promise.all(linkedIssueIds.map((issueId) => logActivity(db, {
+        companyId: approval.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "issue.org_learning_apply_approved",
+        entityType: "issue",
+        entityId: issueId,
+        details: orgLearningApplyDetails,
+      })));
+    }
 
     if (!approval.requestedByAgentId) return;
 

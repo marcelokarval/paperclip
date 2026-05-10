@@ -27,6 +27,8 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "issue.released": "released",
   "issue.comment_added": "commented on",
   "issue.comment_cancelled": "cancelled a queued comment on",
+  "issue.routing_decision_recorded": "recorded routing decision for",
+  "issue.learning_recorded": "recorded learning for",
   "issue.attachment_added": "attached file to",
   "issue.attachment_removed": "removed attachment from",
   "issue.document_created": "created document for",
@@ -68,6 +70,8 @@ const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
   "issue.released": "released the issue",
   "issue.comment_added": "added a comment",
   "issue.comment_cancelled": "cancelled a queued comment",
+  "issue.routing_decision_recorded": "recorded a routing decision",
+  "issue.learning_recorded": "recorded an org-learning note",
   "issue.feedback_vote_saved": "saved feedback on an AI output",
   "issue.attachment_added": "added an attachment",
   "issue.attachment_removed": "removed an attachment",
@@ -210,6 +214,37 @@ function formatStructuredIssueChange(input: {
 }): string | null {
   const details = input.details;
   if (!details) return null;
+
+  if (input.action === "issue.routing_decision_recorded") {
+    const selected = asRecord(details.selectedAssignee);
+    const selectedType = typeof selected?.type === "string" ? selected.type : null;
+    const selectedParticipant = isActivityParticipant(selected) ? selected : null;
+    const missingFields = Array.isArray(details.missingFields)
+      ? details.missingFields.filter((field): field is string => typeof field === "string")
+      : [];
+    const target = selectedParticipant
+      ? formatParticipantLabel(selectedParticipant, input.options)
+      : selectedType === "agent"
+        ? "agent"
+        : selectedType === "user"
+          ? "user"
+          : "unassigned owner";
+    const suffix = missingFields.length > 0
+      ? ` with ${missingFields.length} missing routing field${missingFields.length === 1 ? "" : "s"}`
+      : "";
+    return input.forIssueDetail ? `recorded routing decision to ${target}${suffix}` : `recorded routing decision for`;
+  }
+
+  if (input.action === "issue.learning_recorded") {
+    const status = typeof details.status === "string" ? humanizeValue(details.status) : "this status";
+    const signals = Array.isArray(details.signals)
+      ? details.signals.filter((signal): signal is string => typeof signal === "string")
+      : [];
+    const suffix = signals.length > 0
+      ? ` from ${signals.slice(0, 3).map(humanizeValue).join(", ")}`
+      : "";
+    return input.forIssueDetail ? `recorded org-learning for ${status}${suffix}` : "recorded org-learning for";
+  }
 
   if (input.action === "issue.blockers_updated") {
     const added = readIssueReferences(details, "addedBlockedByIssues").map(formatIssueReferenceLabel);

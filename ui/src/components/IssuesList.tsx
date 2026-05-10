@@ -282,7 +282,7 @@ export function IssuesList({
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const currentUserName = operatorProfile?.name ?? session?.user?.name ?? null;
-  const currentUserImage = operatorProfile?.image ?? session?.user?.image ?? null;
+  const currentUserImage = operatorProfile ? operatorProfile.image ?? null : session?.user?.image ?? null;
   const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
 
   // Scope the storage key per company so folding/view state is independent across companies.

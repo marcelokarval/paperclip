@@ -212,6 +212,72 @@ describe("approval routes idempotent retries", () => {
     );
   });
 
+  it("logs an issue org-learning apply signal when an org-learning proposal approval is approved", async () => {
+    const orgLearningPayload = {
+      source: "org_learning_proposal",
+      learningActivityEventId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      suggestedInstructionSurfaces: ["LESSONS_LEDGER.md", "ROUTING_TABLE.md"],
+      signals: ["handoff_gap", "routing_miss"],
+      nextActionOnApproval: "A responsible agent should update selected instruction surfaces.",
+      proposedComment: "Approved lesson for durable guidance.",
+    };
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-1",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: orgLearningPayload,
+      requestedByAgentId: null,
+    });
+    mockApprovalService.approve.mockResolvedValue({
+      approval: {
+        id: "approval-1",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "approved",
+        payload: orgLearningPayload,
+        requestedByAgentId: null,
+      },
+      applied: true,
+    });
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([
+      { id: "issue-1" },
+      { id: "issue-2" },
+    ]);
+
+    const res = await request(await createApp({ userId: "real-user" }))
+      .post("/api/approvals/approval-1/approve")
+      .send({ decisionNote: "approve learning" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.org_learning_apply_approved",
+        entityType: "issue",
+        entityId: "issue-1",
+        details: {
+          approvalId: "approval-1",
+          learningActivityEventId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          suggestedInstructionSurfaces: ["LESSONS_LEDGER.md", "ROUTING_TABLE.md"],
+          signals: ["handoff_gap", "routing_miss"],
+          nextActionOnApproval: "A responsible agent should update selected instruction surfaces.",
+          proposedComment: "Approved lesson for durable guidance.",
+        },
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.org_learning_apply_approved",
+        entityType: "issue",
+        entityId: "issue-2",
+      }),
+    );
+  });
+
   it("records revision requests with the authenticated board user, not a spoofed body user", async () => {
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-1",

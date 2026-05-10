@@ -5,6 +5,7 @@ import {
   buildOperatingModelsInstructionsFile,
   buildProjectPacketInstructionsBundle,
   loadDefaultAgentInstructionsBundle,
+  resolveDefaultAgentInstructionsBundleRole,
 } from "../services/default-agent-instructions.js";
 
 function makeAcceptedOperatingContext(): ProjectOperatingContext {
@@ -38,11 +39,52 @@ function makeAcceptedOperatingContext(): ProjectOperatingContext {
 }
 
 describe("buildProjectPacketInstructionsBundle", () => {
+  it("ships communication, routing, and lessons files for non-CEO agents", async () => {
+    const defaultFiles = await loadDefaultAgentInstructionsBundle("default");
+
+    expect(Object.keys(defaultFiles).sort()).toEqual([
+      "AGENTS.md",
+      "COMMUNICATION_PROTOCOL.md",
+      "LESSONS_LEDGER.md",
+      "ROUTING_TABLE.md",
+    ]);
+    expect(defaultFiles["COMMUNICATION_PROTOCOL.md"]).toContain("# Communication Protocol");
+    expect(defaultFiles["COMMUNICATION_PROTOCOL.md"]).toContain("Human-Agent Communication");
+    expect(defaultFiles["COMMUNICATION_PROTOCOL.md"]).toContain("Agent-Agent Communication");
+    expect(defaultFiles["COMMUNICATION_PROTOCOL.md"]).toContain("Action-Needed Packet");
+    expect(defaultFiles["COMMUNICATION_PROTOCOL.md"]).toContain("Instruction changes are HITL-only");
+    expect(defaultFiles["ROUTING_TABLE.md"]).toContain("# Routing Table");
+    expect(defaultFiles["ROUTING_TABLE.md"]).toContain("Routing Action-Needed Packet");
+    expect(defaultFiles["ROUTING_TABLE.md"]).toContain("Review is not approval");
+    expect(defaultFiles["LESSONS_LEDGER.md"]).toContain("# Lessons Ledger");
+    expect(defaultFiles["LESSONS_LEDGER.md"]).toContain("Lesson Proposal Packet");
+    expect(defaultFiles["LESSONS_LEDGER.md"]).toContain("HITL-Only Mutation Rule");
+    expect(defaultFiles["LESSONS_LEDGER.md"]).toContain("Do not silently edit managed instructions");
+  });
+
   it("ships persistent CEO guardrails in the default onboarding bundle", async () => {
     const defaultFiles = await loadDefaultAgentInstructionsBundle("ceo");
 
+    expect(Object.keys(defaultFiles).sort()).toEqual([
+      "AGENTS.md",
+      "COMMUNICATION_PROTOCOL.md",
+      "CONTEXT_BOUNDARIES.md",
+      "DECISION_GATES.md",
+      "HEARTBEAT.md",
+      "HIRING_POLICY.md",
+      "LESSONS_LEDGER.md",
+      "ORG_OPERATING_MODEL.md",
+      "ROUTING_TABLE.md",
+      "SELF_IMPROVEMENT.md",
+      "SOUL.md",
+      "TOOLS.md",
+      "WORKFLOW_PLAYBOOK.md",
+    ]);
     expect(defaultFiles["AGENTS.md"]).toContain("`./OPERATING_MODELS.md` is your current provider/model capability snapshot");
     expect(defaultFiles["AGENTS.md"]).toContain("Do not write general model-routing policy into the project repository");
+    expect(defaultFiles["AGENTS.md"]).toContain("You may inspect them and propose updates when necessary");
+    expect(defaultFiles["AGENTS.md"]).toContain("requires explicit board approval or a task that directly authorizes that edit");
+    expect(defaultFiles["AGENTS.md"]).not.toContain("you may update them when necessary");
     expect(defaultFiles["AGENTS.md"]).toContain("## Self-Improvement Governance");
     expect(defaultFiles["AGENTS.md"]).toContain("Produce a HITL proposal");
     expect(defaultFiles["AGENTS.md"]).toContain("./ORG_OPERATING_MODEL.md");
@@ -58,6 +100,17 @@ describe("buildProjectPacketInstructionsBundle", () => {
     expect(defaultFiles["WORKFLOW_PLAYBOOK.md"]).toContain("Repository Baseline To CTO");
     expect(defaultFiles["CONTEXT_BOUNDARIES.md"]).toContain("Agent-Owned Context");
     expect(defaultFiles["SELF_IMPROVEMENT.md"]).toContain("Files To Review");
+    expect(defaultFiles["COMMUNICATION_PROTOCOL.md"]).toContain("# CEO Communication Protocol");
+    expect(defaultFiles["COMMUNICATION_PROTOCOL.md"]).toContain("Board Communication");
+    expect(defaultFiles["COMMUNICATION_PROTOCOL.md"]).toContain("Agent-Agent Communication");
+    expect(defaultFiles["COMMUNICATION_PROTOCOL.md"]).toContain("CEO Action-Needed Packet");
+    expect(defaultFiles["COMMUNICATION_PROTOCOL.md"]).toContain("must not silently mutate managed instructions");
+    expect(defaultFiles["ROUTING_TABLE.md"]).toContain("# CEO Routing Table");
+    expect(defaultFiles["ROUTING_TABLE.md"]).toContain("Routing Action-Needed Packet");
+    expect(defaultFiles["ROUTING_TABLE.md"]).toContain("Delegate implementation");
+    expect(defaultFiles["LESSONS_LEDGER.md"]).toContain("# CEO Lessons Ledger");
+    expect(defaultFiles["LESSONS_LEDGER.md"]).toContain("Lesson Proposal Packet");
+    expect(defaultFiles["LESSONS_LEDGER.md"]).toContain("HITL-Only Mutation Rule");
     expect(defaultFiles["AGENTS.md"]).toContain(
       "Do not refetch `/api/issues/{id}/heartbeat-context`, `/api/agents/me`, or assignment lists by raw `curl` unless the wake explicitly requires broader history or the actual mutation depends on it.",
     );
@@ -97,6 +150,32 @@ describe("buildProjectPacketInstructionsBundle", () => {
     expect(result["PROJECT_PACKET.md"]).toContain("CTO");
     expect(result["ISSUE_ROUTING.md"]).toContain("# Issue Routing");
     expect(result["ISSUE_ROUTING.md"]).toContain("Project: Prop4You Next.js Fullstack");
+  });
+
+  it("normalizes role casing when resolving default bundles and project packets", async () => {
+    expect(resolveDefaultAgentInstructionsBundleRole("CEO")).toBe("ceo");
+    expect(resolveDefaultAgentInstructionsBundleRole("Cto")).toBe("default");
+
+    const result = buildProjectPacketInstructionsBundle({
+      role: "CTO",
+      projectName: "Prop4You Next.js Fullstack",
+      operatingContext: {
+        ...makeAcceptedOperatingContext(),
+        technicalProjectPacket: {
+          projectSummary: "Technical onboarding packet for Prop4You.",
+          stackSignals: ["Next.js", "TypeScript"],
+          canonicalDocs: ["README.md"],
+          verificationCommands: ["pnpm test"],
+          ownershipAreas: [],
+          labelCatalog: [],
+          issueGuidance: ["Keep work tied to the baseline issue."],
+        },
+      },
+      files: { "AGENTS.md": "Base CTO instructions.\n" },
+    });
+
+    expect(result["AGENTS.md"]).toContain("## Technical onboarding");
+    expect(result["PROJECT_PACKET.md"]).toContain("Technical onboarding packet");
   });
 
   it("adds technical onboarding guidance for CTO bundles", async () => {

@@ -35,6 +35,16 @@ describe("createIssueSchema assigneeAdapterOverrides", () => {
     expect(parsed.assigneeAdapterOverrides?.modelProfile).toBe("cheap");
   });
 
+  it("accepts the create-only assignment wakeup suppression flag", () => {
+    const parsed = createIssueSchema.parse({
+      title: "Create proof issue without waking the assignee",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      suppressAssignmentWakeup: true,
+    });
+
+    expect(parsed.suppressAssignmentWakeup).toBe(true);
+  });
+
   it("rejects unknown model profile requests", () => {
     expect(() =>
       createIssueSchema.parse({

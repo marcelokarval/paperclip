@@ -52,6 +52,7 @@ export const queryKeys = {
     documents: (issueId: string) => ["issues", "documents", issueId] as const,
     documentRevisions: (issueId: string, key: string) => ["issues", "document-revisions", issueId, key] as const,
     activity: (issueId: string) => ["issues", "activity", issueId] as const,
+    orgIntelligence: (issueId: string) => ["issues", "org-intelligence", issueId] as const,
     runs: (issueId: string) => ["issues", "runs", issueId] as const,
     approvals: (issueId: string) => ["issues", "approvals", issueId] as const,
     liveRuns: (issueId: string) => ["issues", "live-runs", issueId] as const,

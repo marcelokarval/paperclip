@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX IF NOT EXISTS "issues_org_learning_apply_origin_uq" ON "issues" USING btree ("company_id","origin_kind","origin_id") WHERE "origin_kind" = 'org_learning_apply' AND "origin_id" IS NOT NULL;

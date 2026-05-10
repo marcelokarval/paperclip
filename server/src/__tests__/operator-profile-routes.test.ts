@@ -13,6 +13,7 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 }));
 const mockAssetService = vi.hoisted(() => ({
   create: vi.fn(),
+  getById: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
@@ -25,7 +26,10 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
 }));
 
-function createStorageService(): StorageService & { putFile: ReturnType<typeof vi.fn> } {
+function createStorageService(): StorageService & {
+  putFile: ReturnType<typeof vi.fn>;
+  headObject: ReturnType<typeof vi.fn>;
+} {
   return {
     provider: "local_disk",
     putFile: vi.fn(async (input) => ({
@@ -37,7 +41,7 @@ function createStorageService(): StorageService & { putFile: ReturnType<typeof v
       originalFilename: input.originalFilename,
     })),
     getObject: vi.fn(),
-    headObject: vi.fn(),
+    headObject: vi.fn(async () => ({ exists: true })),
     deleteObject: vi.fn(),
   };
 }
@@ -103,6 +107,7 @@ describe("operator profile routes", () => {
       createdAt: new Date("2026-01-01T00:00:00.000Z"),
       updatedAt: new Date("2026-01-01T00:00:00.000Z"),
     });
+    mockAssetService.getById.mockResolvedValue(null);
   });
 
   it("returns the current board operator profile", async () => {
@@ -129,6 +134,151 @@ describe("operator profile routes", () => {
       source: "local_implicit",
       isInstanceAdmin: true,
     });
+    expect(mockAssetService.getById).not.toHaveBeenCalled();
+  });
+
+  it("clears a stale operator profile asset image before returning the profile", async () => {
+    mockOperatorProfileService.getForActor.mockResolvedValue({
+      id: "local-board",
+      name: "Marcelo",
+      email: "marcelo@example.com",
+      image: "/api/assets/eb4fb907-3956-48fb-9bb0-b39cd57fc150/content",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+    mockOperatorProfileService.updateForActor.mockResolvedValue({
+      id: "local-board",
+      name: "Marcelo",
+      email: "marcelo@example.com",
+      image: null,
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await request(app).get("/api/operator/profile");
+
+    expect(res.status).toBe(200);
+    expect(res.body.image).toBeNull();
+    expect(mockAssetService.getById).toHaveBeenCalledWith("eb4fb907-3956-48fb-9bb0-b39cd57fc150");
+    expect(mockOperatorProfileService.updateForActor).toHaveBeenCalledWith(
+      {
+        userId: "local-board",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+      },
+      { image: null },
+    );
+  });
+
+  it("keeps an operator profile asset image when the asset still exists", async () => {
+    const storage = createStorageService();
+    mockOperatorProfileService.getForActor.mockResolvedValue({
+      id: "local-board",
+      name: "Marcelo",
+      email: "marcelo@example.com",
+      image: "/api/assets/eb4fb907-3956-48fb-9bb0-b39cd57fc150/content",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+    mockAssetService.getById.mockResolvedValue({
+      id: "eb4fb907-3956-48fb-9bb0-b39cd57fc150",
+      companyId: "company-1",
+      objectKey: "company-1/assets/operators/avatar.png",
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    }, storage);
+
+    const res = await request(app).get("/api/operator/profile");
+
+    expect(res.status).toBe(200);
+    expect(res.body.image).toBe("/api/assets/eb4fb907-3956-48fb-9bb0-b39cd57fc150/content");
+    expect(storage.headObject).toHaveBeenCalledWith("company-1", "company-1/assets/operators/avatar.png");
+    expect(mockOperatorProfileService.updateForActor).not.toHaveBeenCalled();
+  });
+
+  it("clears an operator profile asset image when the backing object is missing", async () => {
+    const storage = createStorageService();
+    storage.headObject.mockResolvedValue({ exists: false });
+    mockOperatorProfileService.getForActor.mockResolvedValue({
+      id: "local-board",
+      name: "Marcelo",
+      email: "marcelo@example.com",
+      image: "/api/assets/eb4fb907-3956-48fb-9bb0-b39cd57fc150/content",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+    mockOperatorProfileService.updateForActor.mockResolvedValue({
+      id: "local-board",
+      name: "Marcelo",
+      email: "marcelo@example.com",
+      image: null,
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+    mockAssetService.getById.mockResolvedValue({
+      id: "eb4fb907-3956-48fb-9bb0-b39cd57fc150",
+      companyId: "company-1",
+      objectKey: "company-1/assets/operators/avatar.png",
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    }, storage);
+
+    const res = await request(app).get("/api/operator/profile");
+
+    expect(res.status).toBe(200);
+    expect(res.body.image).toBeNull();
+    expect(storage.headObject).toHaveBeenCalledWith("company-1", "company-1/assets/operators/avatar.png");
+    expect(mockOperatorProfileService.updateForActor).toHaveBeenCalledWith(
+      {
+        userId: "local-board",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+      },
+      { image: null },
+    );
+  });
+
+  it("does not mask storage errors while checking an operator profile asset image", async () => {
+    const storage = createStorageService();
+    storage.headObject.mockRejectedValue(new Error("storage unavailable"));
+    mockOperatorProfileService.getForActor.mockResolvedValue({
+      id: "local-board",
+      name: "Marcelo",
+      email: "marcelo@example.com",
+      image: "/api/assets/eb4fb907-3956-48fb-9bb0-b39cd57fc150/content",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+    mockAssetService.getById.mockResolvedValue({
+      id: "eb4fb907-3956-48fb-9bb0-b39cd57fc150",
+      companyId: "company-1",
+      objectKey: "company-1/assets/operators/avatar.png",
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    }, storage);
+
+    const res = await request(app).get("/api/operator/profile");
+
+    expect(res.status).toBe(500);
+    expect(mockOperatorProfileService.updateForActor).not.toHaveBeenCalled();
   });
 
   it("updates the current board operator profile", async () => {

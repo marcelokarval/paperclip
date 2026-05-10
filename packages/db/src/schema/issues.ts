@@ -90,5 +90,8 @@ export const issues = pgTable(
           and ${table.executionRunId} is not null
           and ${table.status} in ('backlog', 'todo', 'in_progress', 'in_review', 'blocked')`,
       ),
+    orgLearningApplyIdx: uniqueIndex("issues_org_learning_apply_origin_uq")
+      .on(table.companyId, table.originKind, table.originId)
+      .where(sql`${table.originKind} = 'org_learning_apply' and ${table.originId} is not null`),
   }),
 );

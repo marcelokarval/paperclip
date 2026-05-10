@@ -51,6 +51,7 @@ import {
   heartbeatService,
   instanceSettingsService,
   approvalService,
+  activityService,
   issueApprovalService,
   issueService,
   documentService,
@@ -78,6 +79,15 @@ import {
   parseIssueExecutionState,
 } from "../services/issue-execution-policy.js";
 import {
+  buildIssueLearningRecordActivityDetails,
+  shouldRecordIssueLearning,
+} from "../services/issue-learning-records.js";
+import {
+  buildIssueRoutingDecisionActivityDetails,
+  hasRoutingDecisionTrigger,
+} from "../services/issue-routing-decisions.js";
+import { buildIssueOrgIntelligenceRecords } from "../services/issue-org-intelligence.js";
+import {
   hasRepositoryBaselineReviewRequestForFingerprint,
   isRepositoryBaselineReviewRequestComment,
   readRepositoryBaselineReviewRequestFingerprint,
@@ -87,6 +97,13 @@ import { issueThreadInteractionService } from "../services/issue-thread-interact
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
+});
+const createOrgLearningApprovalSchema = z.object({
+  activityEventId: z.string().uuid().optional(),
+});
+const createOrgLearningApplyIssueSchema = z.object({
+  activityEventId: z.string().uuid(),
+  suppressAssignmentWakeup: z.boolean().optional(),
 });
 
 function applyCreateIssueStatusDefault(req: Request, res: Response, next: () => void) {
@@ -106,22 +123,37 @@ function applyCreateIssueStatusDefault(req: Request, res: Response, next: () => 
   next();
 }
 
+function isOrgLearningApplyDuplicateError(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { code?: unknown; constraint?: unknown; cause?: unknown };
+  if (candidate.code === "23505" && candidate.constraint === "issues_org_learning_apply_origin_uq") {
+    return true;
+  }
+  const cause = candidate.cause as { code?: unknown; constraint?: unknown } | undefined;
+  return cause?.code === "23505" && cause.constraint === "issues_org_learning_apply_origin_uq";
+}
+
 function buildCreateIssueActivityStatusDetails(
   issue: { assigneeAgentId: string | null; status: string },
   res: Response,
+  opts?: { suppressAssignmentWakeup?: boolean },
 ) {
   const statusDefault = res.locals.createIssueStatusDefault as
     | ReturnType<typeof resolveCreateIssueStatusDefault>
     | undefined;
-  const assignmentWakeSkipped = !issue.assigneeAgentId || issue.status === "backlog";
+  const suppressAssignmentWakeup = opts?.suppressAssignmentWakeup === true;
+  const assignmentWakeSkipped = !issue.assigneeAgentId || issue.status === "backlog" || suppressAssignmentWakeup;
   return {
     status: issue.status,
     statusDefaulted: statusDefault?.defaulted ?? false,
     statusDefaultReason: statusDefault?.reason ?? "explicit",
+    suppressAssignmentWakeup,
     assignmentWakeSkipped,
     assignmentWakeSkipReason: assignmentWakeSkipped
       ? issue.assigneeAgentId
-        ? "assigned_backlog"
+        ? suppressAssignmentWakeup
+          ? "suppress_assignment_wakeup"
+          : "assigned_backlog"
         : "no_agent_assignee"
       : null,
   };
@@ -592,6 +624,7 @@ export function issueRoutes(
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const approvalsSvc = approvalService(db);
+  const activitySvc = activityService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
@@ -775,6 +808,141 @@ export function issueRoutes(
       const payload = approval.payload as Record<string, unknown> | null;
       return payload?.source === "issue_deferred_hitl" || payload?.source === "issue_hitl_request";
     }) ?? null;
+  }
+
+  async function findExistingOrgLearningApproval(issueId: string, learningActivityEventId: string) {
+    const existingApprovals = await issueApprovalsSvc.listApprovalsForIssue(issueId);
+    return existingApprovals.find((approval) => {
+      if (approval.type !== "request_board_approval") return false;
+      if (approval.status !== "pending" && approval.status !== "revision_requested") return false;
+      const payload = approval.payload as Record<string, unknown> | null;
+      return (
+        payload?.source === "org_learning_proposal" &&
+        payload.learningActivityEventId === learningActivityEventId
+      );
+    }) ?? null;
+  }
+
+  function readStringArray(value: unknown): string[] {
+    return Array.isArray(value)
+      ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      : [];
+  }
+
+  function buildOrgLearningApplyIssueDescription(input: {
+    sourceIssue: { id: string; identifier: string | null; title: string };
+    approvalId: string;
+    learningActivityEventId: string;
+    applyActivityEventId: string;
+    details: Record<string, unknown>;
+  }) {
+    const surfaces = readStringArray(input.details.suggestedInstructionSurfaces);
+    const signals = readStringArray(input.details.signals);
+    const nextAction =
+      typeof input.details.nextActionOnApproval === "string" && input.details.nextActionOnApproval.trim()
+        ? input.details.nextActionOnApproval.trim()
+        : "Inspect the approved org-learning record and propose the minimal instruction update needed.";
+    const proposedComment =
+      typeof input.details.proposedComment === "string" && input.details.proposedComment.trim()
+        ? input.details.proposedComment.trim()
+        : "No proposed application note was recorded.";
+
+    return [
+      "Apply approved org-learning as tracked work. Do not mutate instruction files silently.",
+      "",
+      `Source issue: ${input.sourceIssue.identifier ?? input.sourceIssue.id} - ${input.sourceIssue.title}`,
+      `Approval: ${input.approvalId}`,
+      `Learning activity event: ${input.learningActivityEventId}`,
+      `Apply-approved activity event: ${input.applyActivityEventId}`,
+      "",
+      "Suggested instruction surfaces:",
+      ...(surfaces.length > 0 ? surfaces.map((surface) => `- ${surface}`) : ["- None recorded"]),
+      "",
+      "Signals:",
+      ...(signals.length > 0 ? signals.map((signal) => `- ${signal}`) : ["- None recorded"]),
+      "",
+      "Proposed application note:",
+      proposedComment,
+      "",
+      "Next action:",
+      nextAction,
+    ].join("\n");
+  }
+
+  function orgLearningApplyIssueIdempotencyKey(input: {
+    sourceIssueId: string;
+    approvalId: string;
+    learningActivityEventId: string;
+  }) {
+    return [
+      "org-learning-apply",
+      input.sourceIssueId,
+      input.approvalId,
+      input.learningActivityEventId,
+    ].join(":");
+  }
+
+  function buildOrgLearningApprovalPayload(input: {
+    issue: { id: string; identifier: string | null; title: string };
+    learningActivityEventId: string;
+    learningDetails: Record<string, unknown>;
+  }) {
+    const proposal =
+      input.learningDetails.lessonProposal &&
+      typeof input.learningDetails.lessonProposal === "object" &&
+      !Array.isArray(input.learningDetails.lessonProposal)
+        ? input.learningDetails.lessonProposal as Record<string, unknown>
+        : {};
+    const suggestedSurfaces = Array.isArray(input.learningDetails.suggestedInstructionSurfaces)
+      ? input.learningDetails.suggestedInstructionSurfaces.filter((item): item is string => typeof item === "string")
+      : [];
+    const proposedSurface =
+      typeof proposal.proposed_instruction_surface === "string" && proposal.proposed_instruction_surface.trim()
+        ? proposal.proposed_instruction_surface.trim()
+        : null;
+    const surfaces = [...new Set([
+      ...(proposedSurface ? [proposedSurface] : []),
+      ...suggestedSurfaces,
+    ])];
+    const signals = Array.isArray(input.learningDetails.signals)
+      ? input.learningDetails.signals.filter((item): item is string => typeof item === "string")
+      : [];
+    const missingFields = Array.isArray(input.learningDetails.missingFields)
+      ? input.learningDetails.missingFields.filter((item): item is string => typeof item === "string")
+      : [];
+    const proposedChange =
+      typeof proposal.proposed_change === "string" && proposal.proposed_change.trim()
+        ? proposal.proposed_change
+        : "Review this org-learning record and decide whether agent instructions, routing rules, labels, or handoff guidance should be updated.";
+    return {
+      source: "org_learning_proposal",
+      title: `Review org-learning proposal for ${input.issue.identifier ?? input.issue.id.slice(0, 8)}`,
+      summary: `Issue ${input.issue.identifier ?? input.issue.id.slice(0, 8)} produced a structured org-learning record that needs human review before any instruction update.`,
+      recommendedAction: "Approve only if this learning should become durable operating guidance. Reject if this was a one-off issue artifact.",
+      nextActionOnApproval: "A responsible agent should update the selected instruction surfaces with the approved lesson and cite this approval.",
+      proposedItems: [
+        proposedChange,
+        ...surfaces.map((surface) => `Review ${surface}`),
+      ],
+      proposedComment: [
+        `Org-learning proposal from ${input.issue.identifier ?? input.issue.id.slice(0, 8)}: ${input.issue.title}`,
+        "",
+        `Observed problem: ${String(proposal.observed_problem ?? "Review the structured learning details.")}`,
+        `Impact: ${String(proposal.impact ?? "workflow reliability")}`,
+        `Proposed surface: ${String(proposal.proposed_instruction_surface ?? surfaces[0] ?? "LESSONS_LEDGER.md")}`,
+        `Proposed change: ${proposedChange}`,
+        signals.length > 0 ? `Signals: ${signals.join(", ")}` : null,
+        missingFields.length > 0 ? `Missing fields: ${missingFields.join(", ")}` : null,
+      ].filter((line): line is string => line !== null).join("\n"),
+      issueId: input.issue.id,
+      issueIdentifier: input.issue.identifier,
+      issueTitle: input.issue.title,
+      learningActivityEventId: input.learningActivityEventId,
+      learningDetails: input.learningDetails,
+      suggestedInstructionSurfaces: surfaces,
+      signals,
+      missingFields,
+    };
   }
 
   async function assertAgentInReviewReviewPath(input: {
@@ -1733,6 +1901,18 @@ export function issueRoutes(
     res.json(approvals);
   });
 
+  router.get("/issues/:id/org-intelligence", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const activity = await activitySvc.forIssue(issue.id);
+    res.json(buildIssueOrgIntelligenceRecords(activity));
+  });
+
   router.post("/issues/:id/approvals", validate(linkIssueApprovalSchema), async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -1815,6 +1995,225 @@ export function issueRoutes(
     res.status(201).json({ comment, hitlApproval: approval });
   });
 
+  router.post("/issues/:id/org-learning-approval", validate(createOrgLearningApprovalSchema), async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+
+    const activity = await activitySvc.forIssue(issue.id);
+    const learningEvent = activity.find((event) => {
+      if (event.action !== "issue.learning_recorded") return false;
+      if (req.body.activityEventId && event.id !== req.body.activityEventId) return false;
+      return event.details && typeof event.details === "object" && !Array.isArray(event.details);
+    });
+    if (!learningEvent) {
+      res.status(404).json({ error: "Org-learning record not found for this issue" });
+      return;
+    }
+
+    const existingApproval = await findExistingOrgLearningApproval(issue.id, learningEvent.id);
+    if (existingApproval) {
+      res.status(200).json({ hitlApproval: existingApproval, skipped: "duplicate_org_learning_approval" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const payload = buildOrgLearningApprovalPayload({
+      issue: {
+        id: issue.id,
+        identifier: issue.identifier,
+        title: issue.title,
+      },
+      learningActivityEventId: learningEvent.id,
+      learningDetails: learningEvent.details as Record<string, unknown>,
+    });
+    const approval = await approvalsSvc.create(issue.companyId, {
+      type: "request_board_approval",
+      requestedByAgentId: null,
+      requestedByUserId: actor.actorType === "user" ? actor.actorId : null,
+      status: "pending",
+      payload,
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      updatedAt: new Date(),
+    });
+
+    await issueApprovalsSvc.link(issue.id, approval.id, {
+      agentId: actor.agentId,
+      userId: actor.actorType === "user" ? actor.actorId : null,
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "approval.created",
+      entityType: "approval",
+      entityId: approval.id,
+      details: {
+        type: approval.type,
+        issueId: issue.id,
+        source: "org_learning_proposal",
+        learningActivityEventId: learningEvent.id,
+      },
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.approval_linked",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        approvalId: approval.id,
+        source: "org_learning_proposal",
+        learningActivityEventId: learningEvent.id,
+      },
+    });
+
+    res.status(201).json({ hitlApproval: approval });
+  });
+
+  router.post("/issues/:id/org-learning-apply-issue", validate(createOrgLearningApplyIssueSchema), async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+
+    const activity = await activitySvc.forIssue(issue.id);
+    const applyApprovedEvent = activity.find((event) => (
+      event.id === req.body.activityEventId &&
+      event.action === "issue.org_learning_apply_approved" &&
+      event.details &&
+      typeof event.details === "object" &&
+      !Array.isArray(event.details)
+    ));
+    if (!applyApprovedEvent) {
+      res.status(404).json({ error: "Approved org-learning apply record not found for this issue" });
+      return;
+    }
+
+    const details = applyApprovedEvent.details as Record<string, unknown>;
+    const approvalId = typeof details.approvalId === "string" ? details.approvalId : null;
+    const learningActivityEventId =
+      typeof details.learningActivityEventId === "string" ? details.learningActivityEventId : null;
+    if (!approvalId || !learningActivityEventId) {
+      res.status(422).json({ error: "Approved org-learning apply record is missing approval or learning event links" });
+      return;
+    }
+
+    const idempotencyKey = orgLearningApplyIssueIdempotencyKey({
+      sourceIssueId: issue.id,
+      approvalId,
+      learningActivityEventId,
+    });
+    const [existingIssue] = await svc.list(issue.companyId, {
+      originKind: "org_learning_apply",
+      originId: idempotencyKey,
+      limit: 1,
+    });
+    if (existingIssue) {
+      res.status(200).json({ issue: existingIssue, skipped: "duplicate_org_learning_apply_issue" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const title = `Apply approved org-learning from ${issue.identifier ?? issue.id.slice(0, 8)}`;
+    const description = buildOrgLearningApplyIssueDescription({
+      sourceIssue: { id: issue.id, identifier: issue.identifier, title: issue.title },
+      approvalId,
+      learningActivityEventId,
+      applyActivityEventId: applyApprovedEvent.id,
+      details,
+    });
+    const suppressAssignmentWakeup = req.body.suppressAssignmentWakeup === true;
+    const followUpStatus = suppressAssignmentWakeup ? "backlog" : "todo";
+    let followUpIssue;
+    try {
+      followUpIssue = await svc.create(issue.companyId, {
+        title,
+        description,
+        status: followUpStatus,
+        priority: "medium",
+        assigneeAgentId: issue.assigneeAgentId ?? null,
+        assigneeUserId: issue.assigneeAgentId ? null : issue.assigneeUserId ?? null,
+        projectId: issue.projectId ?? null,
+        projectWorkspaceId: issue.projectWorkspaceId ?? null,
+        parentId: issue.id,
+        originKind: "org_learning_apply",
+        originId: idempotencyKey,
+        createdByAgentId: actor.agentId,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      });
+    } catch (error) {
+      if (!isOrgLearningApplyDuplicateError(error)) throw error;
+      const [concurrentIssue] = await svc.list(issue.companyId, {
+        originKind: "org_learning_apply",
+        originId: idempotencyKey,
+        limit: 1,
+      });
+      if (!concurrentIssue) throw error;
+      res.status(200).json({ issue: concurrentIssue, skipped: "duplicate_org_learning_apply_issue" });
+      return;
+    }
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.org_learning_apply_issue_created",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        sourceIssueId: issue.id,
+        sourceIssueIdentifier: issue.identifier,
+        approvalId,
+        learningActivityEventId,
+        applyActivityEventId: applyApprovedEvent.id,
+        followUpIssueId: followUpIssue.id,
+        followUpIssueIdentifier: followUpIssue.identifier,
+        followUpIssueTitle: followUpIssue.title,
+        idempotencyKey,
+        suggestedInstructionSurfaces: readStringArray(details.suggestedInstructionSurfaces),
+        signals: readStringArray(details.signals),
+        proposedComment: typeof details.proposedComment === "string" ? details.proposedComment : null,
+        nextActionOnApproval: typeof details.nextActionOnApproval === "string" ? details.nextActionOnApproval : null,
+        suppressAssignmentWakeup,
+      },
+    });
+
+    if (followUpIssue.assigneeAgentId && followUpIssue.status !== "backlog" && !suppressAssignmentWakeup) {
+      await queueIssueAssignmentWakeup({
+        heartbeat,
+        issue: followUpIssue,
+        reason: "org_learning_apply_issue_created",
+        mutation: "org_learning_apply_issue_created",
+        contextSource: "issue.org_learning_apply_issue_created",
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
+    }
+
+    res.status(201).json({ issue: followUpIssue });
+  });
+
   router.delete("/issues/:id/approvals/:approvalId", async (req, res) => {
     const id = req.params.id as string;
     const approvalId = req.params.approvalId as string;
@@ -1855,9 +2254,14 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    const suppressAssignmentWakeup = req.body.suppressAssignmentWakeup === true;
+    if (suppressAssignmentWakeup && actor.actorType === "agent") {
+      throw forbidden("Agents cannot suppress assignment wakeups when creating issues");
+    }
     const executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
+    const { suppressAssignmentWakeup: _suppressAssignmentWakeup, ...createIssueData } = req.body;
     const issue = await svc.create(companyId, {
-      ...req.body,
+      ...createIssueData,
       executionPolicy,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
@@ -1875,20 +2279,65 @@ export function issueRoutes(
       details: {
         title: issue.title,
         identifier: issue.identifier,
-        ...buildCreateIssueActivityStatusDetails(issue, res),
+        ...buildCreateIssueActivityStatusDetails(issue, res, { suppressAssignmentWakeup }),
         ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
       },
     });
 
-    void queueIssueAssignmentWakeup({
-      heartbeat,
-      issue,
-      reason: "issue_assigned",
-      mutation: "create",
-      contextSource: "issue.create",
-      requestedByActorType: actor.actorType,
-      requestedByActorId: actor.actorId,
-    });
+    if (hasRoutingDecisionTrigger({
+      assigneeAgentId: req.body.assigneeAgentId as string | null | undefined,
+      assigneeUserId: req.body.assigneeUserId as string | null | undefined,
+      assigneeAdapterOverrides: req.body.assigneeAdapterOverrides as Record<string, unknown> | null | undefined,
+    })) {
+      const routingProject = issue.projectId ? await projectsSvc.getById(issue.projectId) : null;
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.routing_decision_recorded",
+        entityType: "issue",
+        entityId: issue.id,
+        details: buildIssueRoutingDecisionActivityDetails({
+          source: "issue.create",
+          issue,
+          body: issue.description,
+          project: routingProject,
+        }),
+      });
+    }
+
+    if (shouldRecordIssueLearning({ issue })) {
+      const learningProject = issue.projectId ? await projectsSvc.getById(issue.projectId) : null;
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.learning_recorded",
+        entityType: "issue",
+        entityId: issue.id,
+        details: buildIssueLearningRecordActivityDetails({
+          source: "issue.create",
+          issue,
+          project: learningProject,
+        }),
+      });
+    }
+
+    if (!suppressAssignmentWakeup) {
+      void queueIssueAssignmentWakeup({
+        heartbeat,
+        issue,
+        reason: "issue_assigned",
+        mutation: "create",
+        contextSource: "issue.create",
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
+    }
 
     res.status(201).json(issue);
   });
@@ -2151,6 +2600,9 @@ export function issueRoutes(
         blocks: updatedRelations.blocks,
       };
     }
+    const assigneeChanged =
+      issue.assigneeAgentId !== existing.assigneeAgentId || issue.assigneeUserId !== existing.assigneeUserId;
+    const assigneeAdapterOverridesChanged = req.body.assigneeAdapterOverrides !== undefined;
     await routinesSvc.syncRunStatusForIssue(issue.id);
 
     if (runToCancelForCancelledStatus && interruptedRunId !== runToCancelForCancelledStatus.id) {
@@ -2212,6 +2664,47 @@ export function issueRoutes(
         _previous: hasFieldChanges ? previous : undefined,
       },
     });
+
+    if (assigneeChanged || assigneeAdapterOverridesChanged) {
+      const routingProject = issue.projectId ? await projectsSvc.getById(issue.projectId) : null;
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.routing_decision_recorded",
+        entityType: "issue",
+        entityId: issue.id,
+        details: buildIssueRoutingDecisionActivityDetails({
+          source: "issue.update",
+          issue,
+          previousIssue: existing,
+          body: commentBody,
+          project: routingProject,
+        }),
+      });
+    }
+
+    if (shouldRecordIssueLearning({ issue, previousIssue: existing })) {
+      const learningProject = issue.projectId ? await projectsSvc.getById(issue.projectId) : null;
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.learning_recorded",
+        entityType: "issue",
+        entityId: issue.id,
+        details: buildIssueLearningRecordActivityDetails({
+          source: "issue.status_transition",
+          issue,
+          previousIssue: existing,
+          project: learningProject,
+        }),
+      });
+    }
 
     if (Array.isArray(req.body.blockedByIssueIds)) {
       const previousBlockedByIds = new Set((existingRelations?.blockedBy ?? []).map((relation) => relation.id));
@@ -2348,8 +2841,6 @@ export function issueRoutes(
           hitlRequest: req.body.hitlRequest,
         })
       : null;
-    const assigneeChanged =
-      issue.assigneeAgentId !== existing.assigneeAgentId || issue.assigneeUserId !== existing.assigneeUserId;
     const statusChangedFromBacklog =
       existing.status === "backlog" &&
       issue.status !== "backlog" &&

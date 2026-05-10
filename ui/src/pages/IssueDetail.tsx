@@ -3,7 +3,7 @@ import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
-import type { IssueAddCommentResponse } from "../api/issues";
+import type { IssueAddCommentResponse, IssueOrgIntelligenceRecord } from "../api/issues";
 import { approvalsApi } from "../api/approvals";
 import { activityApi, type RunForIssue } from "../api/activity";
 import { heartbeatsApi, type ActiveRunForIssue, type LiveRunForIssue } from "../api/heartbeats";
@@ -875,6 +875,289 @@ type IssueDetailActivityTabProps = {
   onApprovalAction: (approvalId: string, action: "approve" | "reject") => void;
 };
 
+function recordLabel(value: string | null | undefined, fallback = "Not recorded") {
+  return value && value.trim() ? value : fallback;
+}
+
+function proposalText(proposal: Record<string, unknown> | null, key: string) {
+  const value = proposal?.[key];
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function assigneeLabel(
+  assignee: { type: string | null; id: string | null; name: string | null; role: string | null } | null,
+  agentMap?: Map<string, Agent>,
+) {
+  if (!assignee) return "Unassigned";
+  if (assignee.type === "agent" && assignee.id) {
+    const agent = agentMap?.get(assignee.id);
+    if (agent) return agent.name;
+  }
+  return assignee.name ?? assignee.role ?? assignee.id?.slice(0, 8) ?? "Unassigned";
+}
+
+function ChipList({ values, empty }: { values: string[]; empty: string }) {
+  if (values.length === 0) {
+    return <span className="text-xs text-muted-foreground">{empty}</span>;
+  }
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {values.map((value) => (
+        <span key={value} className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[11px] text-muted-foreground">
+          {value}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function IssueDetailOrgIntelligenceTab({ issueId, agentMap }: { issueId: string; agentMap: Map<string, Agent> }) {
+  const queryClient = useQueryClient();
+  const { pushToast } = useToastActions();
+  const { data: records, isLoading } = useQuery({
+    queryKey: queryKeys.issues.orgIntelligence(issueId),
+    queryFn: () => issuesApi.listOrgIntelligence(issueId),
+    placeholderData: keepPreviousDataForSameQueryTail<IssueOrgIntelligenceRecord[]>(issueId),
+  });
+  const createLearningApproval = useMutation({
+    mutationFn: (activityEventId: string) => issuesApi.createOrgLearningApproval(issueId, activityEventId),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.approvals(issueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.detail(result.hitlApproval.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.orgIntelligence(issueId) });
+      pushToast({
+        title: result.skipped ? "Learning approval already exists" : "Learning approval created",
+        body: result.skipped
+          ? "That org-learning proposal already has an active HITL approval."
+          : "Open the linked approval to accept, reject, or request revision.",
+        tone: result.skipped ? "info" : "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Unable to create learning approval",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+  const createLearningApplyIssue = useMutation({
+    mutationFn: (activityEventId: string) => issuesApi.createOrgLearningApplyIssue(issueId, activityEventId),
+    onSuccess: (result) => {
+      const companyId = result.issue.companyId;
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.orgIntelligence(issueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(result.issue.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+      if (result.issue.projectId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, result.issue.projectId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(result.issue.projectId) });
+      }
+      if (result.issue.parentId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByParent(companyId, result.issue.parentId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(result.issue.parentId) });
+      }
+      pushToast({
+        title: result.skipped ? "Apply issue already exists" : "Apply issue created",
+        body: `${result.issue.identifier ?? result.issue.id.slice(0, 8)} tracks the approved instruction update work.`,
+        tone: result.skipped ? "info" : "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Unable to create apply issue",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+
+  if (isLoading && records === undefined) {
+    return <IssueSectionSkeleton titleWidth="w-32" rows={3} />;
+  }
+
+  const routingRecords = (records ?? []).filter((record) => record.kind === "routing");
+  const learningRecords = (records ?? []).filter((record) => record.kind === "learning");
+  const learningApplyApprovedRecords = (records ?? []).filter((record) => record.kind === "learning_apply_approved");
+
+  if ((records ?? []).length === 0) {
+    return (
+      <div className="rounded-lg border border-border p-4 text-sm text-muted-foreground">
+        No routing or org-learning records have been captured for this issue yet.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-lg border border-border bg-muted/20 p-3">
+        <div className="text-sm font-medium">Recorded intelligence</div>
+        <p className="mt-1 text-xs text-muted-foreground">
+          These are audit records, not accepted policy. Use HITL approval before turning lessons into durable agent instructions.
+        </p>
+      </div>
+
+      {routingRecords.length > 0 && (
+        <section className="space-y-2">
+          <h3 className="text-sm font-semibold">Routing decisions</h3>
+          {routingRecords.map((record) => (
+            <div key={record.id} className="rounded-lg border border-border p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-sm font-medium">
+                  {assigneeLabel(record.previousAssignee, agentMap)} → {assigneeLabel(record.selectedAssignee, agentMap)}
+                </div>
+                <span className="text-xs text-muted-foreground">{relativeTime(record.createdAt)}</span>
+              </div>
+              <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+                <div><span className="font-medium text-foreground">Project:</span> {recordLabel(record.projectOfRecord)}</div>
+                <div><span className="font-medium text-foreground">Workspace:</span> {recordLabel(record.workspaceOfRecord)}</div>
+                <div><span className="font-medium text-foreground">Business owner:</span> {recordLabel(record.businessOwner)}</div>
+                <div><span className="font-medium text-foreground">Technical owner:</span> {recordLabel(record.technicalOwner)}</div>
+                <div><span className="font-medium text-foreground">Execution:</span> {recordLabel(record.executionAllowed)}</div>
+                <div><span className="font-medium text-foreground">Review:</span> {recordLabel(record.reviewGate)}</div>
+              </div>
+              {record.rationale && (
+                <p className="mt-3 text-xs text-muted-foreground">{record.rationale}</p>
+              )}
+              {record.missingFields.length > 0 && (
+                <div className="mt-3">
+                  <ChipList values={record.missingFields} empty="No missing routing fields" />
+                </div>
+              )}
+            </div>
+          ))}
+        </section>
+      )}
+
+      {learningRecords.length > 0 && (
+        <section className="space-y-2">
+          <h3 className="text-sm font-semibold">Learning proposals</h3>
+          {learningRecords.map((record) => {
+            const observedProblem = proposalText(record.lessonProposal, "observed_problem");
+            const proposedChange = proposalText(record.lessonProposal, "proposed_change");
+            const proposedSurface = proposalText(record.lessonProposal, "proposed_instruction_surface");
+            return (
+              <div key={record.id} className="rounded-lg border border-border p-3">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-medium">
+                      {recordLabel(record.status, "status unknown")} learning record
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {record.previousStatus ? `${record.previousStatus} → ${record.status}` : recordLabel(record.source)}
+                    </div>
+                  </div>
+                  <span className="text-xs text-muted-foreground">{relativeTime(record.createdAt)}</span>
+                </div>
+                {observedProblem && <p className="mt-3 text-xs text-muted-foreground">{observedProblem}</p>}
+                {proposedChange && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    <span className="font-medium text-foreground">Proposed change:</span> {proposedChange}
+                  </p>
+                )}
+                <div className="mt-3 space-y-2">
+                  <div>
+                    <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Signals</div>
+                    <ChipList values={record.signals} empty="No signals recorded" />
+                  </div>
+                  <div>
+                    <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Instruction surfaces</div>
+                    <ChipList values={proposedSurface ? [proposedSurface, ...record.suggestedInstructionSurfaces.filter((surface) => surface !== proposedSurface)] : record.suggestedInstructionSurfaces} empty="No instruction surface suggested" />
+                  </div>
+                </div>
+                <div className="mt-3 flex justify-end">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => createLearningApproval.mutate(record.id)}
+                    disabled={createLearningApproval.isPending && createLearningApproval.variables === record.id}
+                  >
+                    {createLearningApproval.isPending && createLearningApproval.variables === record.id ? (
+                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                    ) : null}
+                    Create HITL approval
+                  </Button>
+                </div>
+              </div>
+            );
+          })}
+        </section>
+      )}
+
+      {learningApplyApprovedRecords.length > 0 && (
+        <section className="space-y-2">
+          <h3 className="text-sm font-semibold">Learning approvals</h3>
+          <p className="text-xs text-muted-foreground">
+            Approval means the lesson is accepted for application. It does not edit instruction files; create tracked apply work for that step.
+          </p>
+          {learningApplyApprovedRecords.map((record) => (
+            <div key={record.id} className="rounded-lg border border-emerald-200 bg-emerald-50/40 p-3 dark:border-emerald-900/60 dark:bg-emerald-950/20">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <div className="text-sm font-medium text-emerald-900 dark:text-emerald-100">
+                    Org-learning application approved
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {record.approvalId ? `Approval ${record.approvalId.slice(0, 8)}` : "Approval recorded"}
+                    {record.learningActivityEventId ? ` · learning ${record.learningActivityEventId.slice(0, 8)}` : ""}
+                  </div>
+                </div>
+                <span className="text-xs text-muted-foreground">{relativeTime(record.createdAt)}</span>
+              </div>
+              {record.nextActionOnApproval && (
+                <p className="mt-3 text-xs text-muted-foreground">
+                  <span className="font-medium text-foreground">Next action:</span> {record.nextActionOnApproval}
+                </p>
+              )}
+              {record.proposedComment && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  <span className="font-medium text-foreground">Application note:</span> {record.proposedComment}
+                </p>
+              )}
+              <div className="mt-3 space-y-2">
+                <div>
+                  <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Signals</div>
+                  <ChipList values={record.signals} empty="No signals recorded" />
+                </div>
+                <div>
+                  <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Instruction surfaces</div>
+                  <ChipList values={record.suggestedInstructionSurfaces} empty="No instruction surface recorded" />
+                </div>
+              </div>
+              <div className="mt-3 flex justify-end">
+                {record.followUpIssue ? (
+                  <Button variant="outline" size="sm" asChild>
+                    <Link to={createIssueDetailPath(record.followUpIssue.id)}>
+                      Open apply issue {record.followUpIssue.identifier ?? record.followUpIssue.id.slice(0, 8)}
+                    </Link>
+                  </Button>
+                ) : (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => createLearningApplyIssue.mutate(record.id)}
+                    disabled={createLearningApplyIssue.isPending && createLearningApplyIssue.variables === record.id}
+                  >
+                    {createLearningApplyIssue.isPending && createLearningApplyIssue.variables === record.id ? (
+                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                    ) : null}
+                    Create apply issue
+                  </Button>
+                )}
+              </div>
+            </div>
+          ))}
+        </section>
+      )}
+    </div>
+  );
+}
+
 function IssueDetailActivityTab({
   issueId,
   agentMap,
@@ -1294,7 +1577,7 @@ export function IssueDetail() {
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const currentUserName = operatorProfile?.name ?? session?.user?.name ?? null;
-  const currentUserImage = operatorProfile?.image ?? session?.user?.image ?? null;
+  const currentUserImage = operatorProfile ? operatorProfile.image ?? null : session?.user?.image ?? null;
   const { data: feedbackVotes } = useQuery({
     queryKey: queryKeys.issues.feedbackVotes(issueId!),
     queryFn: () => issuesApi.listFeedbackVotes(issueId!),
@@ -3155,6 +3438,10 @@ export function IssueDetail() {
             <ActivityIcon className="h-3.5 w-3.5" />
             Activity
           </TabsTrigger>
+          <TabsTrigger value="org-intel" className="gap-1.5">
+            <FileSearch className="h-3.5 w-3.5" />
+            Org Intel
+          </TabsTrigger>
           {issuePluginTabItems.map((item) => (
             <TabsTrigger key={item.value} value={item.value}>
               {item.label}
@@ -3235,6 +3522,12 @@ export function IssueDetail() {
                 approvalDecision.mutate({ approvalId, action });
               }}
             />
+          ) : null}
+        </TabsContent>
+
+        <TabsContent value="org-intel">
+          {detailTab === "org-intel" ? (
+            <IssueDetailOrgIntelligenceTab issueId={issue.id} agentMap={agentMap} />
           ) : null}
         </TabsContent>
 

@@ -194,7 +194,7 @@ export function IssueProperties({
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId;
   const currentUserName = operatorProfile?.name ?? session?.user?.name ?? null;
-  const currentUserImage = operatorProfile?.image ?? session?.user?.image ?? null;
+  const currentUserImage = operatorProfile ? operatorProfile.image ?? null : session?.user?.image ?? null;
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(companyId!),

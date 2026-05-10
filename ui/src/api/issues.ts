@@ -23,6 +23,65 @@ export type IssueUpdateResponse = Issue & {
   hitlApproval?: Approval | null;
 };
 
+export type IssueOrgIntelligenceRecord =
+  | {
+      id: string;
+      kind: "routing";
+      createdAt: Date;
+      actorType: string;
+      actorId: string;
+      agentId: string | null;
+      runId: string | null;
+      source: string | null;
+      previousAssignee: { type: string | null; id: string | null; name: string | null; role: string | null } | null;
+      selectedAssignee: { type: string | null; id: string | null; name: string | null; role: string | null } | null;
+      projectOfRecord: string | null;
+      businessOwner: string | null;
+      technicalOwner: string | null;
+      workspaceOfRecord: string | null;
+      executionAllowed: string | null;
+      reviewGate: string | null;
+      rationale: string | null;
+      confidence: number | null;
+      missingFields: string[];
+    }
+  | {
+      id: string;
+      kind: "learning";
+      createdAt: Date;
+      actorType: string;
+      actorId: string;
+      agentId: string | null;
+      runId: string | null;
+      source: string | null;
+      status: string | null;
+      previousStatus: string | null;
+      signals: string[];
+      missingFields: string[];
+      suggestedInstructionSurfaces: string[];
+      lessonProposal: Record<string, unknown> | null;
+    }
+  | {
+      id: string;
+      kind: "learning_apply_approved";
+      createdAt: Date;
+      actorType: string;
+      actorId: string;
+      agentId: string | null;
+      runId: string | null;
+      approvalId: string | null;
+      learningActivityEventId: string | null;
+      suggestedInstructionSurfaces: string[];
+      signals: string[];
+      nextActionOnApproval: string | null;
+      proposedComment: string | null;
+      followUpIssue: {
+        id: string;
+        identifier: string | null;
+        title: string | null;
+      } | null;
+    };
+
 export type IssueAddCommentResponse =
   | IssueComment
   | {
@@ -82,6 +141,22 @@ export const issuesApi = {
     api.patch<IssueLabel>(`/labels/${id}`, data),
   deleteLabel: (id: string) => api.delete<IssueLabel>(`/labels/${id}`),
   get: (id: string) => api.get<Issue>(`/issues/${id}`),
+  listOrgIntelligence: (id: string) =>
+    api.get<IssueOrgIntelligenceRecord[]>(`/issues/${id}/org-intelligence`),
+  createOrgLearningApproval: (id: string, activityEventId: string) =>
+    api.post<{ hitlApproval: Approval; skipped?: "duplicate_org_learning_approval" }>(
+      `/issues/${id}/org-learning-approval`,
+      { activityEventId },
+    ),
+  createOrgLearningApplyIssue: (
+    id: string,
+    activityEventId: string,
+    options?: { suppressAssignmentWakeup?: boolean },
+  ) =>
+    api.post<{ issue: Issue; skipped?: "duplicate_org_learning_apply_issue" }>(
+      `/issues/${id}/org-learning-apply-issue`,
+      { activityEventId, ...(options?.suppressAssignmentWakeup ? { suppressAssignmentWakeup: true } : {}) },
+    ),
   costSummary: (id: string) => api.get<IssueCostSummary>(`/issues/${id}/cost-summary`),
   markRead: (id: string) => api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, {}),
   markUnread: (id: string) => api.delete<{ id: string; removed: boolean }>(`/issues/${id}/read`),

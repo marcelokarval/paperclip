@@ -3,14 +3,22 @@ import type { AdapterModel } from "@paperclipai/adapter-utils";
 import type { ProjectOperatingContext } from "@paperclipai/shared";
 
 const DEFAULT_AGENT_BUNDLE_FILES = {
-  default: ["AGENTS.md"],
+  default: [
+    "AGENTS.md",
+    "COMMUNICATION_PROTOCOL.md",
+    "ROUTING_TABLE.md",
+    "LESSONS_LEDGER.md",
+  ],
   ceo: [
     "AGENTS.md",
+    "COMMUNICATION_PROTOCOL.md",
     "CONTEXT_BOUNDARIES.md",
     "DECISION_GATES.md",
     "HEARTBEAT.md",
     "HIRING_POLICY.md",
+    "LESSONS_LEDGER.md",
     "ORG_OPERATING_MODEL.md",
+    "ROUTING_TABLE.md",
     "SELF_IMPROVEMENT.md",
     "SOUL.md",
     "TOOLS.md",
@@ -37,7 +45,7 @@ export async function loadDefaultAgentInstructionsBundle(role: DefaultAgentBundl
 }
 
 export function resolveDefaultAgentInstructionsBundleRole(role: string): DefaultAgentBundleRole {
-  return role === "ceo" ? "ceo" : "default";
+  return role.toLowerCase() === "ceo" ? "ceo" : "default";
 }
 
 function formatBulletList(values: string[], emptyText: string) {
@@ -194,7 +202,8 @@ export function buildOperatingModelsInstructionsFile(input: {
 }
 
 function buildRoleSpecificProjectPacketGuidance(role: string) {
-  if (role === "ceo") {
+  const normalizedRole = role.toLowerCase();
+  if (normalizedRole === "ceo") {
     return [
       "## Baseline recovery guardrails",
       "If `PROJECT_PACKET.md` exists and it references an accepted repository baseline issue:",
@@ -217,7 +226,7 @@ function buildRoleSpecificProjectPacketGuidance(role: string) {
       "17. When in doubt, comment only confirmed facts, the remaining decision, and the next single operator action.",
     ].join("\n");
   }
-  if (role !== "cto") return "";
+  if (normalizedRole !== "cto") return "";
   return [
     "## Technical onboarding",
     "If `PROJECT_PACKET.md` exists, treat it as your initial technical brief.",
@@ -314,9 +323,9 @@ export function buildProjectPacketInstructionsBundle(input: {
   if (!operatingContext || operatingContext.baselineStatus !== "accepted") return input.files;
 
   const packetContent =
-    input.role === "ceo"
+    input.role.toLowerCase() === "ceo"
       ? renderExecutiveProjectPacket(input.projectName, operatingContext)
-      : input.role === "cto"
+      : input.role.toLowerCase() === "cto"
         ? renderTechnicalProjectPacket(input.projectName, operatingContext)
         : null;
   if (!packetContent) return input.files;

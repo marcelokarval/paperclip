@@ -13,6 +13,8 @@ import { validate } from "../middleware/validate.js";
 import { operatorProfileService, type OperatorProfileActor } from "../services/operator-profile.js";
 import { getActorInfo } from "./authz.js";
 
+const PROFILE_ASSET_IMAGE_RE = /^\/api\/assets\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\/content$/;
+
 function getOperatorProfileActor(req: Request): OperatorProfileActor {
   if (req.actor.type !== "board" || !req.actor.userId) {
     throw forbidden("Board access required");
@@ -62,8 +64,30 @@ export function operatorProfileRoutes(db: Db, storage?: StorageService) {
   });
   const router = Router();
 
+  async function clearMissingProfileAssetImage(
+    actor: OperatorProfileActor,
+    profile: Awaited<ReturnType<typeof profileSvc.getForActor>>,
+  ) {
+    const assetId = profile.image?.match(PROFILE_ASSET_IMAGE_RE)?.[1];
+    if (!assetId) return profile;
+
+    const asset = await assets.getById(assetId);
+    if (!asset) {
+      return profileSvc.updateForActor(actor, { image: null });
+    }
+
+    if (!storage) return profile;
+
+    const object = await storage.headObject(asset.companyId, asset.objectKey);
+    if (object.exists) return profile;
+
+    return profileSvc.updateForActor(actor, { image: null });
+  }
+
   router.get("/operator/profile", async (req, res) => {
-    res.json(await profileSvc.getForActor(getOperatorProfileActor(req)));
+    const actor = getOperatorProfileActor(req);
+    const profile = await profileSvc.getForActor(actor);
+    res.json(await clearMissingProfileAssetImage(actor, profile));
   });
 
   router.patch(
