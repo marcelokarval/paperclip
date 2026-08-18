@@ -26,6 +26,7 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  projects,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -82,6 +83,11 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import {
+  LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH,
+  isIssueWithinLowTrustBoundary,
+  resolveCoreTrustPreset,
+} from "../trust-preset-resolver.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["interrupted", "failed", "cancelled", "timed_out"] as const;
@@ -158,6 +164,7 @@ type LatestIssueRun = Pick<
 > & {
   resultJson?: unknown;
 } | null;
+type RecoveryIssueAncestryRow = Pick<typeof issues.$inferSelect, "id" | "companyId" | "parentId">;
 type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & { status: "succeeded" };
 
 type StrandedRecoveryCause =
@@ -2577,6 +2584,57 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return (await isAgentInvokable(candidate)) && !budgetBlock ? candidate.id : null;
   }
 
+  async function issueIsWithinRecoveryLowTrustBoundary(input: {
+    issue: typeof issues.$inferSelect;
+    boundary: Parameters<typeof isIssueWithinLowTrustBoundary>[0];
+  }) {
+    if (isIssueWithinLowTrustBoundary(input.boundary, input.issue)) return true;
+    if (!input.boundary.rootIssueId) return false;
+
+    let cursor: string | null = input.issue.id;
+    for (let depth = 0; cursor && depth < LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH; depth += 1) {
+      if (cursor === input.boundary.rootIssueId) return true;
+      const rows: RecoveryIssueAncestryRow[] = await db
+        .select({ id: issues.id, companyId: issues.companyId, parentId: issues.parentId })
+        .from(issues)
+        .where(eq(issues.id, cursor));
+      const row = rows[0] ?? null;
+      if (!row || row.companyId !== input.issue.companyId) return false;
+      cursor = row.parentId;
+    }
+    return false;
+  }
+
+  async function isBoundLowTrustRecovery(input: {
+    issue: typeof issues.$inferSelect;
+    latestRun: LatestIssueRun;
+    originalAgentId: string | null;
+  }) {
+    if (!input.originalAgentId) return false;
+    const agent = await getAgent(input.originalAgentId);
+    if (!agent || agent.companyId !== input.issue.companyId) return false;
+    const project = input.issue.projectId
+      ? await db
+        .select({ companyId: projects.companyId, executionWorkspacePolicy: projects.executionWorkspacePolicy })
+        .from(projects)
+        .where(and(eq(projects.id, input.issue.projectId), eq(projects.companyId, input.issue.companyId)))
+        .then((rows) => rows[0] ?? null)
+      : null;
+    const runExecutionPolicy = parseObject(parseObject(input.latestRun?.contextSnapshot).executionPolicy);
+    const resolution = resolveCoreTrustPreset({
+      companyId: input.issue.companyId,
+      agent: { companyId: agent.companyId, permissions: agent.permissions },
+      project,
+      issue: { companyId: input.issue.companyId, executionPolicy: input.issue.executionPolicy },
+      run: { companyId: input.issue.companyId, executionPolicy: runExecutionPolicy },
+    });
+    if (resolution.kind !== "low_trust_review") return false;
+    if (resolution.boundary.allowedAgentIds?.length && !resolution.boundary.allowedAgentIds.includes(agent.id)) {
+      return false;
+    }
+    return issueIsWithinRecoveryLowTrustBoundary({ issue: input.issue, boundary: resolution.boundary });
+  }
+
   async function resolveStrandedRecoveryRouting(input: {
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
@@ -2585,6 +2643,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }) {
     const originalAgentId = input.latestRun?.agentId ?? input.issue.assigneeAgentId;
     const returnOwnerAgentId = input.issue.assigneeAgentId ?? originalAgentId;
+    if (await isBoundLowTrustRecovery({
+      issue: input.issue,
+      latestRun: input.latestRun,
+      originalAgentId: returnOwnerAgentId,
+    })) {
+      const ownerAgentId = await resolveInvokableRecoveryAgentId(input.issue, returnOwnerAgentId);
+      if (ownerAgentId) {
+        return { ownerAgentId, returnOwnerAgentId, routingFallbackReason: null };
+      }
+      return {
+        ownerAgentId: null,
+        returnOwnerAgentId,
+        routingFallbackReason: "Low-trust review recovery did not transfer ownership because the bounded reviewer is not invokable.",
+      };
+    }
     const routeToOriginal = input.recoveryCause === "process_lost" ||
       input.recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON ||
       input.recoveryCause === "codex_output_inactivity_monitor";

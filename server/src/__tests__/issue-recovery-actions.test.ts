@@ -383,6 +383,106 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     },
   );
 
+  it("keeps a low-trust review recovery on its current reviewer after an adapter failure", async () => {
+    const { coderId, sourceIssue } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const [lowTrustIssue] = await db
+      .update(issues)
+      .set({
+        executionPolicy: {
+          authorizationPolicy: {
+            trustPreset: "low_trust_review",
+            trustBoundary: {
+              mode: "low_trust_review",
+              companyId: sourceIssue.companyId,
+              rootIssueId: sourceIssue.id,
+              issueIds: [sourceIssue.id],
+              allowedAgentIds: [coderId],
+            },
+          },
+        },
+      })
+      .where(eq(issues.id, sourceIssue.id))
+      .returning();
+    const latestRun = {
+      id: randomUUID(),
+      agentId: coderId,
+      status: "failed",
+      error: "adapter setup failed",
+      errorCode: "setup_failed",
+      contextSnapshot: { retryReason: "issue_continuation_needed" },
+      livenessState: "needs_followup",
+    } as const;
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: lowTrustIssue!,
+      previousStatus: "in_progress",
+      latestRun,
+    });
+
+    const [action] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    expect(action?.ownerAgentId).toBe(coderId);
+    expect(action?.returnOwnerAgentId).toBe(coderId);
+    expect(updatedIssue?.assigneeAgentId).toBe(coderId);
+    expect(enqueueWakeup).toHaveBeenCalledWith(coderId, expect.objectContaining({
+      reason: "source_scoped_recovery_action",
+    }));
+  });
+
+  it("does not transfer a low-trust review recovery to a manager when the reviewer is not invokable", async () => {
+    const { coderId, sourceIssue } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, coderId));
+    const [lowTrustIssue] = await db
+      .update(issues)
+      .set({
+        executionPolicy: {
+          authorizationPolicy: {
+            trustPreset: "low_trust_review",
+            trustBoundary: {
+              mode: "low_trust_review",
+              companyId: sourceIssue.companyId,
+              rootIssueId: sourceIssue.id,
+              issueIds: [sourceIssue.id],
+              allowedAgentIds: [coderId],
+            },
+          },
+        },
+      })
+      .where(eq(issues.id, sourceIssue.id))
+      .returning();
+    const latestRun = {
+      id: randomUUID(),
+      agentId: coderId,
+      status: "failed",
+      error: "adapter setup failed",
+      errorCode: "setup_failed",
+      contextSnapshot: { retryReason: "issue_continuation_needed" },
+      livenessState: "needs_followup",
+    } as const;
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: lowTrustIssue!,
+      previousStatus: "in_progress",
+      latestRun,
+    });
+
+    const [action] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    expect(action).toMatchObject({ ownerType: "board", ownerAgentId: null, returnOwnerAgentId: coderId });
+    expect(updatedIssue?.assigneeAgentId).toBe(coderId);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
   it("stands down while the latest run was cancelled by a board operator", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     await db.insert(heartbeatRuns).values({
