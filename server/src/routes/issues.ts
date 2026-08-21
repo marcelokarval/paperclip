@@ -139,7 +139,7 @@ import {
   workProductService,
 } from "../services/index.js";
 import { assertCanResolveProposal } from "../services/secret-proposal-authorization.js";
-import { evaluateAgentInvokabilityFromDb } from "../services/agent-invokability.js";
+import { evaluateAgentInvokability } from "../services/agent-invokability.js";
 import { buildDocumentReviewContext, buildPlanReviewContext } from "../services/plan-review-context.js";
 import {
   decideIssueReviewPathRecovery,
@@ -5255,12 +5255,12 @@ export function issueRoutes(
         },
       );
     }
-    const returnOwner = await db
-      .select()
-      .from(agents)
-      .where(and(eq(agents.companyId, input.issue.companyId), eq(agents.id, returnOwnerAgentId)))
-      .then((rows) => rows[0] ?? null);
-    const invokability = await evaluateAgentInvokabilityFromDb(db, returnOwner);
+    const [returnOwner, companyAgents] = await Promise.all([
+      agentsSvc.getById(returnOwnerAgentId),
+      agentsSvc.list(input.issue.companyId, { includeTerminated: true }),
+    ]);
+    const scopedReturnOwner = returnOwner?.companyId === input.issue.companyId ? returnOwner : null;
+    const invokability = evaluateAgentInvokability(scopedReturnOwner, companyAgents);
     if (!invokability.invokable) {
       throw conflict("Safe recovery hand-back requires an invokable return owner", {
         code: "recovery_safe_hand_back_owner_not_invokable",

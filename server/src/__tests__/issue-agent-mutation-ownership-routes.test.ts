@@ -280,7 +280,9 @@ function makeAgent(id: string, overrides: Record<string, unknown> = {}) {
   return {
     id,
     companyId,
+    name: `Agent ${id}`,
     role: "engineer",
+    status: "idle",
     reportsTo: null,
     permissions: { canCreateAgents: false },
     ...overrides,
