@@ -139,6 +139,7 @@ import {
   workProductService,
 } from "../services/index.js";
 import { assertCanResolveProposal } from "../services/secret-proposal-authorization.js";
+import { evaluateAgentInvokabilityFromDb } from "../services/agent-invokability.js";
 import { buildDocumentReviewContext, buildPlanReviewContext } from "../services/plan-review-context.js";
 import {
   decideIssueReviewPathRecovery,
@@ -5253,6 +5254,20 @@ export function issueRoutes(
           returnOwnerAgentId,
         },
       );
+    }
+    const returnOwner = await db
+      .select()
+      .from(agents)
+      .where(and(eq(agents.companyId, input.issue.companyId), eq(agents.id, returnOwnerAgentId)))
+      .then((rows) => rows[0] ?? null);
+    const invokability = await evaluateAgentInvokabilityFromDb(db, returnOwner);
+    if (!invokability.invokable) {
+      throw conflict("Safe recovery hand-back requires an invokable return owner", {
+        code: "recovery_safe_hand_back_owner_not_invokable",
+        issueId: input.issue.id,
+        returnOwnerAgentId,
+        reason: invokability.reason,
+      });
     }
     const actorRunId = input.req.actor.type === "agent"
       ? input.req.actor.runId?.trim() || null

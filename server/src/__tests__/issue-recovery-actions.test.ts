@@ -1629,6 +1629,47 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     );
   });
 
+  it("keeps board recovery active while the recorded return owner is not invokable", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, coderId));
+    await db
+      .update(issues)
+      .set({ status: "blocked", assigneeAgentId: coderId })
+      .where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "board",
+      ownerAgentId: null,
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      cause: "stranded_assigned_issue",
+      fingerprint: "low-trust:paused-reviewer",
+      evidence: { routingFallbackReason: "bounded reviewer is not invokable" },
+      nextAction: "Restore the bounded reviewer before hand-back.",
+      wakePolicy: { type: "board_escalation" },
+    });
+    const enqueueRecoveryActionWakeup = vi.fn(async () => null);
+
+    const response = await request(createApp(undefined, {
+      recoveryActionEnqueueWakeup: enqueueRecoveryActionWakeup,
+    }))
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "restored",
+        sourceIssueStatus: "todo",
+        resolutionNote: "Try the bounded reviewer again.",
+      });
+
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    expect(response.body.details?.code).toBe("recovery_safe_hand_back_owner_not_invokable");
+    expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toMatchObject({ id: action.id });
+    expect(enqueueRecoveryActionWakeup).not.toHaveBeenCalled();
+  });
+
   it("does not enqueue a restored wake when todo status and assignee are unchanged", async () => {
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     await db
