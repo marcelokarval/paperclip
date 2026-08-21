@@ -1902,7 +1902,8 @@ describe("agent issue mutation checkout ownership", () => {
       returnOwnerAgentId: ownerAgentId,
     });
 
-    const res = await request(await createApp(peerActor()))
+    const routeDb = createRunContextDb({}, peerAgentId, "66666666-6666-4666-8666-666666666666");
+    const res = await request(await createApp(peerActor(), routeDb))
       .post(`/api/issues/${issueId}/recovery-actions/resolve`)
       .send({
         actionId: recoveryActionId,
@@ -1911,6 +1912,7 @@ describe("agent issue mutation checkout ownership", () => {
       });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(routeDb.select).toHaveBeenCalledWith(expect.objectContaining({ id: expect.anything() }));
     expect(mockIssueService.update).toHaveBeenCalledWith(
       issueId,
       expect.not.objectContaining({ assigneeAgentId: expect.anything() }),

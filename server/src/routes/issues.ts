@@ -5231,6 +5231,7 @@ export function issueRoutes(
   }
 
   async function assertSafeRecoveryHandBackGates(input: {
+    dbClient: Db;
     req: Request;
     issue: {
       id: string;
@@ -5255,6 +5256,14 @@ export function issueRoutes(
         },
       );
     }
+    // Serialize the final eligibility decision with pause/terminate/status writes.
+    // Without this row lock, a concurrent status update can invalidate the
+    // preflight before this transaction restores the issue and closes recovery.
+    await input.dbClient
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(eq(agents.companyId, input.issue.companyId), eq(agents.id, returnOwnerAgentId)))
+      .for("update");
     const [returnOwner, companyAgents] = await Promise.all([
       agentsSvc.getById(returnOwnerAgentId),
       agentsSvc.list(input.issue.companyId, { includeTerminated: true }),
@@ -6922,6 +6931,7 @@ export function issueRoutes(
           lockedIssue.assigneeAgentId === activeRecoveryAction.returnOwnerAgentId;
         if (safeHandBack) {
           await assertSafeRecoveryHandBackGates({
+            dbClient: tx as unknown as Db,
             req,
             issue: lockedIssue,
             recoveryAction: activeRecoveryAction,
