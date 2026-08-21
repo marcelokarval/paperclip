@@ -5256,20 +5256,22 @@ export function issueRoutes(
         },
       );
     }
-    // Serialize the final eligibility decision with pause/terminate/status writes.
-    // Without this row lock, a concurrent status update can invalidate the
-    // preflight before this transaction restores the issue and closes recovery.
-    await input.dbClient
-      .select({ id: agents.id })
+    // Read the complete eligibility snapshot through the locking transaction.
+    // A shared lock keeps concurrent pause/terminate/org-chain writes behind the
+    // hand-back commit while still allowing independent hand-back readers.
+    const companyAgents = await input.dbClient
+      .select({
+        id: agents.id,
+        companyId: agents.companyId,
+        name: agents.name,
+        status: agents.status,
+        reportsTo: agents.reportsTo,
+      })
       .from(agents)
-      .where(and(eq(agents.companyId, input.issue.companyId), eq(agents.id, returnOwnerAgentId)))
-      .for("update");
-    const [returnOwner, companyAgents] = await Promise.all([
-      agentsSvc.getById(returnOwnerAgentId),
-      agentsSvc.list(input.issue.companyId, { includeTerminated: true }),
-    ]);
-    const scopedReturnOwner = returnOwner?.companyId === input.issue.companyId ? returnOwner : null;
-    const invokability = evaluateAgentInvokability(scopedReturnOwner, companyAgents);
+      .where(eq(agents.companyId, input.issue.companyId))
+      .for("share");
+    const returnOwner = companyAgents.find((agent) => agent.id === returnOwnerAgentId) ?? null;
+    const invokability = evaluateAgentInvokability(returnOwner, companyAgents);
     if (!invokability.invokable) {
       throw conflict("Safe recovery hand-back requires an invokable return owner", {
         code: "recovery_safe_hand_back_owner_not_invokable",
