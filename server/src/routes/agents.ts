@@ -84,6 +84,7 @@ import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { secretService } from "../services/secrets.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
+import { agentExplicitlyDeniesTaskAssignment } from "../services/agent-permissions.js";
 import {
   detectAdapterModel,
   findActiveServerAdapter,
@@ -1035,6 +1036,9 @@ export function agentRoutes(
       ? await access.listPrincipalGrants(agent.companyId, "agent", agent.id)
       : [];
     const hasExplicitTaskAssignGrant = grants.some((grant) => grant.permissionKey === "tasks:assign");
+    const explicitCanAssignTasks = typeof agent.permissions?.canAssignTasks === "boolean"
+      ? agent.permissions.canAssignTasks
+      : null;
 
     if (agent.role === "ceo") {
       return {
@@ -1045,10 +1049,10 @@ export function agentRoutes(
       };
     }
 
-    if (canCreateAgents(agent)) {
+    if (agentExplicitlyDeniesTaskAssignment(agent)) {
       return {
-        canAssignTasks: true,
-        taskAssignSource: "agent_creator" as const,
+        canAssignTasks: false,
+        taskAssignSource: "explicit_deny" as const,
         membership,
         grants,
       };
@@ -1058,6 +1062,24 @@ export function agentRoutes(
       return {
         canAssignTasks: true,
         taskAssignSource: "explicit_grant" as const,
+        membership,
+        grants,
+      };
+    }
+
+    if (explicitCanAssignTasks === true) {
+      return {
+        canAssignTasks: true,
+        taskAssignSource: "explicit_permission" as const,
+        membership,
+        grants,
+      };
+    }
+
+    if (canCreateAgents(agent)) {
+      return {
+        canAssignTasks: true,
+        taskAssignSource: "agent_creator" as const,
         membership,
         grants,
       };
@@ -1160,17 +1182,16 @@ export function agentRoutes(
   }
 
   async function applyDefaultAgentTaskAssignGrant(
-    companyId: string,
-    agentId: string,
+    agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
     grantedByUserId: string | null,
   ) {
-    await access.ensureMembership(companyId, "agent", agentId, "member", "active");
+    await access.ensureMembership(agent.companyId, "agent", agent.id, "member", "active");
     await access.setPrincipalPermission(
-      companyId,
+      agent.companyId,
       "agent",
-      agentId,
+      agent.id,
       "tasks:assign",
-      true,
+      !agentExplicitlyDeniesTaskAssignment(agent),
       grantedByUserId,
     );
   }
@@ -3517,8 +3538,7 @@ export function agentRoutes(
     }
 
     await applyDefaultAgentTaskAssignGrant(
-      companyId,
-      agent.id,
+      agent,
       actor.actorType === "user" ? actor.actorId : null,
     );
 
@@ -3663,8 +3683,7 @@ export function agentRoutes(
     }
 
     await applyDefaultAgentTaskAssignGrant(
-      companyId,
-      agent.id,
+      agent,
       req.actor.type === "board" ? (req.actor.userId ?? null) : null,
     );
     await builtInAgentService(db).ensureCompanyDefaultAgentGrants(companyId);
@@ -3710,8 +3729,7 @@ export function agentRoutes(
       return;
     }
 
-    const effectiveCanAssignTasks =
-      agent.role === "ceo" || Boolean(agent.permissions?.canCreateAgents) || req.body.canAssignTasks;
+    const effectiveCanAssignTasks = !agentExplicitlyDeniesTaskAssignment(agent);
     await access.ensureMembership(agent.companyId, "agent", agent.id, "member", "active");
     await access.setPrincipalPermission(
       agent.companyId,
