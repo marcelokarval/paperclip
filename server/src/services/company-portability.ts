@@ -3537,20 +3537,34 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     permissionGrants: PortableAgentPermissionGrant[],
     grantedByUserId: string | null,
     taskAssignmentEnabled: boolean,
+    grantTaskAssignmentByDefault: boolean,
   ) {
+    const hasUnscopedTaskAssignmentGrant = permissionGrants.some(
+      (grant) => grant.permissionKey === "tasks:assign",
+    );
+    const hasScopedTaskAssignmentGrant = permissionGrants.some(
+      (grant) => grant.permissionKey === "tasks:assign_scope",
+    );
+    const grantUnscopedTaskAssignment = taskAssignmentEnabled && (
+      hasUnscopedTaskAssignmentGrant
+      || (grantTaskAssignmentByDefault && !hasScopedTaskAssignmentGrant)
+    );
     await access.ensureMembership(companyId, "agent", agentId, "member", "active");
     await access.setPrincipalPermission(
       companyId,
       "agent",
       agentId,
       "tasks:assign",
-      taskAssignmentEnabled,
+      grantUnscopedTaskAssignment,
       grantedByUserId,
     );
     for (const grant of permissionGrants) {
+      if (grant.permissionKey === "tasks:assign") {
+        continue;
+      }
       if (
         !taskAssignmentEnabled
-        && (grant.permissionKey === "tasks:assign" || grant.permissionKey === "tasks:assign_scope")
+        && grant.permissionKey === "tasks:assign_scope"
       ) {
         continue;
       }
@@ -5644,6 +5658,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               manifestAgent.permissionGrants ?? [],
               actorUserId ?? null,
               !agentExplicitlyDeniesTaskAssignment(manifestAgent),
+              false,
             );
             agentStatusById.set(updated.id, updated.status ?? agentStatusById.get(updated.id) ?? null);
             await secrets.syncEnvBindingsForTarget?.(
@@ -5683,6 +5698,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             manifestAgent.permissionGrants ?? [],
             actorUserId ?? null,
             !agentExplicitlyDeniesTaskAssignment(manifestAgent),
+            true,
           );
           agentStatusById.set(created.id, created.status ?? (pauseAutomations ? "paused" : "idle"));
           await secrets.syncEnvBindingsForTarget?.(

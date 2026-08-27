@@ -1891,6 +1891,111 @@ describe("company portability", () => {
     );
   });
 
+  it("does not widen a scoped assignment grant during a replace import", async () => {
+    const portability = companyPortabilityService({} as any);
+    agentSvc.list.mockResolvedValue([{
+      id: "agent-1",
+      name: "ClaudeCoder",
+      status: "idle",
+      role: "engineer",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      budgetMonthlyCents: 0,
+      permissions: {},
+      metadata: null,
+    }]);
+    const updatedAgent = async (id: string, patch: Record<string, unknown>) => ({
+      id,
+      name: "ClaudeCoder",
+      status: "idle",
+      ...patch,
+    });
+    agentSvc.update
+      .mockImplementationOnce(updatedAgent)
+      .mockImplementationOnce(updatedAgent);
+
+    await portability.importBundle({
+      source: {
+        type: "inline",
+        files: {
+          "COMPANY.md": [
+            "---",
+            "name: Import",
+            "includes:",
+            "  - agents/claudecoder/AGENTS.md",
+            "---",
+            "",
+          ].join("\n"),
+          "agents/claudecoder/AGENTS.md": [
+            "---",
+            "name: ClaudeCoder",
+            "slug: claudecoder",
+            "kind: agent",
+            "---",
+            "",
+            "# ClaudeCoder",
+            "",
+          ].join("\n"),
+          ".paperclip.yaml": [
+            "schema: paperclip/v1",
+            "agents:",
+            "  claudecoder:",
+            "    adapter:",
+            "      type: process",
+            "      config: {}",
+            "    permissions:",
+            "      canAssignTasks: true",
+            "    permissionGrants:",
+            "      - permissionKey: tasks:assign_scope",
+            "        scope:",
+            "          projectIds:",
+            "            - project-1",
+            "",
+          ].join("\n"),
+        },
+      },
+      include: {
+        company: false,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+      target: {
+        mode: "existing_company",
+        companyId: "company-1",
+      },
+      collisionStrategy: "replace",
+    }, "user-1");
+
+    expect(accessSvc.setPrincipalPermission).toHaveBeenCalledWith(
+      "company-1",
+      "agent",
+      "agent-1",
+      "tasks:assign",
+      false,
+      "user-1",
+    );
+    expect(accessSvc.setPrincipalPermission).not.toHaveBeenCalledWith(
+      "company-1",
+      "agent",
+      "agent-1",
+      "tasks:assign",
+      true,
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(accessSvc.setPrincipalPermission).toHaveBeenCalledWith(
+      "company-1",
+      "agent",
+      "agent-1",
+      "tasks:assign_scope",
+      true,
+      "user-1",
+      { projectIds: ["project-1"] },
+    );
+  });
+
   it("removes import secrets created before a later import failure", async () => {
     const portability = companyPortabilityService({} as any);
     agentSvc.list.mockResolvedValue([]);
