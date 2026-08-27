@@ -1828,7 +1828,10 @@ describe("company portability", () => {
             "    adapter:",
             "      type: process",
             "      config: {}",
+            "    permissions:",
+            "      canAssignTasks: false",
             "    permissionGrants:",
+            "      - permissionKey: tasks:assign",
             "      - permissionKey: agents:suggest-changes",
             "      - permissionKey: skills:create",
             "        scope:",
@@ -1851,6 +1854,23 @@ describe("company portability", () => {
       collisionStrategy: "rename",
     }, "user-1");
 
+    expect(accessSvc.setPrincipalPermission).toHaveBeenCalledWith(
+      "company-1",
+      "agent",
+      "agent-imported",
+      "tasks:assign",
+      false,
+      "user-1",
+    );
+    expect(accessSvc.setPrincipalPermission).not.toHaveBeenCalledWith(
+      "company-1",
+      "agent",
+      "agent-imported",
+      "tasks:assign",
+      true,
+      expect.anything(),
+      expect.anything(),
+    );
     expect(accessSvc.setPrincipalPermission).toHaveBeenCalledWith(
       "company-1",
       "agent",
